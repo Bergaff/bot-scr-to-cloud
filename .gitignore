@@ -1,0 +1,13 @@
+# секреты, сессии, база и выгрузки — никогда в git
+*.session
+*.session-journal
+.env
+*.sqlite3
+hits.log
+monitor.log
+state.json
+found.jsonl
+out/
+__pycache__/
+hits.txt
+hits-*.txt
