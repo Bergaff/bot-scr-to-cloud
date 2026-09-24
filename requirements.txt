@@ -1,0 +1,4 @@
+telethon>=1.36,<2
+pyyaml>=6.0     # чтобы читать sources.yaml (sources.json работает и без него)
+qrcode>=7.4     # отрисовка QR для входа без SMS
+pysocks>=1.7    # только если нужен --proxy

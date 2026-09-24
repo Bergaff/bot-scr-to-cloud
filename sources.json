@@ -1,0 +1,89 @@
+{
+  "_комментарий": "Копия sources.yaml: работает без pyyaml. Читается sources.yaml, если его нет — этот файл. | Несколько аккаунтов: добавь секцию \"accounts\": {\"main\": {\"session\": \"monitor_session\", \"forward\": {\"to\": \"@parcel_transfer_bot\", \"max_per_day\": 120}}, \"second\": {\"session\": \"second_session\", \"forward\": {\"to\": \"@parcel_transfer_bot\", \"max_per_day\": 60}}}, а у нужных источников укажи \"account\": \"main\" или \"second\" (без account — первый аккаунт; \"auto\" — по кругу). Подробности в sources.yaml и START-HERE.md.",
+  "defaults": {
+    "profile": "chat",
+    "min_score": 5,
+    "catchup": 50,
+    "order": "random",
+    "heartbeat": 0,
+    "skip_hidden": true
+  },
+  "forward": {
+    "to": "@parcel_transfer_bot",
+    "mode": "forward",
+    "max_per_day": 180,
+    "fallback": "link"
+  },
+  "sources": [
+    {
+      "target": "@travelersminsk",
+      "title": "Посылки 📦 Доставки 🧳 Попутчики 🙋 Водители 🚘",
+      "profile": "chat",
+      "min_score": 4,
+      "catchup": 50
+    },
+    {
+      "target": "@belgranica",
+      "title": "Граница (чат)",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "https://t.me/+CmQyl50rf-NlODFi",
+      "title": "Приватный чат (приоритетный)",
+      "profile": "chat",
+      "min_score": 4,
+      "catchup": 100
+    },
+    {
+      "target": "@granica_online",
+      "title": "Граница онлайн",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@ByPoland_chat",
+      "title": "BY-Poland (чат)",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@granica_polska",
+      "title": "Граница Польша",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@granica_BY_LT_PL",
+      "title": "Граница BY-LT-PL",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@granica_es",
+      "title": "Граница BY-PL-LT (очереди)",
+      "profile": "news",
+      "min_score": 6,
+      "catchup": 30
+    },
+    {
+      "target": "@granica_bypl",
+      "title": "Граница BY-ЕС / Брест-Тересполь / Брузги-Кузница",
+      "profile": "news",
+      "min_score": 6,
+      "catchup": 30
+    },
+    {
+      "target": "@rossia_belarus",
+      "title": "Россия-Беларусь (граница)",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    }
+  ]
+}

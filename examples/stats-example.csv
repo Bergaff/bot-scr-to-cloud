@@ -1,0 +1,5 @@
+day,chat_key,scanned,matched,saved,forwarded,forward_skipped,forward_failed,filtered,too_old,duplicates,text_duplicates,cross_chat
+2026-09-18,belgranica,60,30,18,16,0,0,4,8,30,0,0
+2026-09-18,granica_bypl,40,8,6,5,0,0,3,1,32,0,0
+2026-09-18,granica_es,40,12,9,9,0,0,5,2,28,0,0
+2026-09-18,travelersminsk,60,22,14,14,0,0,3,6,38,0,0
