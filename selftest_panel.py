@@ -252,6 +252,9 @@ async def main() -> None:
     checks.append(("у молчащего аккаунта видны FloodWait и последняя ошибка",
                    "FloodWait" in second_block and "последняя ошибка" in second_block,
                    second_block.strip().splitlines()[-1][:70]))
+    checks.append(("FloodWait в строке ошибок не дублируется (шаблон §14.5)",
+                   second_block.count("FloodWait") == 1,
+                   second_block.strip().splitlines()[-1][:70]))
     checks.append(("окно живости = min(3× интервал пульса, --alert-silent)",
                    panel.alive_window_minutes == 30.0,
                    f"3×15=45, alert-silent=30 -> {panel.alive_window_minutes}"))

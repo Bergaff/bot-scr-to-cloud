@@ -791,21 +791,41 @@ class BotPanel:
         return f"   последний пульс {when} ({ago_text(age)}) · сессия {session}"
 
     def _account_error_line(self, state: dict) -> str:
+        """Строка об ошибках аккаунта — по шаблону §14.5.
+
+        FloodWait не дублируется: если последняя ошибка и есть FloodWait, показываем её
+        в виде «последняя ошибка 20:41 · FloodWait (до 21:10)». «Всего за сутки» добавляется
+        только когда ошибок больше одной, чтобы не шуметь.
+        """
         errors = state["errors_today"]
         flood = state["flood"]
         last = state["last_error"] or {}
         if not errors and not flood.get("ts"):
             return "   ошибок за сутки 0"
+
+        flood_note = ""
+        if flood.get("ts"):
+            detail = (flood.get("detail") or "").strip()
+            flood_note = f"FloodWait ({detail})" if detail else "FloodWait"
+
         pieces = []
         if last.get("ts"):
-            piece = f"последняя ошибка {local_time(last['ts'])} · {last.get('kind') or '?'}"
-            if last.get("text"):
-                piece += f": {str(last['text'])[:60]}"
-            pieces.append(piece)
-        if flood.get("ts"):
-            detail = flood.get("detail") or ""
-            pieces.append(f"FloodWait {local_time(flood['ts'])}" + (f" ({detail})" if detail else ""))
-        pieces.append(f"ошибок за сутки {errors}")
+            kind = str(last.get("kind") or "?")
+            if "FloodWait" in kind and flood_note:
+                pieces.append(f"последняя ошибка {local_time(last['ts'])} · {flood_note}")
+                flood_note = ""                 # уже показали — второй раз не повторяем
+            else:
+                piece = f"последняя ошибка {local_time(last['ts'])} · {kind}"
+                text = str(last.get("text") or "").strip()
+                if text:
+                    piece += f": {text[:60]}"
+                pieces.append(piece)
+        if flood_note:
+            pieces.append(f"{flood_note} {local_time(flood.get('ts'))}")
+        if errors > 1:
+            pieces.append(f"всего за сутки {errors}")
+        elif not pieces:
+            pieces.append(f"ошибок за сутки {errors}")
         return "   " + " · ".join(pieces)
 
     def cmd_stats(self, days: str = "") -> Answer:
@@ -1102,6 +1122,12 @@ class BotPanel:
         if not hour:                                  # один аккаунт без имени в старых базах
             read_hour, _found = self.store.pulse_progress(hours=1.0)
             hour = read_hour
+        if not hour:
+            # пульс только начал писаться (нужно два среза, чтобы посчитать разницу) —
+            # тогда берём последний сохранённый срез метрик, если он есть
+            rows = self.store.metrics_recent(hours=2)
+            if rows:
+                hour = int(rows[-1].get("msgs_last_hour") or 0)
         return total, hour
 
     def _last_event_line(self, prefix: str = "Последнее событие") -> str:

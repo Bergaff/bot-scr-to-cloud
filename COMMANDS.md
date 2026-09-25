@@ -314,7 +314,7 @@ sources:
 |---|---|
 | `python selftest.py` | быстрая самопроверка расчётов, без аккаунта и без сети |
 | `python selftest_monitor.py` | полная самопроверка (матчер, дедупликация, пересылка, фильтры, статистика, несколько аккаунтов) — 144 проверки |
-| `python selftest_panel.py` | самопроверка бот-панели и метрик (команды, живость аккаунтов, whitelist, идемпотентность, rate limit, алерты, миграция базы, ретеншн) — 81 проверка, без сети и без psutil |
+| `python selftest_panel.py` | самопроверка бот-панели и метрик (команды, живость аккаунтов, whitelist, идемпотентность, rate limit, алерты, миграция базы, ретеншн) — 82 проверки, без сети и без psutil |
 | `python login_qr.py --session second_session` | вход вторым аккаунтом по QR (то же, что `start.bat --login-qr --session second_session`); без `--session` берётся `monitor_session` |
 | `python login_qr.py --ascii-qr` | QR в виде текста в консоли (если картинка не открывается) |
 | `python scraper.py --mode history --channels @chan --limit 3000 --out out/raw.jsonl` | разовый сбор истории канала (отдельный инструмент, не мониторинг) |

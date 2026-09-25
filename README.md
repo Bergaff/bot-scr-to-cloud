@@ -342,7 +342,7 @@ telegram-scraper/
 ├── bot_panel.py         # бот-панель: команды /status /accounts /usage и алерты (Bot API, без Telethon)
 ├── metrics.py           # метрики расхода: память, CPU, аптайм и вердикт «A или B»
 ├── selftest_monitor.py  # офлайн-тесты всего конвейера (144 проверки, все PASS)
-├── selftest_panel.py    # офлайн-тесты бот-панели и метрик (81 проверка, без сети и без psutil)
+├── selftest_panel.py    # офлайн-тесты бот-панели и метрик (82 проверки, без сети и без psutil)
 ├── selftest.py          # офлайн-тесты scraper.py
 └── tests/               # размеченные корпуса для тюнинга правил
 ```
