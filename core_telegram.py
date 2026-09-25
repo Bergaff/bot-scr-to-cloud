@@ -63,6 +63,7 @@ class Paced:
 
     def __init__(self, base_delay: float = 2.0, jitter: float = 0.7):
         self.base, self.jitter, self._last = base_delay, jitter, 0.0
+        self.calls = 0          # сколько раз сходили в Telegram: метрика расхода (ТЗ §15.1)
 
     async def wait(self) -> None:
         gap = self.base + random.uniform(0, self.jitter)
@@ -71,6 +72,7 @@ class Paced:
         if elapsed < gap:
             await asyncio.sleep(gap - elapsed)
         self._last = loop.time()
+        self.calls += 1         # каждый вызов API проходит через тормоз, поэтому счёт здесь точен
 
 
 # Наблюдатели FloodWait: радар подключает сюда запись в базу, чтобы бот-панель показывала

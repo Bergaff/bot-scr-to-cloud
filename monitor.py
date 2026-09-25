@@ -1483,6 +1483,7 @@ class Monitor:
         while True:
             await asyncio.sleep(interval)
             print("[i] " + self.heartbeat_text(), file=sys.stderr)
+            self.flush_stats()      # счётчики — в базу: метрики и панель видят свежие цифры
             self.log_pulse()
 
     async def run(self) -> None:
@@ -1826,6 +1827,55 @@ def resolve_forward_settings(args, defaults: dict) -> dict:
     }
 
 
+def message_counters(store: "HitStore", accounts: list | None = None) -> tuple[int, int]:
+    """(прочитано всего, прочитано за последний час) — для метрик и бот-панели.
+
+    «Всего» берётся из таблицы stats (переживает перезапуски), «за час» — из разницы строк
+    пульса: радар пишет в пульс, сколько прочитал с прошлого раза.
+    """
+    total = store.scanned_total()
+    hour = 0
+    for account in accounts or []:
+        name = getattr(account, "name", None) or (account.get("name")
+                                                  if isinstance(account, dict) else None)
+        if name:
+            hour += store.pulse_progress(hours=1.0, account=name)[0]
+    if not hour:
+        hour = store.pulse_progress(hours=1.0)[0]
+    if not hour:
+        rows = store.metrics_recent(hours=2)
+        if rows:
+            hour = int(rows[-1].get("msgs_last_hour") or 0)
+    return total, hour
+
+
+def build_collector(args, store: "HitStore", accounts: list, mode: str, paced: Paced):
+    """Сборщик метрик расхода (ТЗ §15.2). None — если метрики выключены."""
+    interval = float(getattr(args, "metrics_interval", 0) or 0)
+    if interval <= 0:
+        return None
+    from metrics import MetricsCollector
+
+    return MetricsCollector(
+        store, db_path=args.db, mode=mode, accounts=len(accounts) or 1,
+        interval_minutes=interval, csv_path=getattr(args, "metrics_csv", "metrics.csv"),
+        paced=paced, msgs_provider=lambda: message_counters(store, accounts),
+    )
+
+
+def print_metrics(row: dict) -> None:
+    """Короткая строка о расходе в конце прогона — чтобы было видно даже без бота."""
+    import metrics as metrics_module
+
+    memory = f"{row.get('rss_mb'):g} МБ" if row.get("rss_mb") is not None else "н/д"
+    cpu = f"{row.get('cpu_percent'):g} %" if row.get("cpu_percent") is not None else "н/д"
+    text, reason = metrics_module.verdict(rss=row.get("rss_mb"), cpu=row.get("cpu_percent"))
+    print(f"[i] расход: память {memory}, процессор {cpu}, сообщений {row.get('msgs_total')}, "
+          f"API-вызовов {row.get('api_calls')}, база {row.get('db_mb')} МБ -> metrics.csv",
+          file=sys.stderr)
+    print(f"[i] вердикт по ресурсам: {text}" + (f" ({reason})" if reason else ""), file=sys.stderr)
+
+
 async def check_sessions(args, defaults: dict, store: "HitStore", api_id: int,
                          api_hash: str) -> int:
     """Живая проверка сессий: connect + get_me по каждому аккаунту (ТЗ §14.3).
@@ -1898,7 +1948,7 @@ def resolve_mode(args) -> str:
 
 
 def build_panel(args, store: "HitStore", accounts: list, buckets: dict, sources: list[Source],
-                mode: str, heartbeat_minutes: float):
+                mode: str, heartbeat_minutes: float, paced: Paced | None = None):
     """Бот-панель для живого режима (ТЗ §14.4, режим 1). None — если запускать нечего."""
     from bot_panel import AccountView, BotPanel
 
@@ -1906,7 +1956,8 @@ def build_panel(args, store: "HitStore", accounts: list, buckets: dict, sources:
     panel = BotPanel(store, accounts=views, titles=titles_by_key(sources), mode=mode,
                      heartbeat_minutes=heartbeat_minutes, alert_silent_minutes=args.alert_silent,
                      digest=(None if args.digest is None else args.digest == "on"),
-                     stats_file=args.stats_file, stats_days=args.stats_days, db_path=args.db)
+                     stats_file=args.stats_file, stats_days=args.stats_days, db_path=args.db,
+                     api_calls_counter=paced)          # счётчик API-вызовов для /usage
     ok, why = panel.ready()
     if not ok:
         print(f"[!] бот-панель не запущена: {why}", file=sys.stderr)
@@ -2171,9 +2222,12 @@ async def async_main(args) -> None:
         print(f"[i] порядок обхода случайный: начинаем с {sources[0].target} "
               f"(отключить: --order config)", file=sys.stderr)
 
+    collector = build_collector(args, store, accounts, panel_mode, paced)
+
     panel = None
     if args.bot_panel and not args.once:
-        panel = build_panel(args, store, accounts, buckets, sources, panel_mode, heartbeat_minutes)
+        panel = build_panel(args, store, accounts, buckets, sources, panel_mode,
+                            heartbeat_minutes, paced)
     elif args.bot_panel and args.once:
         print("[i] --bot-panel с --once не запускается: проход короткий, панель нужна в живом "
               "режиме. Для схемы B держи панель отдельным процессом: start.bat --panel-only",
@@ -2192,12 +2246,23 @@ async def async_main(args) -> None:
         for acc, client, monitor in runners:
             await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
             await monitor.catch_up(list(monitor.meta.values()))
+        run_read = sum(int(getattr(monitor, "counter", {}).get("scanned", 0) or 0)
+                       for _a, _c, monitor in runners)
+        for acc, client, monitor in runners:
+            monitor.flush_stats()                 # счётчики — в базу до среза метрик
+        if collector is not None:
+            # схема B: проход короткий, поэтому срез один — но именно он и показывает расход.
+            # «За час» здесь честно означает «за этот проход»: pulses в разовом режиме не пишутся.
+            collector.msgs_provider = lambda: (store.scanned_total(), run_read)
+            print_metrics(collector.write())
         for acc, client, monitor in runners:
             await client.disconnect()
     else:
         tasks = [monitor.run() for _, _, monitor in runners]
         if panel is not None:
             tasks.append(panel.run())     # панель живёт в том же процессе, но своей задачей
+        if collector is not None:
+            tasks.append(collector.loop())   # срезы ресурсов раз в --metrics-interval минут
         await asyncio.gather(*tasks)
     for _acc, _client, monitor in runners:
         monitor.flush_stats()
@@ -2353,6 +2418,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--check-sessions", action="store_true",
                     help="живая проверка сессий (get_me по каждому аккаунту) — ТОЛЬКО когда радар "
                          "остановлен: второй клиент на тот же .session отзывает ключ")
+    ap.add_argument("--metrics-interval", type=float, default=15.0, metavar="MIN",
+                    help="как часто писать срез ресурсов (память, CPU, нагрузка) в базу и раз в час "
+                         "в metrics.csv; 0 — выключить метрики (по умолчанию 15)")
+    ap.add_argument("--metrics-csv", default="metrics.csv",
+                    help="файл срезов ресурсов для Excel (по умолчанию metrics.csv рядом с проектом)")
     ap.add_argument("--mode", choices=["A", "B"], default=None,
                     help="схема работы для отчётов панели: A — постоянный слушатель, B — проходы по "
                          "расписанию (по умолчанию A, а с --once — B)")

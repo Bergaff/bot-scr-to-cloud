@@ -9,7 +9,11 @@ hits.log
 monitor.log
 state.json
 found.jsonl
+metrics.csv
 out/
 __pycache__/
 hits.txt
 hits-*.txt
+
+# временные файлы офлайн-тестов (базы, csv, логи прогонов)
+tests/_tmp*/

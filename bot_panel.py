@@ -932,14 +932,22 @@ class BotPanel:
         return Answer(self.usage_text(), heavy=True)
 
     def usage_text(self) -> str:
-        """Собирает /usage (ТЗ §15.4): живые метрики + строки из таблицы metrics, если они есть."""
+        """Собирает /usage (ТЗ §15.4): живой срез + сводка по строкам metrics за сутки.
+
+        Живые значения важны для «сейчас», суточные — для процессора и вердикта: именно они
+        отвечают на вопрос пользователя «насколько жрёт схема A».
+        """
         read_total, read_hour = self._messages_progress()
         stored = self.store.metrics_recent(hours=24)
+        daily = metrics_module.aggregate(stored)
         floods = len(self.store.heartbeats_since(hours=24, kind="flood"))
         session_errors = sum(self.store.errors_count(since_hours=24, kind=kind)
                              for kind in SESSION_FATAL_KINDS)
         errors_total = self.store.errors_count(since_hours=24)
-        api_calls = getattr(self.api_calls_counter, "value", 0) if self.api_calls_counter else 0
+
+        api_calls = self._api_calls()
+        if not api_calls and stored:
+            api_calls = max(int(row.get("api_calls") or 0) for row in stored)
 
         data = metrics_module.sample(
             msgs_total=read_total or self.store.scanned_total(),
@@ -955,25 +963,27 @@ class BotPanel:
         per_account = [(state["name"], state["forwarded_today"], state["max_per_day"])
                        for state in self.account_states()]
         _db_mb, wal_mb = metrics_module.db_size_mb(self.db_path) if self.db_path else (None, None)
-
-        if stored:
-            summary = metrics_module.aggregate(stored)
-            if summary.get("rss_avg") is not None and data.get("rss_mb") is None:
-                data["rss_mb"] = summary["rss_avg"]
-            if summary.get("cpu_avg") is not None and data.get("cpu_percent") is None:
-                data["cpu_percent"] = summary["cpu_avg"]
-            if summary.get("rss_peak") and not data.get("rss_peak_mb"):
-                data["rss_peak_mb"] = summary["rss_peak"]
-            day_label = (f"за сутки по {summary.get('samples', 0)} срезам")
-        else:
-            day_label = None
+        peak = metrics_module.peak_msgs_per_min(self.store)
 
         return metrics_module.format_usage(
-            data, floods=floods, errors=errors_total,
+            data, floods=floods, errors=errors_total, session_errors=session_errors,
             queue=self.store.deferred_count(), per_account=per_account,
+            peak_msgs_per_min=peak, daily=daily,
             project_mb=metrics_module.project_size_mb(Path(__file__).resolve().parent),
-            wal_mb=wal_mb, day_label=day_label, session_errors=session_errors,
+            wal_mb=wal_mb,
+            day_label=metrics_module.daily_label(stored) if stored else None,
         )
+
+    def _api_calls(self) -> int:
+        """Счётчик API-вызовов Telethon: живьём из Paced, в режиме --panel-only — из базы."""
+        counter = self.api_calls_counter
+        if counter is None:
+            return 0
+        for attribute in ("calls", "value"):
+            value = getattr(counter, attribute, None)
+            if value:
+                return int(value)
+        return 0
 
     def cmd_ping(self) -> Answer:
         """/ping: ответ «pong · 0.4 с». Замер делается в async-слое (ping_text),
