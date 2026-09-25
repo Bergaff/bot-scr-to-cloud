@@ -6,6 +6,7 @@ rem  Loads keys from .env, installs deps on first run, starts monitor.py
 rem
 rem  Examples:
 rem    start.bat                                    live mode, console + hits.log
+rem    start.bat --login                            wizard: api keys -> .env -> QR sign-in -> bot
 rem    start.bat --login-qr                         sign in by QR code (no SMS needed)
 rem    start.bat --doctor                           check environment
 rem    start.bat --once --catchup 20                one pass, then exit
@@ -51,6 +52,7 @@ if "%~1"=="--export" set "NEEDS_KEYS=0"
 if "%~1"=="--show-stats" set "NEEDS_KEYS=0"
 if "%~1"=="--stats-only" set "NEEDS_KEYS=0"
 if "%~1"=="--panel-only" set "NEEDS_KEYS=0"
+if "%~1"=="--login" set "NEEDS_KEYS=0"
 if "%~1"=="--help" set "NEEDS_KEYS=0"
 
 if "%NEEDS_KEYS%"=="1" (
@@ -67,11 +69,19 @@ if "%NEEDS_KEYS%"=="1" (
   )
 )
 
+rem --- login wizard: app keys -> .env -> QR login -> bot chat_id --------
+if "%~1"=="--login" (
+  %PY% login_wizard.py %*
+  pause
+  rem !errorlevel! (не %errorlevel%): внутри блока обычное раскрытие вернуло бы код ДО запуска
+  exit /b !errorlevel!
+)
+
 rem --- QR login (no SMS/code needed) -----------------------------------
 if "%~1"=="--login-qr" (
   %PY% login_qr.py %*
   pause
-  exit /b %errorlevel%
+  exit /b !errorlevel!
 )
 
 rem --- run ------------------------------------------------------------

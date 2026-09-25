@@ -151,7 +151,8 @@ async def main() -> int:
     load_dotenv()
     api_id, api_hash = os.getenv("TG_API_ID"), os.getenv("TG_API_HASH")
     if not api_id or not api_hash:
-        print("[!] Нет TG_API_ID / TG_API_HASH: заполни .env (см. START-HERE.md, шаг 4).", file=sys.stderr)
+        print("[!] Нет TG_API_ID / TG_API_HASH: запусти мастер start.bat --login "
+              "(он объяснит, где взять ключи, и запишет их в .env).", file=sys.stderr)
         return 1
 
     from telethon.errors import (AuthKeyDuplicatedError, AuthTokenExpiredError,

@@ -1685,7 +1685,7 @@ def doctor(verbose: bool = True) -> int:
 
     api_id, api_hash = os.getenv("TG_API_ID"), os.getenv("TG_API_HASH")
     if not api_id:
-        report("FAIL", "TG_API_ID не задан", "впиши в .env или выполни: set TG_API_ID=1234567 (cmd) / $env:TG_API_ID=\"1234567\" (PowerShell)")
+        report("FAIL", "TG_API_ID не задан", "запусти мастер: start.bat --login (спросит ключи и запишет в .env); либо впиши сам: set TG_API_ID=1234567 (cmd) / $env:TG_API_ID=\"1234567\" (PowerShell)")
         fails.append("TG_API_ID")
     elif not api_id.strip().isdigit() or len(api_id.strip()) < 5:
         report("FAIL", f"TG_API_ID выглядит обрезанным: {api_id!r}", "нужно полное число из my.telegram.org, например 1234567")
@@ -1694,7 +1694,7 @@ def doctor(verbose: bool = True) -> int:
         report("PASS", f"TG_API_ID задан ({api_id.strip()})")
 
     if not api_hash:
-        report("FAIL", "TG_API_HASH не задан", "впиши в .env или выполни: set TG_API_HASH=... (cmd) / $env:TG_API_HASH=\"...\" (PowerShell)")
+        report("FAIL", "TG_API_HASH не задан", "запусти мастер: start.bat --login (ключи берутся на my.telegram.org/auth?to=apps); либо впиши сам: set TG_API_HASH=... (cmd)")
         fails.append("TG_API_HASH")
     elif len(api_hash.strip()) != 32:
         report("FAIL", f"TG_API_HASH обрезан: {len(api_hash.strip())} символов вместо 32",
@@ -2083,7 +2083,9 @@ async def async_main(args) -> None:
         api_id = args.api_id or (int(os.getenv("TG_API_ID")) if os.getenv("TG_API_ID") else None)
         api_hash = args.api_hash or os.getenv("TG_API_HASH")
         if not api_id or not api_hash:
-            sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). Получить: my.telegram.org")
+            sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). "
+                 "Проще всего: start.bat --login — мастер спросит ключи и запишет их в .env. "
+                 "Ключи приложения берутся на https://my.telegram.org/auth?to=apps (название любое)")
         paced = Paced(args.delay)
         accounts = resolve_accounts(args, defaults)
         buckets = sources_for_account(sources, accounts)
@@ -2172,7 +2174,9 @@ async def async_main(args) -> None:
     api_id = args.api_id or (int(os.getenv("TG_API_ID")) if os.getenv("TG_API_ID") else None)
     api_hash = args.api_hash or os.getenv("TG_API_HASH")
     if not api_id or not api_hash:
-        sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). Получить: my.telegram.org")
+        sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). "
+                 "Проще всего: start.bat --login — мастер спросит ключи и запишет их в .env. "
+                 "Ключи приложения берутся на https://my.telegram.org/auth?to=apps (название любое)")
 
     if args.check_sessions:
         sys.exit(await check_sessions(args, defaults, store, api_id, api_hash))

@@ -23,25 +23,36 @@
 `https://t.me/+CmQyl50rf-NlODFi` — он читается глубже остальных).
 
 ```bash
-# 1. Один раз: окружение и ключи
+# 1. Один раз: окружение
 cd telegram-scraper
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-export TG_API_ID=1234567          # https://my.telegram.org -> API development tools
-export TG_API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# 2. Проверить, что правила и конвейер в порядке (без аккаунта, ~10 секунд)
+# 2. Один раз: ключи приложения и вход в аккаунт (мастер ведёт по шагам)
+./start.sh --login                # Windows: start.bat --login
+
+# 3. Проверить, что правила и конвейер в порядке (без аккаунта, ~10 секунд)
 python3 selftest_monitor.py
 
-# 3. Проверка окружения и ключей, затем тестовое уведомление
+# 4. Проверка окружения и ключей, затем тестовое уведомление
 python3 monitor.py --doctor
 python3 monitor.py --test-notify
 
-# 4. Боевой запуск: живьём, уведомления в консоль
+# 5. Боевой запуск: живьём, уведомления в консоль
 python3 monitor.py --notify console --catchup 50
 ```
 
-Первый запуск спросит телефон и код из Telegram (дальше — сессия `monitor_session.session`).
+Мастер `--login` спрашивает `api_id`/`api_hash`, сам создаёт `.env`, показывает QR-код для входа
+и определяет `chat_id` твоего бота. Ключи берутся за минуту на
+**https://my.telegram.org/auth?to=apps**: войти номером телефона, название приложения — **любое**,
+сохранить `App api_id` (число) и `App api_hash` (32 символа). Это ключи приложения, а не пароль
+от аккаунта — по ним Telethon (и Pyrogram) говорят Telegram, какое приложение стучится.
+Регистрируй приложение на свой аккаунт: «чужие» готовые ключи из интернета делят трафик со всеми,
+кто их использует, и аккаунт с них слетает заметно чаще.
+
+Ключи можно вписать и руками (`export TG_API_ID=…`, `TG_API_HASH=…` или файл `.env`) — тогда вход
+по QR отдельно: `./start.sh --login-qr`. После входа работает файл сессии `monitor_session.session`:
+телефон и код больше не нужны.
 
 Что происходит: читаются последние `catchup` сообщений каждого чата, дальше сообщения
 приходят пушем. Каждое совпадение: пишется в `hits.sqlite3`, печатается в консоль
@@ -280,7 +291,8 @@ sources:
 
 * без секции `accounts` всё работает как раньше — один аккаунт `main`;
 * без строки `account` источник берёт первый аккаунт;
-* вход вторым аккаунтом: `start.bat --login-qr --session second_session`;
+* вход вторым аккаунтом: `start.bat --login --session second_session` (мастер) или
+  `start.bat --login-qr --session second_session` (только QR);
 * только один аккаунт: `--account second`; проверка конфига — `--doctor` (покажет сессии и лимиты);
 * в логе, пульсе, уведомлениях и статистике появляется имя аккаунта; в отчёте — раздел
   «ПО АККАУНТАМ»;
@@ -356,8 +368,9 @@ telegram-scraper/
 ├── matcher.py           # правила поиска + разбор: почему совпало/не совпало
 ├── core_telegram.py     # тормоза, FloodWait, резолв целей, формат уведомлений
 ├── START-HERE.md        # пошаговая инструкция для новичка (начать отсюда)
-├── start.bat / start.sh # запуск в один клик: .env + зависимости + monitor.py (+ --login-qr)
+├── start.bat / start.sh # запуск в один клик: .env + зависимости + monitor.py (+ --login, --login-qr)
 ├── cloud_panel.bat / .sh# бот-панель на облачной базе: снимок hits.sqlite3 из R2 + --panel-only
+├── login_wizard.py      # мастер авторизации: api_id/api_hash -> .env -> вход по QR -> chat_id бота
 ├── login_qr.py          # вход по QR-коду: без SMS и кода из сообщения
 ├── .env.example         # образец файла с ключами (скопировать в .env)
 ├── sources.yaml         # твои чаты с профилями и порогами
@@ -372,6 +385,7 @@ telegram-scraper/
 ├── Dockerfile           # образ радара (python:3.12-slim, linux/amd64) для Cloudflare Containers
 ├── deploy/              # облачный слой: вход контейнера, клиент R2 (SigV4 на stdlib), офлайн-тесты
 ├── selftest_monitor.py  # офлайн-тесты всего конвейера (152 проверки, все PASS)
+├── selftest_login.py    # офлайн-тесты мастера авторизации (77 проверок, без сети и без аккаунта)
 ├── selftest_panel.py    # офлайн-тесты бот-панели (86 проверок, без сети и без бота)
 ├── selftest_metrics.py  # офлайн-тесты метрик расхода (65 проверок, без psutil и без сети)
 ├── deploy/selftest_cloud.py  # офлайн-тесты облачного слоя (86 проверок: R2, состояние, проход)

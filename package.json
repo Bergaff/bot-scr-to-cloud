@@ -10,7 +10,7 @@
 		"tail": "wrangler tail",
 		"containers": "wrangler containers list",
 		"secret:token": "wrangler secret put RADAR_TOKEN",
-		"test": "python3 selftest.py && python3 selftest_monitor.py && python3 selftest_panel.py && python3 selftest_metrics.py && python3 deploy/selftest_cloud.py"
+		"test": "python3 selftest.py && python3 selftest_login.py && python3 selftest_monitor.py && python3 selftest_panel.py && python3 selftest_metrics.py && python3 deploy/selftest_cloud.py"
 	},
 	"dependencies": {
 		"@cloudflare/containers": "^0.3.7"

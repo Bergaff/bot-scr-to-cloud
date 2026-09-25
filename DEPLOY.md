@@ -36,7 +36,7 @@ Worker. Почему R2: диск контейнера **эфемерен**, п�
 | Workers Paid ($5/мес) | Контейнеры доступны только на платном плане |
 | Node.js 18+ на своей машине | для `npx wrangler` (секреты, загрузка сессии, логи) |
 | Docker локально | **только** если деплоишь вручную; Workers Builds собирает образ сам |
-| `TG_API_ID`, `TG_API_HASH` | как и раньше: https://my.telegram.org → API development tools |
+| `TG_API_ID`, `TG_API_HASH` | ключи приложения: https://my.telegram.org/auth?to=apps → название **любое** → сохранить `App api_id` и `App api_hash`. Проще всего `start.bat --login` — мастер спросит их и впишет в `.env` сам |
 | Бот и свой chat_id | `@BotFather` и `@userinfobot` (см. шаг 8 в `START-HERE.md`) |
 
 Проверь, что Worker в дашборде называется **`bot-scr-to-cloud`** — ровно так стоит `name`
@@ -111,7 +111,8 @@ Variables & Secrets** (тип **Secret**).
 сделать на своей машине и положить в бакет:
 
 ```bat
-:: Windows: войти по QR (или коду) — как обычно
+:: Windows: мастер (ключи -> .env -> вход по QR) либо только вход, если ключи уже вписаны
+start.bat --login
 start.bat --login-qr
 ```
 
@@ -293,7 +294,9 @@ python3 deploy/selftest_cloud.py      # 86 проверок: подпись R2, 
 python3 selftest_monitor.py           # 152 проверки конвейера (включая пульс разового прохода)
 python3 selftest_panel.py             # 86 проверок бот-панели (включая живость в схеме B)
 python3 selftest_metrics.py           # 65 проверок метрик расхода
+python3 selftest_login.py             # 77 проверок мастера авторизации (--login)
 python3 selftest.py                   # 7 быстрых проверок расчётов
+npm test                              # то же самое одной командой (все 6 наборов, 473 проверки)
 ```
 
 `deploy/selftest_cloud.py` не выходит в интернет: R2 подменяется локальным сервером, который
