@@ -5,6 +5,8 @@
 #   ./start.sh --notify bot                 # живьём, уведомления ботом
 #   ./start.sh --once --catchup 30          # разовый проход (для cron)
 #   ./start.sh --login-qr                   # вход по QR-коду (без SMS)
+#   ./start.sh --bot-panel                  # живой режим + бот-панель (статус в Telegram)
+#   ./start.sh --panel-only                 # только панель: ключи аккаунта не нужны
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -30,7 +32,7 @@ fi
 # ключи не нужны для справки, экспорта и проверки уведомлений
 needs_keys=1
 for arg in "$@"; do
-  case "$arg" in -h|--help|--export|--test-notify|--doctor|--show-stats|--stats-only|--export=*|--test-notify=*) needs_keys=0 ;; esac
+  case "$arg" in -h|--help|--export|--test-notify|--doctor|--show-stats|--stats-only|--panel-only|--export=*|--test-notify=*) needs_keys=0 ;; esac
 done
 if [ "$needs_keys" = 1 ] && { [ -z "${TG_API_ID:-}" ] || [ -z "${TG_API_HASH:-}" ]; }; then
   echo "[!] TG_API_ID / TG_API_HASH не заданы: заполни .env или экспортируй переменные (см. START-HERE.md, шаг 4)" >&2

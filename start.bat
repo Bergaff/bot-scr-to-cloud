@@ -10,6 +10,8 @@ rem    start.bat --login-qr                         sign in by QR code (no SMS n
 rem    start.bat --doctor                           check environment
 rem    start.bat --once --catchup 20                one pass, then exit
 rem    start.bat --once --notify bot --no-pause     for Task Scheduler
+rem    start.bat --bot-panel                      live mode + bot panel (status in Telegram)
+rem    start.bat --panel-only                     bot panel only, no account keys needed
 rem =====================================================================
 chcp 65001 >nul 2>&1
 cd /d "%~dp0"
@@ -48,6 +50,7 @@ if "%~1"=="--test-notify" set "NEEDS_KEYS=0"
 if "%~1"=="--export" set "NEEDS_KEYS=0"
 if "%~1"=="--show-stats" set "NEEDS_KEYS=0"
 if "%~1"=="--stats-only" set "NEEDS_KEYS=0"
+if "%~1"=="--panel-only" set "NEEDS_KEYS=0"
 if "%~1"=="--help" set "NEEDS_KEYS=0"
 
 if "%NEEDS_KEYS%"=="1" (

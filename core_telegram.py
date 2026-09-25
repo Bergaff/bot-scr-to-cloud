@@ -73,6 +73,26 @@ class Paced:
         self._last = loop.time()
 
 
+# Наблюдатели FloodWait: радар подключает сюда запись в базу, чтобы бот-панель показывала
+# «ограничение до 22:10» (ТЗ §14.1). Хук не обязан быть: без него всё работает как раньше.
+FLOOD_HOOKS: list = []
+
+
+def add_flood_hook(hook) -> None:
+    """Подключает наблюдателя FloodWait: hook(label, seconds, wait_seconds)."""
+    if callable(hook) and hook not in FLOOD_HOOKS:
+        FLOOD_HOOKS.append(hook)
+
+
+def notify_flood(label: str, seconds: float, wait: float) -> None:
+    """Оповещает наблюдателей о FloodWait. Сбой наблюдателя не должен ронять вызов API."""
+    for hook in list(FLOOD_HOOKS):
+        try:
+            hook(label, seconds, wait)
+        except Exception:                   # noqa: BLE001
+            pass
+
+
 async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
     """Вызов API: при FloodWait спим ровно столько, сколько просит Telegram, плюс буфер."""
     from telethon.errors import FloodWaitError, RPCError  # ленивый импорт
@@ -84,6 +104,7 @@ async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
         except FloodWaitError as exc:
             wait = exc.seconds * 1.2 + 5
             print(f"[flood] {label}: ждём {wait:.0f} с (Telegram просит {exc.seconds} с)", file=sys.stderr)
+            notify_flood(label, exc.seconds, wait)     # бот-панель увидит ограничение (ТЗ §7.3)
             await asyncio.sleep(wait)
             paced.base = min(paced.base * 1.5, 30)
         except RPCError as exc:
