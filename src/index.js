@@ -111,6 +111,7 @@ async function proxy(env, path) {
 		headers: authHeaders(env),
 	});
 	const types = {
+		'/check': 'application/json; charset=utf-8',
 		'/status': 'application/json; charset=utf-8',
 		'/metrics.csv': 'text/csv; charset=utf-8',
 	};
@@ -131,6 +132,7 @@ const HELP = `Telegram-радар (схема B: проход по распис�
 Состояние (.session и hits.sqlite3) хранится в R2 — диск контейнера эфемерен.
 
 С токеном (?token=<RADAR_TOKEN> или заголовок x-radar-token):
+  GET  /check       — готов ли радар: секреты, доступ к R2, наличие .session (проход НЕ запускает)
   POST /run         — проход вне очереди
   GET  /status      — итог последнего прохода (JSON)
   GET  /usage       — расход и вердикт «A подходит / рекомендую B»
@@ -140,7 +142,7 @@ const HELP = `Telegram-радар (схема B: проход по распис�
 Без токена отвечает только /healthz.
 `;
 
-const PROTECTED = ['/run', '/status', '/usage', '/metrics.csv', '/log', '/restart'];
+const PROTECTED = ['/check', '/run', '/status', '/usage', '/metrics.csv', '/log', '/restart'];
 
 export default {
 	/** Cron: wall-clock до 15 минут, поэтому дожидаемся прохода целиком и пишем итог в лог. */

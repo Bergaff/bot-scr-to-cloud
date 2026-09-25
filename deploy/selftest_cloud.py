@@ -135,6 +135,10 @@ class FakeS3(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:                             # noqa: N802
         self._record()
+        broken = self._verify(b"")        # настоящий R2 проверяет подпись и на HEAD
+        if broken:
+            self._send(403, b"<Error><Code>SignatureDoesNotMatch</Code></Error>")
+            return
         if self._key() not in OBJECTS:
             self._send(404)
             return
@@ -455,6 +459,13 @@ async def main() -> None:
         status, body = http_call(f"{base}/metrics.csv", token=served_token)
         checks.append(("/metrics.csv — либо файл, либо честное 404 «нужен хотя бы один проход»",
                        status in (200, 404) and (status == 404 or "ts,rss_mb" in body), str(status)))
+        status, body = http_call(f"{base}/check")
+        checks.append(("/check без пароля — 403 (как и остальные данные)", status == 403, str(status)))
+        status, body = http_call(f"{base}/check", token=served_token)
+        report = json.loads(body) if body.startswith("{") else {}
+        checks.append(("/check отвечает JSON-отчётом: 200 — готов, 409 — есть что исправить",
+                       status in (200, 409) and "problems" in report and "r2" in report
+                       and "sessions" in report, f"HTTP {status}"))
         status, body = http_call(f"{base}/{urllib.parse.quote('нет-такого')}", token=served_token)
         checks.append(("неизвестный путь — 404 со справкой", status == 404 and "нет такого пути" in body,
                        str(status)))
@@ -490,6 +501,67 @@ async def main() -> None:
     finally:
         open_server.shutdown()
         open_server.server_close()
+
+    # ---------- готовность без прохода: первый деплой упирается именно в эти три вещи
+    good_env = {"TG_API_ID": "1234567", "TG_API_HASH": "0" * 32,
+                "TG_BOT_TOKEN": "1234567890:AAH-test-token-abcdefghij",
+                "TG_NOTIFY_CHAT": "999888777"}
+    ready = cloud_entry.RadarRunner(workdir=bare, client=client, runner=fake_run,
+                                    sessions=("monitor_session",), log=quiet)
+    report = ready.preflight(env=good_env)
+    checks.append(("preflight: всё настроено — ok, проблем нет, следующий шаг POST /run",
+                   report["ok"] is True and report["problems"] == []
+                   and report["next"] == "POST /run", str(report["problems"])[:110]))
+    checks.append(("preflight видит сессию и бакет в R2 (и размер, чтобы отличить пустой файл)",
+                   str(report["r2"]["objects"].get("sessions/monitor_session.session", ""))
+                   .startswith("есть (") and report["r2"]["bucket"] == BUCKET,
+                   str(report["r2"]["objects"])[:110]))
+
+    ghost = cloud_entry.RadarRunner(workdir=bare, client=client, runner=fake_run,
+                                    sessions=("ghost_session",), log=quiet)
+    problem = " ".join(ghost.preflight(env=good_env)["problems"])
+    checks.append(("preflight: нет сессии в R2 — готова команда загрузки (не «где-то ошибка»)",
+                  "wrangler r2 object put" in problem and "sessions/ghost_session.session" in problem,
+                  problem[:110]))
+
+    wrong = R2Client(BUCKET, "WRONG-ACCESS-KEY", "WRONG-SECRET-KEY", endpoint=endpoint)
+    broken = cloud_entry.RadarRunner(workdir=bare, client=wrong, runner=fake_run,
+                                     sessions=("monitor_session",), log=quiet)
+    problem = " ".join(broken.preflight(env=good_env)["problems"])
+    checks.append(("preflight: неверные ключи R2 видны за секунду, а не после прохода",
+                  "R2 отказал" in problem and "R2_ACCESS_KEY_ID" in problem, problem[:110]))
+
+    no_r2 = cloud_entry.RadarRunner(workdir=bare, client=None, runner=fake_run,
+                                    sessions=("monitor_session",), log=quiet)
+    problem = " ".join(no_r2.preflight(env=good_env)["problems"])
+    checks.append(("preflight: R2 не настроен — перечислены нужные переменные",
+                  "R2_ACCOUNT_ID" in problem and "R2_ACCESS_KEY_ID" in problem, problem[:110]))
+
+    problem = " ".join(ready.preflight(env=dict(good_env, TG_API_ID="", TG_API_HASH=""))["problems"])
+    checks.append(("preflight: нет ключей приложения — подсказка wrangler secret put",
+                  "wrangler secret put TG_API_ID" in problem
+                  and "wrangler secret put TG_API_HASH" in problem, problem[:110]))
+
+    problem = " ".join(ready.preflight(env=dict(good_env, TG_BOT_TOKEN="", TG_NOTIFY_CHAT=""))
+                       ["problems"])
+    checks.append(("preflight: «--notify bot» без токена бота виден заранее",
+                  "TG_BOT_TOKEN" in problem and "TG_NOTIFY_CHAT" in problem, problem[:110]))
+    console_runner = cloud_entry.RadarRunner(workdir=bare, client=client, runner=fake_run,
+                                             args="--once --catchup 0 --notify console --mode B",
+                                             sessions=("monitor_session",), log=quiet)
+    report = console_runner.preflight(env=dict(good_env, TG_BOT_TOKEN="", TG_NOTIFY_CHAT=""))
+    checks.append(("preflight: без «--notify bot» токен бота не требуется (ложных тревог нет)",
+                  report["ok"] is True, str(report["problems"])[:110]))
+
+    before = len(REQUESTS)
+    ready.preflight(env=good_env)
+    added = REQUESTS[before:]
+    checks.append(("preflight делает только HEAD: ни прохода, ни скачивания состояния",
+                  bool(added) and all(request["method"] == "HEAD" for request in added),
+                  ",".join(sorted({request["method"] for request in added})) or "запросов нет"))
+    checks.append(("/check заявлен в справке контейнера и в списке эндпоинтов /status",
+                  "/check" in cloud_entry.INDEX_TEXT
+                  and "/check" in ready.status()["endpoints"], ""))
 
     # -------------------------------------------- 8. конфиг деплоя
     section("8. Конфиг деплоя")
@@ -536,6 +608,8 @@ async def main() -> None:
                    "deploy/cloud_entry.py" in worker, "ok"))
     checks.append(("/restart есть: после смены секретов контейнер надо пересоздать",
                    "'/restart'" in worker and "container.stop()" in worker, "ok"))
+    checks.append(("/check проксируется Worker'ом и закрыт токеном (как остальные данные)",
+                  "'/check'" in worker and "'/check': 'application/json" in worker, "ok"))
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     checks.append(("Dockerfile ставит зависимости из requirements.txt и запускает cloud_entry",

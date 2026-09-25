@@ -46,8 +46,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from r2_state import (R2Client, checkpoint_db, missing_sessions, restore_state,  # noqa: E402
-                      save_state)
+from r2_state import (KEY_DB, R2Client, R2Error, checkpoint_db,  # noqa: E402
+                      missing_sessions, restore_state, save_state, session_key)
 
 DEFAULT_ARGS = "--once --catchup 0 --notify bot --mode B"
 DEFAULT_PORT = 8080
@@ -139,7 +139,7 @@ class RadarRunner:
             return {
                 "ok": False, "restored": restored, "seconds": round(time.time() - started, 1),
                 "error": f"нет файла сессии: {names}",
-                "hint": ("Войди в Telegram на своей машине (start.bat --login-qr) и загрузи файл "
+                "hint": ("Войди в Telegram на своей машине (start.bat --login) и загрузи файл "
                          "в R2, например:\n  npx wrangler r2 object put "
                          f"<бакет>/sessions/{missing[0]}.session --file {missing[0]}.session "
                          "--remote\nБез сессии радар начал бы спрашивать телефон и код, а ввода "
@@ -223,8 +223,99 @@ class RadarRunner:
             "db_mb": size_mb,
             "args": self.args,
             "last_run": self.last,
-            "endpoints": ["/run (POST)", "/status", "/usage", "/metrics.csv", "/log", "/healthz"],
+            "endpoints": ["/check", "/run (POST)", "/status", "/usage", "/metrics.csv", "/log",
+                          "/healthz"],
         }
+
+    # --- проверка готовности без прохода
+
+    def preflight(self, env: dict | None = None) -> dict:
+        """Готов ли радар к проходу: секреты, доступ к R2, наличие сессии. БЕЗ запуска радара.
+
+        Первый деплой почти всегда упирается в одно из трёх: не задан секрет, опечатка в ключе
+        R2 или не загружена `.session`. Проход длится минуты и стоит денег, а ответ нужен сразу,
+        поэтому проверка делается одним HEAD-запросом: GET /check.
+        """
+        env = os.environ if env is None else env
+        problems: list[str] = []
+
+        for name in ("TG_API_ID", "TG_API_HASH"):
+            if not (env.get(name) or "").strip():
+                problems.append(f"не задан секрет {name} (без него Telethon не подключится к "
+                                f"Telegram): npx wrangler secret put {name}")
+
+        tokens = shlex.split(self.args)
+        if "bot" in tokens or "both" in tokens:
+            for name in ("TG_BOT_TOKEN", "TG_NOTIFY_CHAT"):
+                if not (env.get(name) or "").strip():
+                    problems.append(f"в RADAR_ARGS есть «--notify bot», но не задан секрет {name}: "
+                                    f"npx wrangler secret put {name}")
+
+        if self.client is None:
+            problems.append("R2 не настроен: нужны R2_BUCKET, R2_ACCESS_KEY_ID, "
+                            "R2_SECRET_ACCESS_KEY и R2_ACCOUNT_ID. Без R2 состояние пропадает "
+                            "после сна контейнера (диск эфемерен), а сессия не скачается вовсе")
+            r2: dict = {"ok": False, "bucket": "", "endpoint": "", "objects": {}}
+        else:
+            r2 = self._check_r2(self.sessions)
+            problems.extend(r2.pop("problems"))
+
+        ok = not problems
+        return {
+            "ok": ok,
+            "verdict": ("радар готов к проходу" if ok
+                        else "проход не запустится — сначала исправь пункты в «problems»"),
+            "problems": problems,
+            "r2": r2,
+            "sessions": list(self.sessions),
+            "sessions_on_disk": {name: ("есть" if (self.workdir / f"{name}.session").exists()
+                                        else "нет") for name in self.sessions},
+            "workdir": str(self.workdir),
+            "args": self.args,
+            "timeout_seconds": self.timeout,
+            "next": "POST /run" if ok else problems[0],
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _check_r2(self, sessions: tuple[str, ...]) -> dict:
+        """HEAD-запросы к R2: доступ к бакету и наличие сессии. Ничего не скачивает."""
+        from urllib.error import URLError                        # noqa: PLC0415
+
+        out: dict = {"bucket": self.client.bucket, "endpoint": self.client.endpoint,
+                     "objects": {}, "problems": []}
+        try:
+            meta = self.client.head_object(KEY_DB)
+            out["objects"][KEY_DB] = ("есть" if meta else
+                                      "нет — нормально до первого прохода")
+        except R2Error as exc:
+            out["problems"].append(f"R2 отказал на проверке базы: {exc}")
+        except (URLError, OSError) as exc:
+            out["problems"].append(
+                f"R2 недоступен ({type(exc).__name__}: {exc}). Чаще всего дело в R2_ACCOUNT_ID: "
+                "по нему строится адрес https://<account_id>.r2.cloudflarestorage.com")
+
+        for name in sessions:
+            key = session_key(name)
+            try:
+                meta = self.client.head_object(key)
+            except R2Error as exc:
+                out["problems"].append(f"не удалось проверить {key}: {exc}")
+                out["objects"][key] = "ошибка проверки"
+                continue
+            except (URLError, OSError) as exc:
+                out["problems"].append(f"не удалось проверить {key}: {type(exc).__name__} {exc}")
+                out["objects"][key] = "ошибка проверки"
+                continue
+            if meta is None:
+                out["objects"][key] = "НЕТ"
+                out["problems"].append(
+                    f"нет файла сессии в R2 ({key}). Войди в Telegram на своей машине "
+                    f"(start.bat --login) и загрузи файл: npx wrangler r2 object put "
+                    f"{self.client.bucket}/{key} --file {name}.session --remote")
+            else:
+                size = meta.get("content-length") or "?"
+                out["objects"][key] = f"есть ({size} байт)"
+        return out
 
 
 def summarize(text: str, limit: int = 14) -> list[str]:
@@ -301,6 +392,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status":
             self._send(200, json.dumps(self.runner.status(), ensure_ascii=False, indent=2),
                        "application/json; charset=utf-8")
+        elif path == "/check":
+            report = self.runner.preflight()
+            # 200 — готов к проходу, 409 — есть что исправить (удобно проверять из скрипта)
+            self._send(200 if report.get("ok") else 409,
+                       json.dumps(report, ensure_ascii=False, indent=2),
+                       "application/json; charset=utf-8")
         elif path == "/usage":
             self._send(200, self.runner.usage_text() + "\n")
         elif path == "/metrics.csv":
@@ -341,6 +438,7 @@ INDEX_TEXT = """Telegram-радар в Cloudflare Containers (схема B: пр
 Состояние (.session и hits.sqlite3) живёт в R2: диск контейнера эфемерен.
 
 Проверка и управление (нужен ?token=<RADAR_TOKEN>):
+  GET  /check       — готов ли радар: секреты, доступ к R2, наличие .session (проход НЕ запускает)
   POST /run         — проход вне очереди
   GET  /status      — итог последнего прохода
   GET  /usage       — расход и вердикт «A подходит / рекомендую B»
