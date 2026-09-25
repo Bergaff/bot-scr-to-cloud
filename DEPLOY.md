@@ -29,6 +29,38 @@ Worker. Почему R2: диск контейнера **эфемерен**, п�
 
 ---
 
+## Чек-лист первого деплоя (можно отмечать)
+
+```
+[ ] 1. Node.js 18+ стоит:            node --version
+[ ] 2. wrangler залогинен:           npx wrangler login
+[ ] 3. Worker существует и имя = bot-scr-to-cloud:   npx wrangler secret list
+[ ] 4. Бакет R2 radar-state создан
+[ ] 5. API-токен R2 создан (Object Read & Write, только этот бакет),
+       Access Key ID и Secret Access Key сохранены
+[ ] 6. Введены 8 секретов:           npx wrangler secret put <ИМЯ>   ×8
+       TG_API_ID, TG_API_HASH, TG_BOT_TOKEN, TG_NOTIFY_CHAT,
+       R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, RADAR_TOKEN
+[ ] 7. Список секретов виден:        npx wrangler secret list --format pretty
+[ ] 8. Сессия создана локально:      start.bat --login
+[ ] 9. Сессия загружена в R2:        npx wrangler r2 object put ^
+       radar-state/sessions/monitor_session.session ^
+       --file monitor_session.session --remote
+[ ] 10. Builds: production branch = arena/01a0d4d8-bot-scr-to-cloud,
+        build «npm install», deploy «npx wrangler deploy»
+[ ] 11. Деплой прошёл (вкладка Builds — Success)
+[ ] 12. GET /healthz -> 204
+[ ] 13. GET /check?token=… -> 200 и "ok": true
+[ ] 14. POST /run?token=… -> "ok": true, "exit_code": 0
+[ ] 15. В Telegram пришли находки / ответ бота на /status
+[ ] 16. cron виден в Settings -> Triggers (*/10 * * * *)
+```
+
+Пункт 13 — самый полезный: `/check` за долю секунды перечислит, чего не хватает
+(секрет, права R2 или сессия), и даст готовую команду. Проход при этом не запускается.
+
+---
+
 ## Шаг 0. Что нужно до начала
 
 | Нужно | Зачем |
