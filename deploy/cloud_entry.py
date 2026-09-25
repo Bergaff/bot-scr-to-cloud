@@ -239,10 +239,38 @@ class RadarRunner:
         env = os.environ if env is None else env
         problems: list[str] = []
 
-        for name in ("TG_API_ID", "TG_API_HASH"):
-            if not (env.get(name) or "").strip():
-                problems.append(f"не задан секрет {name} (без него Telethon не подключится к "
-                                f"Telegram): npx wrangler secret put {name}")
+        # Ключи приложения — ОДНА пара на любое число аккаунтов: это ключи приложения из
+        # my.telegram.org, а не аккаунта, и monitor.py передаёт их каждому клиенту как есть
+        # (int(TG_API_ID) и ровно 32 символа в TG_API_HASH). Список значений через запятую
+        # падает в самом начале прохода — то есть после минут работы и денег, поэтому ловим
+        # его здесь. Через запятую перечисляются только сессии: TG_SESSION/RADAR_SESSIONS.
+        shared_hint = ("ключи приложения общие для всех аккаунтов, значение одно; аккаунты "
+                       "перечисляются через запятую в TG_SESSION/RADAR_SESSIONS и в accounts: "
+                       "в sources.yaml")
+        api_id = (env.get("TG_API_ID") or "").strip()
+        if not api_id:
+            problems.append("не задан секрет TG_API_ID (без него Telethon не подключится к "
+                            "Telegram): npx wrangler secret put TG_API_ID")
+        elif any(sep in api_id for sep in ",; \n"):
+            problems.append(f"TG_API_ID = {api_id!r} — похоже на несколько значений сразу: "
+                            f"{shared_hint}. Нужно одно число (App api_id): "
+                            f"npx wrangler secret put TG_API_ID")
+        elif not api_id.isdigit():
+            problems.append(f"TG_API_ID = {api_id!r} — не число: нужен App api_id из "
+                            f"my.telegram.org → npx wrangler secret put TG_API_ID")
+
+        api_hash = (env.get("TG_API_HASH") or "").strip()
+        if not api_hash:
+            problems.append("не задан секрет TG_API_HASH (без него Telethon не подключится к "
+                            "Telegram): npx wrangler secret put TG_API_HASH")
+        elif any(sep in api_hash for sep in ",; \n"):
+            problems.append(f"TG_API_HASH = {api_hash!r} — похоже на несколько значений сразу: "
+                            f"{shared_hint}. Нужен один App api_hash: "
+                            f"npx wrangler secret put TG_API_HASH")
+        elif len(api_hash) != 32:
+            problems.append(f"TG_API_HASH = {len(api_hash)} символов вместо 32: скопируй App "
+                            f"api_hash целиком из my.telegram.org → "
+                            f"npx wrangler secret put TG_API_HASH")
 
         tokens = shlex.split(self.args)
         if "bot" in tokens or "both" in tokens:

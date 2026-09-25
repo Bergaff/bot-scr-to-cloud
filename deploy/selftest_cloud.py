@@ -553,6 +553,31 @@ async def main() -> None:
                   "wrangler secret put TG_API_ID" in problem
                   and "wrangler secret put TG_API_HASH" in problem, problem[:110]))
 
+    # ключи приложения — одна пара на все аккаунты: список значений через запятую означает,
+    # что человек перепутал TG_API_ID с TG_SESSION. Проход на таких ключах падает сразу, но
+    # уже после запуска контейнера, поэтому диагноз обязан быть в /check.
+    problem = " ".join(ready.preflight(
+        env=dict(good_env, TG_API_ID="1234567,7654321", TG_API_HASH="0" * 32 + ",1" * 32)
+    )["problems"])
+    checks.append(("preflight: ключи списком через запятую видны до прохода, а не после",
+                  not ready.preflight(env=dict(good_env, TG_API_ID="1234567,7654321"))["ok"]
+                  and "общие для всех аккаунтов" in problem and "TG_SESSION" in problem
+                  and "wrangler secret put TG_API_ID" in problem
+                  and "wrangler secret put TG_API_HASH" in problem, problem[:150] or "нет проблемы"))
+    problem = " ".join(ready.preflight(env=dict(good_env, TG_API_HASH="0" * 16))["problems"])
+    checks.append(("preflight: обрезанный TG_API_HASH назван по длине (16 вместо 32)",
+                  "16 символов вместо 32" in problem
+                  and "wrangler secret put TG_API_HASH" in problem, problem[:150] or "нет проблемы"))
+    problem = " ".join(ready.preflight(env=dict(good_env, TG_API_ID="1234567x"))["problems"])
+    checks.append(("preflight: TG_API_ID не числом — тоже подсказка, а не молчаливое «готов»",
+                  "не число" in problem and "my.telegram.org" in problem
+                  and "wrangler secret put TG_API_ID" in problem, problem[:150] or "нет проблемы"))
+    checks.append(("preflight: правильная пара ключей проблем не добавляет (ложных тревог нет)",
+                  ready.preflight(env=good_env)["ok"], "ok"))
+    checks.append(("локальный --doctor объясняет ту же путаницу: ключи общие, список — это сессии",
+                  "содержит несколько значений" in repo_text("monitor.py")
+                  and "общие для всех аккаунтов" in repo_text("monitor.py"), "ok"))
+
     problem = " ".join(ready.preflight(env=dict(good_env, TG_BOT_TOKEN="", TG_NOTIFY_CHAT=""))
                        ["problems"])
     checks.append(("preflight: «--notify bot» без токена бота виден заранее",
@@ -582,7 +607,7 @@ async def main() -> None:
     # не попадал, и проверка «файл с секретами в .gitignore» роняла сборку с FileNotFoundError.
     # Список ниже — явный договор: всё перечисленное обязано дойти до контейнера.
     read_by_selftest = [".dockerignore", ".gitignore", "DEPLOY.md", "Dockerfile", "wrangler.jsonc",
-                        "src/index.js", "cloud_panel.bat", "cloud_panel.sh",
+                        "src/index.js", "cloud_panel.bat", "cloud_panel.sh", "monitor.py",
                         "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/secrets.example.env"]
     absent = [name for name in read_by_selftest if not (ROOT / name).exists()]
     checks.append(("всё, что читает самопроверка, дошло до контекста сборки (не вырезано)",

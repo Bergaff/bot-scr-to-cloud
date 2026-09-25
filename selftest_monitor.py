@@ -1396,6 +1396,12 @@ async def main() -> None:
     checks.append(("доктор показывает аккаунты и файлы сессий",
                    "аккаунты:" in doctor_src and "файла нет, потребуется вход" in doctor_src,
                    "секция в --doctor"))
+    # несколько аккаунтов = несколько сессий, но ОДНА пара ключей приложения: частая ошибка —
+    # вписать в TG_API_ID/TG_API_HASH значения через запятую, по аккаунту на каждое
+    checks.append(("доктор отличает «несколько значений через запятую» от «обрезано»",
+                   doctor_src.count("содержит несколько значений") == 2
+                   and "общие для всех аккаунтов" in doctor_src,
+                   "ветки для TG_API_ID и TG_API_HASH"))
     order_check = order_sources(split_sources, "random")
     checks.append(("случайный порядок работает и с несколькими аккаунтами",
                    sorted(x.target for x in order_check) == sorted(x.target for x in split_sources),

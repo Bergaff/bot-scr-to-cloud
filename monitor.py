@@ -1687,6 +1687,9 @@ def doctor(verbose: bool = True) -> int:
     if not api_id:
         report("FAIL", "TG_API_ID не задан", "запусти мастер: start.bat --login (спросит ключи и запишет в .env); либо впиши сам: set TG_API_ID=1234567 (cmd) / $env:TG_API_ID=\"1234567\" (PowerShell)")
         fails.append("TG_API_ID")
+    elif any(sep in api_id for sep in ",;"):
+        report("FAIL", f"TG_API_ID содержит несколько значений: {api_id!r}", "ключи приложения общие для всех аккаунтов — значение одно (App api_id). Аккаунты перечисляются через запятую в TG_SESSION и в accounts: в sources.yaml")
+        fails.append("TG_API_ID")
     elif not api_id.strip().isdigit() or len(api_id.strip()) < 5:
         report("FAIL", f"TG_API_ID выглядит обрезанным: {api_id!r}", "нужно полное число из my.telegram.org, например 1234567")
         fails.append("TG_API_ID")
@@ -1695,6 +1698,9 @@ def doctor(verbose: bool = True) -> int:
 
     if not api_hash:
         report("FAIL", "TG_API_HASH не задан", "запусти мастер: start.bat --login (ключи берутся на my.telegram.org/auth?to=apps); либо впиши сам: set TG_API_HASH=... (cmd)")
+        fails.append("TG_API_HASH")
+    elif any(sep in api_hash for sep in ",;"):
+        report("FAIL", f"TG_API_HASH содержит несколько значений: {api_hash!r}", "ключи приложения общие для всех аккаунтов — значение одно (App api_hash, 32 символа). Через запятую перечисляются сессии в TG_SESSION, а не ключи")
         fails.append("TG_API_HASH")
     elif len(api_hash.strip()) != 32:
         report("FAIL", f"TG_API_HASH обрезан: {len(api_hash.strip())} символов вместо 32",
