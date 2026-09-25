@@ -42,6 +42,17 @@ from r2_state import (EMPTY_SHA256, KEY_DB, KEY_LOG, KEY_METRICS, R2Client, R2Er
                       save_state, session_key, signed_headers, signing_key, uri_encode)
 
 WORKDIR = ROOT / "tests" / f"_tmp_cloud_{os.getpid()}"
+
+
+def repo_text(*parts: str) -> str:
+    """Текст файла репозитория; пустая строка, если файла нет.
+
+    Эта самопроверка запускается не только локально, но и при сборке образа (RUN в Dockerfile),
+    где часть файлов вырезана .dockerignore. Пустая строка вместо FileNotFoundError означает,
+    что пропавший файл даёт внятный FAIL конкретной проверки, а не трейсбек и падение сборки.
+    """
+    path = ROOT.joinpath(*parts)
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 ACCESS_KEY = "test-access-key-id"
 SECRET_KEY = "test-secret-access-key"
 BUCKET = "radar-state"
@@ -565,9 +576,22 @@ async def main() -> None:
 
     # -------------------------------------------- 8. конфиг деплоя
     section("8. Конфиг деплоя")
-    config_text = (ROOT / "wrangler.jsonc").read_text(encoding="utf-8")
+
+    # Самопроверка читает файлы репозитория, а запускается ещё и внутри сборки образа, где
+    # .dockerignore часть из них вырезает. На этом уже падал реальный деплой: .gitignore в образ
+    # не попадал, и проверка «файл с секретами в .gitignore» роняла сборку с FileNotFoundError.
+    # Список ниже — явный договор: всё перечисленное обязано дойти до контейнера.
+    read_by_selftest = [".dockerignore", ".gitignore", "DEPLOY.md", "Dockerfile", "wrangler.jsonc",
+                        "src/index.js", "cloud_panel.bat", "cloud_panel.sh",
+                        "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/secrets.example.env"]
+    absent = [name for name in read_by_selftest if not (ROOT / name).exists()]
+    checks.append(("всё, что читает самопроверка, дошло до контекста сборки (не вырезано)",
+                   not absent,
+                   (", ".join(absent) + " — вырезан .dockerignore, нужно исключение !имя") if absent else "ok"))
+
+    config_text = repo_text("wrangler.jsonc")
     plain = re.sub(r"^\s*//.*$", "", config_text, flags=re.MULTILINE)
-    config = json.loads(plain)
+    config = json.loads(plain) if plain.strip() else {}
     checks.append(("wrangler.jsonc парсится (комментарии не ломают JSON)",
                    config.get("name") == "bot-scr-to-cloud" and config.get("main") == "src/index.js",
                    config.get("name", "?")))
@@ -592,7 +616,7 @@ async def main() -> None:
     checks.append(("секретов в wrangler.jsonc нет — только несекретные vars",
                    not any(f'"{name}"' in plain for name in secrets), ", ".join(secrets)))
 
-    worker = (ROOT / "src" / "index.js").read_text(encoding="utf-8")
+    worker = repo_text("src", "index.js")
     checks.append(("Worker поднимает контейнер, ждёт порт и передаёт переменные",
                    "startAndWaitForPorts" in worker and "envVars" in worker
                    and "containerFetch" in worker and "getContainer" in worker, "ok"))
@@ -612,8 +636,8 @@ async def main() -> None:
                   "'/check'" in worker and "'/check': 'application/json" in worker, "ok"))
 
     # ---------- шаблон секретов для `wrangler secret bulk`: не должен разъехаться с Worker'ом
-    template_text = (ROOT / "deploy" / "secrets.example.env").read_text(encoding="utf-8")
-    doc_text = (ROOT / "DEPLOY.md").read_text(encoding="utf-8")
+    template_text = repo_text("deploy", "secrets.example.env")
+    doc_text = repo_text("DEPLOY.md")
     template = {}
     for line in template_text.splitlines():
         line = line.strip()
@@ -632,48 +656,65 @@ async def main() -> None:
     checks.append(("в шаблоне только заглушки: настоящие значения в git попасть не могут",
                    all(placeholder.match(value) for value in template.values()),
                    ", ".join(k for k, v in template.items() if not placeholder.match(v)) or "ok"))
-    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    gitignore = repo_text(".gitignore").splitlines()
     checks.append(("заполненная копия deploy/secrets.env в .gitignore (и не только она)",
                    "deploy/secrets.env" in gitignore and "secrets.json" in gitignore
-                   and "secrets.txt" in gitignore, "ok"))
+                   and "secrets.txt" in gitignore,
+                   ".gitignore не прочитан: файла нет в контексте" if not gitignore
+                   else "нет строк " + ", ".join(name for name in ("deploy/secrets.env", "secrets.json",
+                                                                    "secrets.txt")
+                                                 if name not in gitignore)))
     checks.append(("шаблон объясняет, почему нельзя грузить общий .env проекта",
                    "TG_SESSION" in template_text and ".env проекта" in template_text, "ok"))
     checks.append(("DEPLOY.md даёт загрузку одним файлом и команду удалить его",
                   "wrangler secret bulk" in doc_text and "del deploy" in doc_text
                   and "rm deploy/secrets.env" in doc_text, "ok"))
 
-    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = repo_text("Dockerfile")
     checks.append(("Dockerfile ставит зависимости из requirements.txt и запускает cloud_entry",
                    "COPY requirements.txt" in dockerfile and "pip install" in dockerfile
                    and 'CMD ["python", "-u", "deploy/cloud_entry.py"]' in dockerfile, "ok"))
     checks.append(("в образе проверяются импорты и офлайн-тесты ещё до деплоя",
                    "import monitor, bot_panel, metrics" in dockerfile
                    and "deploy/selftest_cloud.py" in dockerfile, "ok"))
-    ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    ignore = repo_text(".dockerignore")
+    ignore_lines = ignore.splitlines()
     checks.append((".dockerignore не пускает в образ .env и *.session (иначе секрет уедет в реестр)",
-                   ".env" in ignore.splitlines() and "*.session" in ignore.splitlines()
-                   and "*.sqlite3" in ignore.splitlines(), "ok"))
+                   ".env" in ignore_lines and "*.session" in ignore_lines
+                   and "*.sqlite3" in ignore_lines, "ok"))
+    # заполненная копия шаблона: восемь настоящих значений. Слои образа скачиваемы, поэтому
+    # «забыл удалить deploy/secrets.env» не должно означать «секреты уехали в реестр».
+    checks.append(("заполненный deploy/secrets.env вырезан и из образа, не только из git",
+                   "deploy/secrets.env" in ignore_lines and "secrets.json" in ignore_lines
+                   and "secrets.txt" in ignore_lines, "ok"))
+    checks.append(("шаблон deploy/secrets.example.env в образе остаётся: его читает проверка",
+                   (ROOT / "deploy" / "secrets.example.env").exists()
+                   and "deploy/secrets.example.env" not in ignore_lines, "ok"))
     # эта самопроверка запускается и при сборке образа (RUN в Dockerfile), поэтому всё,
     # что она читает, обязано в образ попасть: *.md выкинут, DEPLOY.md возвращён исключением
-    checks.append(("DEPLOY.md попадает в образ: самопроверка читает его и при сборке",
-                   "!DEPLOY.md" in ignore.splitlines(), "*.md в .dockerignore"))
+    excluded_without_exception = sorted(name for name in ("DEPLOY.md", ".gitignore")
+                                         if f"!{name}" not in ignore_lines)
+    checks.append(("DEPLOY.md и .gitignore попадают в образ: самопроверка читает их при сборке",
+                   not excluded_without_exception,
+                   ", ".join(f"{n} вырезан, исключения !{n} нет" for n in excluded_without_exception)
+                   or "ok"))
     for needed in ("cloud_panel.bat", "cloud_panel.sh", "DEPLOY.md", "deploy/cloud_entry.py"):
         checks.append((f"{needed} не выкинут из образа (.dockerignore)",
-                       needed not in ignore.splitlines()
-                       and not any(line == "*.bat" or line == "*.sh" for line in ignore.splitlines()),
+                       needed not in ignore_lines
+                       and not any(line == "*.bat" or line == "*.sh" for line in ignore_lines),
                        "ok"))
 
     # панель на облачной базе: снимок из R2 + --panel-only (ключи аккаунта не нужны)
     for script in ("cloud_panel.bat", "cloud_panel.sh"):
-        text = (ROOT / script).read_text(encoding="utf-8")
+        text = repo_text(script)
         checks.append((f"{script}: качает базу из R2 с --remote и запускает панель на снимке",
                        "db/hits.sqlite3" in text and "--remote" in text
                        and "--panel-only" in text and "radar-state" in text, "ok"))
 
     # инструкция не должна расходиться с кодом: иначе деплой встанет на ровном месте
-    deploy_doc = (ROOT / "DEPLOY.md").read_text(encoding="utf-8")
-    entry_src = (ROOT / "deploy" / "cloud_entry.py").read_text(encoding="utf-8")
-    r2_src = (ROOT / "deploy" / "r2_state.py").read_text(encoding="utf-8")
+    deploy_doc = repo_text("DEPLOY.md")
+    entry_src = repo_text("deploy", "cloud_entry.py")
+    r2_src = repo_text("deploy", "r2_state.py")
     names = set(re.findall(r'(?:env\.get|os\.getenv)\(\s*"([A-Z][A-Z0-9_]+)"', entry_src + r2_src))
     names |= set(re.findall(r"env\.([A-Z][A-Z0-9_]+)", worker))
     names |= set((config.get("vars") or {}).keys())
