@@ -41,6 +41,7 @@ Worker. Почему R2: диск контейнера **эфемерен**, п�
 [ ] 6. Введены 8 секретов:           npx wrangler secret put <ИМЯ>   ×8
        TG_API_ID, TG_API_HASH, TG_BOT_TOKEN, TG_NOTIFY_CHAT,
        R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, RADAR_TOKEN
+       (одним файлом: заполнить deploy/secrets.env из шаблона -> npx wrangler secret bulk)
 [ ] 7. Список секретов виден:        npx wrangler secret list --format pretty
 [ ] 8. Сессия создана локально:      start.bat --login
 [ ] 9. Сессия загружена в R2:        npx wrangler r2 object put ^
@@ -117,8 +118,47 @@ python3 -c "import secrets; print(secrets.token_urlsafe(24))"
 Кириллицу в токен не ставь: Worker передаёт его HTTP-заголовком, а заголовки живут в latin-1
 (контейнер при старте честно предупредит, если токен окажется не-ASCII).
 
+### Способ Б: все восемь одним файлом (одна команда)
+
+В репозитории есть шаблон `deploy/secrets.example.env` — скопируй его, впиши значения
+и загрузи разом:
+
+```bat
+copy deploy\secrets.example.env deploy\secrets.env
+notepad deploy\secrets.env          :: вписать свои значения вместо заглушек
+npx wrangler secret bulk deploy\secrets.env
+npx wrangler secret list --format pretty
+del deploy\secrets.env               :: значениям не место на диске — удалить сразу
+```
+
+```bash
+cp deploy/secrets.example.env deploy/secrets.env
+npx wrangler secret bulk deploy/secrets.env
+npx wrangler secret list --format pretty
+rm deploy/secrets.env
+```
+
+`secret bulk` принимает JSON (`{"KEY": "значение"}`) или dotenv-формат (`KEY=значение`),
+атомарен: либо загрузятся все ключи, либо ни одного. Существующие секреты, которых нет в файле,
+сохраняются. Запускать из папки проекта — иначе wrangler не знает, какому Worker'у адресованы
+секреты, и попросит `--name`.
+
+Можно и вовсе совместить с деплоем: `npx wrangler deploy --secrets-file deploy/secrets.env`
+(секреты уезжают вместе с кодом; файл потом тоже удалить).
+
+⚠️ **Две ловушки:**
+
+* `deploy/secrets.env` вписан в `.gitignore`, но лучше удалить файл сразу после загрузки:
+  в git должен лежать только шаблон с заглушками.
+* **Не подсовывай wrangler'у общий `.env` проекта.** В нём есть `TG_SESSION`, а это имя уже
+  задано в `wrangler.jsonc` → `vars`: одно имя не может быть одновременно var и secret,
+  деплой упадёт. В шаблоне ровно те 8 ключей, которые нужны.
+
+### Способ В: руками в дашборде
+
 То же самое можно ввести в дашборде: **Workers & Pages → bot-scr-to-cloud → Settings →
-Variables & Secrets** (тип **Secret**).
+Variables & Secrets** (тип **Secret**, 8 штук). Значения при этом не попадают ни в один файл —
+самый безопасный вариант, просто чуть дольше.
 
 Несекретное уже прописано в `wrangler.jsonc` → `vars`: `R2_BUCKET`, `TG_SESSION`,
 `RADAR_ARGS` (аргументы прохода) и `RADAR_TIMEOUT` (секунды на проход).
@@ -333,13 +373,13 @@ $0.000020 за vCPU-секунду, $0.00000007 за ГБ-секунду дис�
 ## Локальная проверка без Cloudflare
 
 ```bash
-python3 deploy/selftest_cloud.py      # 99 проверок: подпись R2, состояние, проход, эндпоинты, конфиг
+python3 deploy/selftest_cloud.py      # 105 проверок: подпись R2, состояние, проход, эндпоинты, конфиг
 python3 selftest_monitor.py           # 152 проверки конвейера (включая пульс разового прохода)
 python3 selftest_panel.py             # 86 проверок бот-панели (включая живость в схеме B)
 python3 selftest_metrics.py           # 65 проверок метрик расхода
 python3 selftest_login.py             # 77 проверок мастера авторизации (--login)
 python3 selftest.py                   # 7 быстрых проверок расчётов
-npm test                              # то же самое одной командой (все 6 наборов, 486 проверок)
+npm test                              # то же самое одной командой (все 6 наборов, 492 проверки)
 ```
 
 `deploy/selftest_cloud.py` не выходит в интернет: R2 подменяется локальным сервером, который

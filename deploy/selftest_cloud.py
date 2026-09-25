@@ -611,6 +611,37 @@ async def main() -> None:
     checks.append(("/check проксируется Worker'ом и закрыт токеном (как остальные данные)",
                   "'/check'" in worker and "'/check': 'application/json" in worker, "ok"))
 
+    # ---------- шаблон секретов для `wrangler secret bulk`: не должен разъехаться с Worker'ом
+    template_text = (ROOT / "deploy" / "secrets.example.env").read_text(encoding="utf-8")
+    doc_text = (ROOT / "DEPLOY.md").read_text(encoding="utf-8")
+    template = {}
+    for line in template_text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            template[key.strip()] = value.strip()
+    passed = set(re.findall(r"^\t\t([A-Z][A-Z0-9_]+):", worker, flags=re.MULTILINE))
+    non_secret = set((config.get("vars") or {}).keys())
+    expected = sorted(passed - non_secret)
+    checks.append(("шаблон секретов = ровно то, что Worker передаёт в контейнер, минус vars",
+                   sorted(template) == expected and len(expected) == 8,
+                   f"в шаблоне {sorted(template)}; ждём {expected}"))
+    checks.append(("в шаблоне нет имён из vars: var и secret с одним именем роняют деплой",
+                   not (set(template) & non_secret), str(sorted(set(template) & non_secret))))
+    placeholder = re.compile(r"^(?:[x0]+|1234567|123456789|1234567890:AAHx+|change-me-[\w-]+)$")
+    checks.append(("в шаблоне только заглушки: настоящие значения в git попасть не могут",
+                   all(placeholder.match(value) for value in template.values()),
+                   ", ".join(k for k, v in template.items() if not placeholder.match(v)) or "ok"))
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    checks.append(("заполненная копия deploy/secrets.env в .gitignore (и не только она)",
+                   "deploy/secrets.env" in gitignore and "secrets.json" in gitignore
+                   and "secrets.txt" in gitignore, "ok"))
+    checks.append(("шаблон объясняет, почему нельзя грузить общий .env проекта",
+                   "TG_SESSION" in template_text and ".env проекта" in template_text, "ok"))
+    checks.append(("DEPLOY.md даёт загрузку одним файлом и команду удалить его",
+                  "wrangler secret bulk" in doc_text and "del deploy" in doc_text
+                  and "rm deploy/secrets.env" in doc_text, "ok"))
+
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     checks.append(("Dockerfile ставит зависимости из requirements.txt и запускает cloud_entry",
                    "COPY requirements.txt" in dockerfile and "pip install" in dockerfile

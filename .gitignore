@@ -22,3 +22,14 @@ tests/_tmp*/
 node_modules/
 .wrangler/
 .dev.vars
+
+# файл для `npx wrangler secret bulk`: заполненная копия deploy/secrets.example.env.
+# В git — только шаблон с заглушками (*.example.env), настоящие значения не должны лежать даже рядом.
+deploy/secrets.env
+secrets.env
+secrets.json
+*.secrets.json
+secrets.txt
+.env.production
+.env.local
+.env.secrets
