@@ -578,6 +578,23 @@ async def main() -> None:
                   "содержит несколько значений" in repo_text("monitor.py")
                   and "общие для всех аккаунтов" in repo_text("monitor.py"), "ok"))
 
+    # получатель уведомлений один: TG_NOTIFY_CHAT — не список по аккаунтам. Код значение не
+    # делит, поэтому список означал бы «находки никуда не пришли» — уже после прохода.
+    for bad_chat, note in (("999888777,111222333", "список через запятую"),
+                           ("@userinfobot", "@username вместо числового id")):
+        report = ready.preflight(env=dict(good_env, TG_NOTIFY_CHAT=bad_chat))
+        problem = " ".join(report["problems"])
+        checks.append((f"preflight: {note} в TG_NOTIFY_CHAT — не «готов», а диагноз",
+                      report["ok"] is False and "ОДИН числовой id" in problem
+                      and "TG_SESSION" in problem and "userinfobot" in problem
+                      and "wrangler secret put TG_NOTIFY_CHAT" in problem,
+                      problem[:150] or "нет проблемы"))
+    checks.append(("preflight: отрицательный id группы/канала в TG_NOTIFY_CHAT допустим",
+                  ready.preflight(env=dict(good_env, TG_NOTIFY_CHAT="-1001234567890"))["ok"],
+                  "ложная тревога на группе/канале"))
+    checks.append(("локальный --doctor проверяет и вид TG_NOTIFY_CHAT, а не только наличие",
+                  "это не числовой id" in repo_text("monitor.py"), "ok"))
+
     problem = " ".join(ready.preflight(env=dict(good_env, TG_BOT_TOKEN="", TG_NOTIFY_CHAT=""))
                        ["problems"])
     checks.append(("preflight: «--notify bot» без токена бота виден заранее",
@@ -588,6 +605,9 @@ async def main() -> None:
     report = console_runner.preflight(env=dict(good_env, TG_BOT_TOKEN="", TG_NOTIFY_CHAT=""))
     checks.append(("preflight: без «--notify bot» токен бота не требуется (ложных тревог нет)",
                   report["ok"] is True, str(report["problems"])[:110]))
+    checks.append(("preflight: без «--notify bot» вид TG_NOTIFY_CHAT не проверяется (ложных тревог нет)",
+                  console_runner.preflight(env=dict(good_env, TG_BOT_TOKEN="",
+                                                    TG_NOTIFY_CHAT="@whatever"))["ok"], "ok"))
 
     before = len(REQUESTS)
     ready.preflight(env=good_env)

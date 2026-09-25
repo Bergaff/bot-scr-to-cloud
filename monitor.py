@@ -1755,10 +1755,16 @@ def doctor(verbose: bool = True) -> int:
         report("WARN", "сессии нет", "первый запуск спросит телефон и код из Telegram (это нормально, один раз)")
 
     if os.getenv("TG_BOT_TOKEN") and os.getenv("TG_NOTIFY_CHAT"):
-        # здесь проверяется только наличие переменных, без сети: токен может быть неверным (401).
-        # По-настоящему это проверяет --test-notify — там запрос getMe к Telegram.
-        report("PASS", "TG_BOT_TOKEN и TG_NOTIFY_CHAT заданы (это проверка наличия, не отправки)",
-               "проверить по-настоящему: start.bat --test-notify --notify bot")
+        # здесь проверяется только наличие переменных и вид chat_id, без сети: токен может быть
+        # неверным (401). По-настоящему это проверяет --test-notify — там запрос getMe к Telegram.
+        notify_chat = os.getenv("TG_NOTIFY_CHAT", "").strip()
+        if not re.fullmatch(r"-?\d+", notify_chat):
+            report("FAIL", f"TG_NOTIFY_CHAT=«{notify_chat}» — это не числовой id",
+                   "получатель уведомлений ОДИН: твой чат с ботом (вид 123456789, для группы/канала — отрицательный). Через запятую перечисляются сессии в TG_SESSION, а не получатели. Узнать id: @userinfobot, либо «Старт» своему боту и getUpdates")
+            fails.append("TG_NOTIFY_CHAT")
+        else:
+            report("PASS", f"TG_BOT_TOKEN и TG_NOTIFY_CHAT заданы ({notify_chat}) — проверка наличия и вида, не отправки",
+                   "проверить по-настоящему: start.bat --test-notify --notify bot")
     else:
         report("WARN", "уведомления ботом не настроены (необязательно)",
                "шаг 8 в START-HERE.md; сейчас можно писать в консоль: --notify console")

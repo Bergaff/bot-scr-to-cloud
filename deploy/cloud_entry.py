@@ -34,6 +34,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -278,6 +279,20 @@ class RadarRunner:
                 if not (env.get(name) or "").strip():
                     problems.append(f"в RADAR_ARGS есть «--notify bot», но не задан секрет {name}: "
                                     f"npx wrangler secret put {name}")
+            # TG_NOTIFY_CHAT — ОДИН адрес (твой чат с ботом), а не по аккаунту: находки всех
+            # аккаунтов складываются в одну базу и уходят в одно место. Значение нигде не
+            # делится по запятым, поэтому список означает «уведомления не дойдут» — причём
+            # молча, уже после прохода. Отрицательный id допустим: это группа или канал.
+            chat = (env.get("TG_NOTIFY_CHAT") or "").strip()
+            if chat and not re.fullmatch(r"-?\d+", chat):
+                problems.append(
+                    f"TG_NOTIFY_CHAT = {chat!r} — нужен ОДИН числовой id твоего чата с ботом "
+                    f"(вид 123456789; для группы/канала — отрицательный, вид -1001234567890, "
+                    f"и бот должен быть участником). Через запятую перечисляются сессии в "
+                    f"TG_SESSION, а получатель уведомлений один. Узнать id: @userinfobot, либо "
+                    f"нажать «Старт» своему боту и посмотреть "
+                    f"https://api.telegram.org/bot<TG_BOT_TOKEN>/getUpdates → "
+                    f"npx wrangler secret put TG_NOTIFY_CHAT")
 
         if self.client is None:
             problems.append("R2 не настроен: нужны R2_BUCKET, R2_ACCESS_KEY_ID, "

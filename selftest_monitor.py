@@ -1402,6 +1402,10 @@ async def main() -> None:
                    doctor_src.count("содержит несколько значений") == 2
                    and "общие для всех аккаунтов" in doctor_src,
                    "ветки для TG_API_ID и TG_API_HASH"))
+    # получатель уведомлений один: список в TG_NOTIFY_CHAT означал бы молчаливую недоставку
+    checks.append(("доктор требует числовой TG_NOTIFY_CHAT, а не «что-нибудь непустое»",
+                   "это не числовой id" in doctor_src and "получатель уведомлений ОДИН" in doctor_src,
+                   "ветка проверки chat_id"))
     order_check = order_sources(split_sources, "random")
     checks.append(("случайный порядок работает и с несколькими аккаунтами",
                    sorted(x.target for x in order_check) == sorted(x.target for x in split_sources),
