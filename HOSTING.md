@@ -65,6 +65,10 @@ python monitor.py --bot-panel --heartbeat 15 --metrics-interval 15   # сутк�
 
 ---
 
+> **Уже готово к деплою:** в репозитории есть `Dockerfile`, `wrangler.jsonc`, `src/index.js`
+> (Worker) и `deploy/` (вход контейнера + состояние в R2). Пошаговая инструкция — `DEPLOY.md`:
+> бакет R2, секреты, загрузка `.session`, production-ветка, первый деплой и проверка.
+
 ## 1. Cloudflare Containers (твой оплаченный аккаунт)
 
 Что это: Docker-контейнер на краю Cloudflare, запускается из их реестра, управляется через

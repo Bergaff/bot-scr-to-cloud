@@ -17,3 +17,8 @@ hits-*.txt
 
 # временные файлы офлайн-тестов (базы, csv, логи прогонов)
 tests/_tmp*/
+
+# облачный слой: зависимости wrangler и его кэш в git не храним
+node_modules/
+.wrangler/
+.dev.vars

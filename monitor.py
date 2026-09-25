@@ -782,6 +782,29 @@ class HitStore:
         row = self.conn.execute("SELECT COALESCE(SUM(scanned), 0) FROM stats").fetchone()
         return int(row[0] if row else 0)
 
+    def hits_total(self) -> int:
+        """Сколько совпадений сохранено за всё время (для пульса в схеме B)."""
+        row = self.conn.execute("SELECT COUNT(*) FROM hits").fetchone()
+        return int(row[0] if row else 0)
+
+    def totals_for_chats(self, chat_keys: list[str]) -> tuple[int, int]:
+        """(прочитано, найдено) за всё время по указанным чатам.
+
+        Нужно для пульса в разовом проходе: счётчики процесса каждый раз обнуляются, а суммы из базы
+        переживают перезапуск (контейнер в облаке живёт один проход — ТЗ §16).
+        """
+        keys = [k for k in chat_keys if k]
+        if not keys:
+            return self.scanned_total(), self.hits_total()
+        marks = ",".join("?" * len(keys))
+        read = self.conn.execute(
+            f"SELECT COALESCE(SUM(scanned), 0) FROM stats WHERE chat_key IN ({marks})", keys
+        ).fetchone()
+        found = self.conn.execute(
+            f"SELECT COUNT(*) FROM hits WHERE chat_key IN ({marks})", keys
+        ).fetchone()
+        return int(read[0] if read else 0), int(found[0] if found else 0)
+
     def scanned_by_chat(self) -> dict[str, int]:
         """chat_key -> прочитано за всё время (для /sources)."""
         rows = self.conn.execute(
@@ -1463,17 +1486,23 @@ class Monitor:
                 except Exception as exc:  # noqa: BLE001
                     print(f"[!] сбой при смене суток: {type(exc).__name__} {exc}", file=sys.stderr)
 
-    def log_pulse(self) -> None:
+    def log_pulse(self, read: int | None = None, found: int | None = None) -> None:
         """Пишет пульс в базу: по нему бот-панель понимает, жив ли аккаунт (ТЗ §7.3).
 
         Важно: живость определяется именно пульсом, а не находками — иначе тихий чат
         ночью выглядел бы как «аккаунт сломался» (ТЗ §14.1).
+
+        Числа по умолчанию берутся из счётчиков процесса: в схеме A процесс живёт долго,
+        счётчики накопительные, и разница двух пульсов — нагрузка за окно. В разовом проходе
+        (схема B) процесс каждый раз новый, поэтому туда передают суммы из базы — иначе
+        разница пульсов всегда была бы нулевой и панель показывала бы «прочитано 0 за час».
         """
         try:
+            scanned = self.counter.get("scanned", 0) if read is None else int(read)
+            saved = self.counter.get("saved", 0) if found is None else int(found)
             self.store.log_heartbeat(
                 "pulse", account=self.account or None,
-                detail=f"прочитано {self.counter.get('scanned', 0)}, "
-                       f"найдено {self.counter.get('saved', 0)}",
+                detail=f"прочитано {scanned}, найдено {saved}",
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[!] пульс в базу не записан: {type(exc).__name__} {exc}", file=sys.stderr)
@@ -2250,9 +2279,16 @@ async def async_main(args) -> None:
                        for _a, _c, monitor in runners)
         for acc, client, monitor in runners:
             monitor.flush_stats()                 # счётчики — в базу до среза метрик
+        for acc, client, monitor in runners:
+            # Пульс за проход. Без него панель (--panel-only) в схеме B не видела бы, жив ли
+            # радар вообще: живость определяется пульсом, а не находками (ТЗ §7.3, §16).
+            # Числа — накопительные суммы из базы по чатам этого аккаунта: контейнер в облаке
+            # живёт один проход, а суммы переживают его перезапуск.
+            keys = [monitor.chat_key(src) for src in monitor.sources]
+            read_total, found_total = store.totals_for_chats(keys)
+            monitor.log_pulse(read=read_total, found=found_total)
         if collector is not None:
-            # схема B: проход короткий, поэтому срез один — но именно он и показывает расход.
-            # «За час» здесь честно означает «за этот проход»: pulses в разовом режиме не пишутся.
+            # схема B: проход короткий, поэтому срез метрик один — но именно он и показывает расход.
             collector.msgs_provider = lambda: (store.scanned_total(), run_read)
             print_metrics(collector.write())
         for acc, client, monitor in runners:

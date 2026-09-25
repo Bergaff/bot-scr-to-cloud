@@ -584,6 +584,41 @@ async def main() -> None:
     read_hour, _found = pulse_store.pulse_progress(hours=1.0, account="main")
     checks.append(("нагрузка за час считается по строкам пульса (один срез -> 0)",
                    read_hour == 0, f"за час {read_hour}"))
+
+    # ---------- схема B (cron/облако): разовый проход тоже обязан оставить пульс,
+    # иначе панель не отличит «радар работает» от «радар умер час назад».
+    once_store = HitStore(str(WORKDIR / "once.sqlite3"))
+    two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(timespec="seconds")
+    once_store.log_heartbeat("pulse", account="main", detail="прочитано 12, найдено 1",
+                             ts=two_hours_ago)
+    once_radar = Monitor(None, once_store, [], None, core_telegram.Paced(0.0), account="main")
+    once_radar.per_chat = {"once_chat": {"scanned": 41, "matched": 5}}
+    once_radar.flush_stats()                        # счётчики прохода — в базу (как в ветке --once)
+    once_radar.log_pulse(read=41, found=5)          # так пишет ветка --once: суммы из базы
+    once_panel = make_panel(once_store, clock, FakeTransport(clock), mode="B", panel_only=True,
+                            started_at=None,
+                            accounts=[AccountView(name="main", session="monitor_session",
+                                                  max_per_day=120, chats=6)])
+    checks.append(("схема B: свежий проход — тревоги «молчит» нет",
+                   once_panel.silent_alerts() == [], str(once_panel.silent_alerts())))
+    once_read, once_found = once_store.pulse_progress(hours=1.0, account="main")
+    checks.append(("схема B: «за час» = разница двух проходов (29 прочитано, 4 найдено)",
+                   (once_read, once_found) == (29, 4), f"{once_read}/{once_found}"))
+    checks.append(("схема B: /status помечает режим B и показывает накопительное «всего»",
+                   "режим B (проходы по расписанию)" in once_panel.cmd_status()
+                   and "прочитано всего: 41" in once_panel.cmd_status(),
+                   once_panel.cmd_status().splitlines()[0][:70]))
+
+    dead_store = HitStore(str(WORKDIR / "once_dead.sqlite3"))
+    dead_ts = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat(timespec="seconds")
+    dead_store.log_heartbeat("pulse", account="main", detail="прочитано 41, найдено 5", ts=dead_ts)
+    dead_panel = make_panel(dead_store, clock, FakeTransport(clock), mode="B", panel_only=True,
+                            started_at=None,
+                            accounts=[AccountView(name="main", session="monitor_session",
+                                                  max_per_day=120, chats=6)])
+    dead_alerts = dead_panel.silent_alerts()
+    checks.append(("схема B: проходы прекратились — панель поднимает «молчит 45 мин»",
+                   len(dead_alerts) == 1 and "молчит 45 мин" in dead_alerts[0], str(dead_alerts)[:90]))
     status_text = panel.cmd_status()
     checks.append(("/status собран по шаблону §14.5",
                    status_text.startswith("📡 Радар · режим A (слушатель) · жив")

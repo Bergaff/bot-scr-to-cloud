@@ -1,0 +1,53 @@
+{
+	// Конфигурация деплоя радара в Cloudflare (Worker + контейнер).
+	// Подробно что и зачем — в DEPLOY.md. Схему полей проверял по документации wrangler:
+	// https://developers.cloudflare.com/workers/wrangler/configuration/
+	"$schema": "node_modules/wrangler/config-schema.json",
+
+	// Должно совпадать с именем Worker'а, который ты создал в дашборде,
+	// иначе `wrangler deploy` создаст второго Worker'а.
+	"name": "bot-scr-to-cloud",
+	"main": "src/index.js",
+	"compatibility_date": "2026-09-01",
+	"compatibility_flags": ["nodejs_compat"],
+
+	// Логи вызовов видны в дашборде и в `npx wrangler tail`
+	"observability": { "enabled": true },
+
+	// Несекретные настройки. Секреты (TG_API_HASH, TG_BOT_TOKEN, R2_SECRET_ACCESS_KEY,
+	// RADAR_TOKEN) сюда НЕ пишем — только `npx wrangler secret put <ИМЯ>`.
+	"vars": {
+		"R2_BUCKET": "radar-state",
+		"TG_SESSION": "monitor_session",
+		"RADAR_ARGS": "--once --catchup 0 --notify bot --mode B",
+		"RADAR_TIMEOUT": "540"
+	},
+
+	// Контейнер с Python-радаром. image указывает на Dockerfile — wrangler сам соберёт
+	// образ и отправит его в реестр Cloudflare (локально для этого нужен Docker,
+	// в Workers Builds образ собирается без него).
+	"containers": [
+		{
+			"class_name": "RadarContainer",
+			"image": "./Dockerfile",
+			// lite = 1/16 vCPU, 256 МиБ, 2 ГБ. Замеры этапа 2: радару хватает ~60 МБ,
+			// так что запас четырёхкратный. Больше — только если /usage скажет «рекомендую B».
+			"instance_type": "lite",
+			// Радар один: две копии на одну сессию = AuthKeyDuplicatedError и отзыв ключа.
+			"max_instances": 1
+		}
+	],
+
+	// Контейнер — это Durable Object, поэтому нужны привязка и миграция.
+	// Важно: именно new_sqlite_classes, а не new_classes.
+	"durable_objects": {
+		"bindings": [{ "class_name": "RadarContainer", "name": "RADAR" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["RadarContainer"] }],
+
+	// Схема B: проход раз в 10 минут. Хочешь реже и дешевле — поставь "*/30 * * * *"
+	// и уменьши sleepAfter в src/index.js (задержка находок при этом вырастет до получаса).
+	"triggers": {
+		"crons": ["*/10 * * * *"]
+	}
+}

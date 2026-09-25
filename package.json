@@ -1,0 +1,21 @@
+{
+	"name": "bot-scr-to-cloud",
+	"version": "2.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Telegram-радар (посылки, передачи, попутчики): Python-радар в Cloudflare Containers + Worker-диспетчер. Схема B — проход по расписанию.",
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"tail": "wrangler tail",
+		"containers": "wrangler containers list",
+		"secret:token": "wrangler secret put RADAR_TOKEN",
+		"test": "python3 selftest.py && python3 selftest_monitor.py && python3 selftest_panel.py && python3 selftest_metrics.py && python3 deploy/selftest_cloud.py"
+	},
+	"dependencies": {
+		"@cloudflare/containers": "^0.3.7"
+	},
+	"devDependencies": {
+		"wrangler": "^4.140.0"
+	}
+}
