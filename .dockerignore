@@ -1,0 +1,48 @@
+# Секреты и локальное состояние — в образ не должны попасть НИКОГДА.
+# Ключ аккаунта Telegram (.session) даёт полный доступ к аккаунту: он приезжает в контейнер
+# из R2, а не запекается в слой образа, который можно скачать и распаковать.
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+hits.log
+monitor.log
+state.json
+found.jsonl
+hits.txt
+hits-*.txt
+stats.txt
+stats.csv
+metrics.csv
+
+# Файл для `npx wrangler secret bulk deploy/secrets.env`: заполненная копия шаблона
+# deploy/secrets.example.env — это восемь настоящих значений (ключ аккаунта Telegram, токен
+# бота, ключи R2). Шаблоны выше её не ловят: имя начинается не с точки. Слои образа
+# скачиваемы, поэтому вырезаем явно — даже если файл забыли удалить после загрузки.
+deploy/secrets.env
+secrets.env
+secrets.json
+*.secrets.json
+secrets.txt
+
+# Тяжёлое и не нужное в рантайме
+.git
+.gitattributes
+node_modules
+.wrangler
+dist
+out
+__pycache__
+*.pyc
+tests/_tmp*
+telegram-scraper.zip
+*.md
+# ...кроме DEPLOY.md и .gitignore: их читает deploy/selftest_cloud.py, который запускается
+# при сборке образа (проверки «инструкция не расходится с кодом» и «файл с секретами в
+# .gitignore»). Без исключения сборка падает на FileNotFoundError.
+!DEPLOY.md
+!.gitignore

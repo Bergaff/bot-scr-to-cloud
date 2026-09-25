@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core_telegram import call
 
@@ -108,6 +108,14 @@ class Forwarder:
         except FloodWaitError as exc:
             wait = exc.seconds * 1.2 + 5
             print(f"[flood] пересылка: ждём {wait:.0f} с", file=sys.stderr)
+            # панель увидит ограничение: пишем сами (знаем аккаунт и чат), без общего хука —
+            # иначе одно событие попало бы в базу дважды
+            until = (datetime.now(timezone.utc) + timedelta(seconds=wait)).astimezone().strftime("%H:%M")
+            self.store.log_heartbeat("flood", account=self.account or None, chat_key=key,
+                                     detail=f"пересылка: до {until}")
+            self.store.log_error("FloodWaitError",
+                                 f"пересылка: Telegram просит {exc.seconds} с, ждём до {until}",
+                                 account=self.account or None)
             import asyncio
             await asyncio.sleep(wait)
             try:

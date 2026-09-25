@@ -1,0 +1,493 @@
+# Деплой радара в Cloudflare: Worker + контейнер (схема B)
+
+Здесь — что нажимать и что вводить, чтобы радар заработал в облаке. Всё уже лежит в репозитории:
+`Dockerfile`, `wrangler.jsonc`, `src/index.js` (Worker), `deploy/cloud_entry.py` (вход контейнера)
+и `deploy/r2_state.py` (состояние в R2). Переписывать радар не пришлось: в контейнере работает
+тот же `monitor.py`, только запускается по расписанию.
+
+---
+
+## Как это устроено (одна картинка словами)
+
+```
+Cloudflare cron (каждые 10 минут)
+   └─> Worker (src/index.js)
+         ├─ поднять/разбудить контейнер и дождаться порта 8080
+         └─ POST http://localhost/run
+               └─> контейнер (deploy/cloud_entry.py)
+                     ├─ достать из R2: .session, hits.sqlite3, metrics.csv
+                     ├─ python monitor.py --once --catchup 0 --notify bot --mode B
+                     ├─ положить обратно в R2: базу, сессии, metrics.csv, лог
+                     └─ ответить итогом прохода (JSON)
+         └─ записать итог в лог Worker'а; контейнер засыпает через 15 минут простоя
+```
+
+Почему два слоя: Workers исполняют JavaScript/TypeScript/WASM (Python там урезан до стандартной
+библиотеки, Telethon не ставится), поэтому Python живёт в контейнере — а контейнером управляет
+Worker. Почему R2: диск контейнера **эфемерен**, после сна файловая система чистая, поэтому
+`.session` и база хранятся в бакете.
+
+---
+
+## Чек-лист первого деплоя (можно отмечать)
+
+```
+[ ] 1. Node.js 18+ стоит:            node --version
+[ ] 2. wrangler залогинен:           npx wrangler login
+[ ] 3. Worker существует и имя = bot-scr-to-cloud:   npx wrangler secret list
+[ ] 4. Бакет R2 radar-state создан
+[ ] 5. API-токен R2 создан (Object Read & Write, только этот бакет),
+       Access Key ID и Secret Access Key сохранены
+[ ] 6. Введены 8 секретов:           npx wrangler secret put <ИМЯ>   ×8
+       TG_API_ID, TG_API_HASH, TG_BOT_TOKEN, TG_NOTIFY_CHAT,
+       R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, RADAR_TOKEN
+       (одним файлом: заполнить deploy/secrets.env из шаблона -> npx wrangler secret bulk)
+[ ] 7. Список секретов виден:        npx wrangler secret list --format pretty
+[ ] 8. Сессия создана локально:      start.bat --login
+[ ] 9. Сессия загружена в R2:        npx wrangler r2 object put ^
+       radar-state/sessions/monitor_session.session ^
+       --file monitor_session.session --remote
+[ ] 10. Builds: production branch = arena/01a0d4d8-bot-scr-to-cloud,
+        build «npm install», deploy «npx wrangler deploy»
+[ ] 11. Деплой прошёл (вкладка Builds — Success)
+[ ] 12. GET /healthz -> 204
+[ ] 13. GET /check?token=… -> 200 и "ok": true
+[ ] 14. POST /run?token=… -> "ok": true, "exit_code": 0
+[ ] 15. В Telegram пришли находки / ответ бота на /status
+[ ] 16. cron виден в Settings -> Triggers (*/10 * * * *)
+```
+
+Пункт 13 — самый полезный: `/check` за долю секунды перечислит, чего не хватает
+(секрет, права R2 или сессия), и даст готовую команду. Проход при этом не запускается.
+
+---
+
+## Шаг 0. Что нужно до начала
+
+| Нужно | Зачем |
+|---|---|
+| Workers Paid ($5/мес) | Контейнеры доступны только на платном плане |
+| Node.js 18+ на своей машине | для `npx wrangler` (секреты, загрузка сессии, логи) |
+| Docker локально | **только** если деплоишь вручную; Workers Builds собирает образ сам |
+| `TG_API_ID`, `TG_API_HASH` | ключи приложения: https://my.telegram.org/auth?to=apps → название **любое** → сохранить `App api_id` и `App api_hash`. Проще всего `start.bat --login` — мастер спросит их и впишет в `.env` сам. Значение **по одному**, даже если аккаунтов пять: это ключи приложения, а не аккаунта — одна пара обслуживает все сессии. Через запятую перечисляются сессии (`TG_SESSION`), а не ключи |
+| Бот и свой chat_id | `@BotFather` и `@userinfobot` (см. шаг 8 в `START-HERE.md`) |
+
+Проверь, что Worker в дашборде называется **`bot-scr-to-cloud`** — ровно так стоит `name`
+в `wrangler.jsonc`. Если назвал иначе, поправь одну строку в `wrangler.jsonc`, иначе деплой
+создаст второго Worker'а.
+
+---
+
+## Шаг 1. Бакет R2 для состояния (2 минуты)
+
+1. Дашборд → **R2 Object Storage** → **Create bucket** → имя `radar-state`
+   (должно совпадать с `R2_BUCKET` в `wrangler.jsonc`).
+2. **R2** → **Manage R2 API Tokens** → **Create API Token**:
+   * Permissions: **Object Read & Write**;
+   * Apply to: **specific bucket only** → `radar-state` (меньше прав — меньше риск);
+   * TTL: можно оставить навсегда.
+3. Сохрани **Access Key ID** и **Secret Access Key** — секрет показывается один раз.
+4. **Account ID** виден в дашборде справа внизу (или в URL: `/accounts/<он>/...`).
+5. Endpoint собирать не нужно: клиент сам склеит `https://<AccountID>.r2.cloudflarestorage.com`.
+
+---
+
+## Шаг 2. Секреты Worker'а (3 минуты)
+
+Секреты в git не пишем — только в Cloudflare. Из папки проекта:
+
+```bash
+npx wrangler login
+
+npx wrangler secret put TG_API_ID            # цифры из my.telegram.org
+npx wrangler secret put TG_API_HASH          # длинная строка оттуда же
+npx wrangler secret put TG_BOT_TOKEN         # токен бота от @BotFather
+npx wrangler secret put TG_NOTIFY_CHAT       # ОДИН числовой id твоего чата с ботом (см. ниже)
+npx wrangler secret put R2_ACCOUNT_ID        # из шага 1
+npx wrangler secret put R2_ACCESS_KEY_ID     # из шага 1
+npx wrangler secret put R2_SECRET_ACCESS_KEY # из шага 1
+npx wrangler secret put RADAR_TOKEN          # придумай сам, ТОЛЬКО ASCII
+```
+
+`RADAR_TOKEN` — пароль к проверочным адресам Worker'а. Сгенерировать:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+```
+
+Кириллицу в токен не ставь: Worker передаёт его HTTP-заголовком, а заголовки живут в latin-1
+(контейнер при старте честно предупредит, если токен окажется не-ASCII).
+
+### `TG_NOTIFY_CHAT`: один id, и он не зависит от числа аккаунтов
+
+Это **адрес, куда приходят находки** — твой чат с ботом. Аккаунтов может быть пять, получатель
+один: находки всех аккаунтов складываются в общую базу и уходят в одно место. Перечислять id
+через запятую не надо и нельзя — код значение не делит, поэтому список означал бы «уведомления
+не дошли», причём молча и уже после прохода. Теперь такое ловит `/check` (и локальный
+`--doctor`): `TG_NOTIFY_CHAT = '123,456'` — не «готов», а диагноз с подсказкой.
+
+Три способа узнать свой id:
+
+1. **`start.bat --login`** — мастер спросит токен бота, попросит нажать «Старт» и определит id
+   сам: `[+] твой chat_id: 123456789`, заодно запишет `TG_BOT_TOKEN`/`TG_NOTIFY_CHAT` в `.env`.
+   Учти: `--keys-only` этот шаг пропускает, и мастер подключается твоей сессией (не запускай
+   его, пока облако гоняет проход по той же сессии).
+2. **Через своего бота** (сессию аккаунта не трогает вовсе): нажать «Старт» боту, затем
+
+   ```bash
+   curl "https://api.telegram.org/bot<TG_BOT_TOKEN>/getUpdates"
+   ```
+
+   и взять число из `"chat":{"id":123456789,…,"type":"private"}`. Пустой `result` — апдейты
+   уже прочитал мастер или панель, тогда способ 3.
+3. **`@userinfobot`** → Start → `👤 Id: 123456789`.
+
+Формат: число. Для группы/канала — отрицательное (`-1001234567890`), и бот должен быть
+участником группы (в канале — админом). `@username` не годится: панель команд принимает
+команды только от владельца по числовому id. Проверить доставку: `start.bat --test-notify
+--notify bot`.
+
+### Способ Б: все восемь одним файлом (одна команда)
+
+В репозитории есть шаблон `deploy/secrets.example.env` — скопируй его, впиши значения
+и загрузи разом:
+
+```bat
+copy deploy\secrets.example.env deploy\secrets.env
+notepad deploy\secrets.env          :: вписать свои значения вместо заглушек
+npx wrangler secret bulk deploy\secrets.env
+npx wrangler secret list --format pretty
+del deploy\secrets.env               :: значениям не место на диске — удалить сразу
+```
+
+```bash
+cp deploy/secrets.example.env deploy/secrets.env
+npx wrangler secret bulk deploy/secrets.env
+npx wrangler secret list --format pretty
+rm deploy/secrets.env
+```
+
+`secret bulk` принимает JSON (`{"KEY": "значение"}`) или dotenv-формат (`KEY=значение`),
+атомарен: либо загрузятся все ключи, либо ни одного. Существующие секреты, которых нет в файле,
+сохраняются. Запускать из папки проекта — иначе wrangler не знает, какому Worker'у адресованы
+секреты, и попросит `--name`.
+
+Можно и вовсе совместить с деплоем: `npx wrangler deploy --secrets-file deploy/secrets.env`
+(секреты уезжают вместе с кодом; файл потом тоже удалить).
+
+⚠️ **Три ловушки:**
+
+* `deploy/secrets.env` вписан в `.gitignore` **и** в `.dockerignore`, но удалить файл сразу
+  после загрузки всё равно нужно: в git и в образ должен попадать только шаблон с заглушками.
+  Слои образа скачиваемы, поэтому «забыл удалить» не должно означать «секреты уехали в реестр».
+* **Не подсовывай wrangler'у общий `.env` проекта.** В нём есть `TG_SESSION`, а это имя уже
+  задано в `wrangler.jsonc` → `vars`: одно имя не может быть одновременно var и secret,
+  деплой упадёт. В шаблоне ровно те 8 ключей, которые нужны.
+
+### Способ В: руками в дашборде
+
+То же самое можно ввести в дашборде: **Workers & Pages → bot-scr-to-cloud → Settings →
+Variables & Secrets** (тип **Secret**, 8 штук). Значения при этом не попадают ни в один файл —
+самый безопасный вариант, просто чуть дольше.
+
+Несекретное уже прописано в `wrangler.jsonc` → `vars`: `R2_BUCKET`, `TG_SESSION`,
+`RADAR_ARGS` (аргументы прохода) и `RADAR_TIMEOUT` (секунды на проход).
+
+Необязательные переменные (трогать не нужно, значения по умолчанию рабочие):
+
+| Переменная | По умолчанию | Зачем |
+|---|---|---|
+| `RADAR_PORT` | `8080` | порт внутри контейнера; должен совпадать с `defaultPort` в `src/index.js` |
+| `RADAR_WORKDIR` | каталог приложения | где проходит проход: там живут `.session`, база, `metrics.csv` |
+| `RADAR_PYTHON` | `python3` (`sys.executable`) | чем запускать `monitor.py` |
+| `RADAR_DB` | `hits.sqlite3` | имя файла базы в рабочем каталоге |
+| `RADAR_METRICS_CSV` | `metrics.csv` | имя файла срезов расхода |
+| `RADAR_SESSIONS` | `TG_SESSION` | несколько сессий через запятую, если аккаунтов больше одного |
+| `R2_ENDPOINT` | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` | переопределить, только если endpoint нестандартный |
+
+---
+
+## Шаг 3. Загрузить сессию в R2 (один раз, 2 минуты)
+
+Контейнер не умеет вводить телефон и код из Telegram — входа там нет. Поэтому сессию надо
+сделать на своей машине и положить в бакет:
+
+```bat
+:: Windows: мастер (ключи -> .env -> вход по QR) либо только вход, если ключи уже вписаны
+start.bat --login
+start.bat --login-qr
+```
+
+```bash
+# затем отправить файл сессии в R2 (имя = TG_SESSION, по умолчанию monitor_session)
+npx wrangler r2 object put radar-state/sessions/monitor_session.session ^
+  --file monitor_session.session --remote
+```
+
+Проверить, что файл на месте:
+
+```bash
+npx wrangler r2 object get radar-state/sessions/monitor_session.session --file /tmp/check.session --remote
+```
+
+`.session` — это **полный доступ к твоему аккаунту Telegram**. В git он не попадает
+(`.gitignore`), в образ контейнера тоже (`.dockerignore`) — только в R2.
+
+Если аккаунтов несколько, положи каждый: `sessions/<имя>.session`, и перечисли имена в
+переменной `RADAR_SESSIONS` (через запятую) либо в `accounts:` в `sources.yaml`.
+
+### Несколько аккаунтов: 5 сессий, но одна пара ключей
+
+Главная ошибка здесь — вписать в `TG_API_ID`/`TG_API_HASH` значения через запятую, по одному
+на аккаунт. Так не работает: это ключи **приложения** из my.telegram.org, а не аккаунта, одна
+пара обслуживает любое число сессий (`monitor.py` делает `int(TG_API_ID)` и передаёт одну и ту
+же пару каждому клиенту). Через запятую перечисляются **сессии**.
+
+1. Войти каждым аккаунтом локально: `start.bat --login-qr --session second_session` — и так для
+   всех пяти. Появятся файлы `monitor_session.session`, `second_session.session`, …
+2. Загрузить каждый в R2:
+
+   ```bat
+   npx wrangler r2 object put radar-state/sessions/second_session.session --file second_session.session --remote
+   ```
+
+3. Перечислить имена сессий в `wrangler.jsonc` → `vars` (это единственная переменная со
+   списком) и задеплоить заново — `vars` приезжают в контейнер при деплое:
+
+   ```jsonc
+   "TG_SESSION": "monitor_session,second_session,third_session,fourth_session,fifth_session",
+   ```
+
+   Либо задать `RADAR_SESSIONS` — она перекрывает `TG_SESSION`.
+4. В `sources.yaml` снять `#` у блока `accounts:` и описать каждый аккаунт (свой `session`,
+   свой `forward.max_per_day`, при желании свой `proxy`), а у источников поставить
+   `account: <имя>` или `account: auto` (раскидает чаты по аккаунтам по кругу). В облаке
+   `sources.yaml` обновляется **без пересборки образа** — он читается из R2:
+
+   ```bat
+   npx wrangler r2 object put radar-state/config/sources.yaml --file sources.yaml --remote
+   ```
+
+5. `GET /check?token=…` проверит наличие **каждой** сессии в R2 и на каждую недостающую даст
+   готовую команду загрузки. Заодно он теперь смотрит и на вид ключей: список через запятую
+   или обрезанный `api_hash` будут в `problems` сразу, а не после платного прохода.
+
+`TG_NOTIFY_CHAT` при этом остаётся **один**: пять аккаунтов читают чаты, а находки уходят в
+один чат с ботом (общая база, общая дедупликация).
+
+Два ограничения. Одна и та же сессия не должна работать с двух мест одновременно (ПК + облако
+→ `AuthKeyDuplicatedError`, ключ придётся перевыпускать). И контейнер один
+(`max_instances: 1`): все аккаунты читают чаты параллельно в одном процессе одного прохода.
+Пять клиентов Telethon в 256 МиБ (`instance_type: "lite"`) — уже впритык: если в
+`npx wrangler tail` контейнер умирает без внятной ошибки, поставь `"basic"` (1/4 vCPU, 1 ГиБ,
+4 ГБ диска) — одна строка в `wrangler.jsonc` и redeploy, но заметно дороже по включённым
+лимитам (см. раздел «Цены»).
+
+---
+
+## Шаг 4. Production-ветка в настройках сборки (1 минута)
+
+Дашборд → **Workers & Pages → bot-scr-to-cloud → Settings → Builds**:
+
+| Настройка | Значение |
+|---|---|
+| Git repository | `Bergaff/bot-scr-to-cloud` |
+| Production branch | `arena/01a0d4d8-bot-scr-to-cloud` (после слияния PR — `main`) |
+| Build command | `npm install` |
+| Deploy command | `npx wrangler deploy` |
+| Root directory | `/` |
+
+**Это важно.** Для НЕ-production веток Workers Builds по умолчанию выполняет
+`wrangler versions upload`, который загружает только код Worker'а и **не собирает образ и не
+раскатывает контейнер**. То есть push в обычную ветку контейнер не обновит — production-ветка
+должна быть указана явно.
+
+---
+
+## Шаг 5. Первый деплой
+
+Дальше всё делает push в production-ветку: Workers Builds ставит зависимости, собирает
+Dockerfile, публикует образ и раскатывает Worker'а.
+
+```bash
+git push origin arena/01a0d4d8-bot-scr-to-cloud
+```
+
+Сборку видно в **Settings → Builds** (и статусом в GitHub: проверка «Workers Builds»).
+Первый деплой прогревается несколько минут: URL Worker'а может отвечать раньше, чем контейнер
+готов, — это нормально.
+
+Вручную, с Docker на машине:
+
+```bash
+npm install
+npx wrangler deploy
+```
+
+---
+
+## Шаг 6. Проверка (2 минуты)
+
+URL Worker'а: `https://bot-scr-to-cloud.<твой-субдомен>.workers.dev`
+(субдомен виден в дашборде на странице Worker'а).
+
+```bash
+URL="https://bot-scr-to-cloud.<твой-субдомен>.workers.dev"
+TOKEN="<RADAR_TOKEN из шага 2>"
+
+curl -i "$URL/healthz"                     # 204 — Worker жив (без пароля)
+curl "$URL/"                               # справка (без пароля, без данных)
+curl "$URL/check?token=$TOKEN"             # ГОТОВНОСТЬ: секреты, доступ к R2, наличие .session
+curl -X POST "$URL/run?token=$TOKEN"       # проход ВНЕ очереди: весь цикл R2 → радар → R2
+curl "$URL/status?token=$TOKEN"            # итог последнего прохода (JSON)
+curl "$URL/usage?token=$TOKEN"             # расход и вердикт «A подходит / рекомендую B»
+curl "$URL/log?token=$TOKEN"               # лог последнего прохода
+curl "$URL/metrics.csv?token=$TOKEN" -o metrics.csv   # срезы расхода — открыть в Excel
+```
+
+Логи Worker'а в реальном времени:
+
+```bash
+npx wrangler tail
+```
+
+**`/check` — это быстрая проверка готовности, проход она НЕ запускает** (делает два HEAD-запроса
+к R2, стоит доли секунды). Ответ `200` и `"ok": true` — можно запускать проход. Ответ `409` —
+в массиве `"problems"` перечислено, что именно не так, и сразу даны готовые команды:
+`npx wrangler secret put …` для недостающего секрета или `npx wrangler r2 object put …` для
+незагруженной сессии. Проверяет шесть вещей: заданы ли `TG_API_ID`/`TG_API_HASH` **и похожи ли они на правду**
+(список через запятую вместо одного `api_id`, `api_hash` не из 32 символов — частая ошибка при
+нескольких аккаунтах; ключи-то одни на всех), заданы ли токен бота и `TG_NOTIFY_CHAT` **и
+является ли последний одним числовым id** (если в `RADAR_ARGS` есть `--notify bot`), настроен
+ли R2, пускают ли туда твои ключи (ошибка `403` = опечатка в
+`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` либо у токена R2 недостаточно прав) и лежит ли в
+бакете `.session` каждого аккаунта.
+
+Что должно получиться после `POST /run`:
+
+1. в JSON — `"ok": true`, `"exit_code": 0`, `"summary"` со строками радара;
+2. в Telegram придут уведомления о находках (если они есть) и ответ бота на `/status`;
+3. в R2 обновятся `db/hits.sqlite3` и `logs/last-run.log`;
+4. бот-панель на этой же базе — см. следующий раздел.
+
+---
+
+## Шаг 6.5. Бот-панель на облачной базе (по желанию, 1 минута)
+
+Облачный радар шлёт находки в Telegram, но команды бота (`/status`, `/accounts`, `/usage`,
+`/sources`, `/errors`) отвечают по базе. База лежит в R2, поэтому панель запускается на её снимке:
+
+```bat
+cloud_panel.bat              :: Windows: скачать базу из R2 и запустить панель
+cloud_panel.bat --pull-only  :: только скачать cloud_hits.sqlite3
+```
+
+```bash
+./cloud_panel.sh             # Linux/macOS: то же самое
+```
+
+Ключи аккаунта Telegram панели не нужны (она не открывает `.session`), а `TG_BOT_TOKEN` и
+`TG_NOTIFY_CHAT` берутся из твоего `.env`. Цифры — на момент скачивания: за свежими запусти
+скрипт ещё раз.
+
+Живость в схеме B определяется так же, как в схеме A: **разовый проход пишет пульс** (накопительные
+суммы из базы, а не счётчики процесса — контейнер каждый раз новый). Поэтому:
+
+* `/accounts` покажет «работает», пока cron проходит раз в 10 минут;
+* если проходы встали (сломалась сессия, Worker не поднимает контейнер), панель поднимет
+  «⚠️ молчит N мин» — по умолчанию после 30 минут без пульса (`--alert-silent`);
+* «прочитано за час» считается как разница пульсов, то есть суммарно по всем проходам за окно.
+
+---
+
+## Шаг 7. Расписание и деньги
+
+Cron задан в `wrangler.jsonc`: `*/10 * * * *` — проход раз в 10 минут. Смотреть и править:
+**Settings → Triggers**.
+
+| Что поменять | Эффект |
+|---|---|
+| `"*/30 * * * *"` в `wrangler.jsonc` | проход раз в полчаса: задержка находок до 30 минут, контейнер спит больше, дешевле |
+| `sleepAfter` в `src/index.js` | через сколько простоя контейнер засыпает. **Не ставь меньше длительности прохода**: фоновая работа внутри контейнера таймер простоя не сбрасывает, только входящие запросы |
+| `instance_type` в `wrangler.jsonc` | `lite` = 1/16 vCPU, 256 МиБ, 2 ГБ. Замеры этапа 2: радару нужно ~60 МБ, запас четырёхкратный |
+| `RADAR_ARGS` (vars) | аргументы прохода: например `--once --catchup 0 --notify bot --mode B --forward-max-per-day 180` |
+
+Ориентир по деньгам (тарифы Cloudflare, сентябрь 2026): подписка Workers Paid $5/мес включает
+25 ГиБ-ч памяти, 375 vCPU-минут и 200 ГБ-ч диска; сверх — $0.0000025 за ГиБ-секунду памяти,
+$0.000020 за vCPU-секунду, $0.00000007 за ГБ-секунду диска. Контейнер `lite`, не спящий круглые
+сутки, — это примерно **$1.7/мес сверх подписки**; со сном между проходами меньше. Трафик
+радара крошечный, egress (1 ТБ включено) не заметен.
+
+---
+
+## Если что-то не так
+
+| Симптом | Причина | Что делать |
+|---|---|---|
+| (профилактика) | — | после любого изменения секретов: `GET /check?token=…` — перечислит, чего не хватает, за долю секунды |
+| `нет файла сессии: monitor_session` | сессия не загружена в R2 | шаг 3; в ответе `/run` и `/check` уже есть готовая команда |
+| `SignatureDoesNotMatch` / HTTP 403 от R2 | неверный `R2_SECRET_ACCESS_KEY` или `R2_ACCOUNT_ID` | пересоздай токен R2, затем `GET /restart?token=…` |
+| `HTTP 404` от R2 при сохранении | бакет не создан или имя не совпадает с `R2_BUCKET` | проверь `npx wrangler r2 bucket list` |
+| `AUTH_KEY_UNREGISTERED` / «сессия сломана» | Telegram увидел вход с дата-центр IP и отозвал ключ | войди заново локально и обнови сессию в R2 (шаг 3) |
+| Проход падает сразу, в логе `ValueError` на `int()` | в `TG_API_ID`/`TG_API_HASH` вписан список через запятую (по значению на аккаунт) | ключи приложения **одни** на все аккаунты: одно число и один 32-символьный хеш. Аккаунты перечисляются в `TG_SESSION` и в `accounts:` — см. «Несколько аккаунтов» |
+| `AuthKeyDuplicatedError` | два процесса на одну сессию: радар на ПК и в облаке одновременно | оставь один. `max_instances: 1` в конфиге защищает от второго контейнера, но не от твоего ПК |
+| `/run` отвечает 502, в логах «прогрев» | первый деплой ещё поднимает образ | подожди 3–5 минут, смотри `npx wrangler tail` |
+| `таймаут прохода (540 с)` | много чатов или большой `--catchup` | увеличь `RADAR_TIMEOUT`, уменьши `--catchup`, либо сделай cron реже |
+| Build failed: `wrangler: command not found` | не установлен Node/npm в сборке | Build command = `npm install`, Deploy command = `npx wrangler deploy` |
+| Build failed: `FileNotFoundError` внутри `selftest_cloud.py` | самопроверка читает файл репозитория, а `.dockerignore` вырезал его из образа | добавь исключение `!имя` (уже сделано для `DEPLOY.md` и `.gitignore`); проверка «всё, что читает самопроверка, дошло до контекста сборки» назовёт файл прямо в логе сборки |
+| Build прошёл, а контейнер прежний | деплой был в НЕ-production ветку | шаг 4: production-ветка должна быть той, куда пушишь |
+| Worker отвечает, `/healthz` 204, а `/status` 403 | не совпадает `RADAR_TOKEN` | тот же токен в секретах Worker'а и в запросе |
+| Секрет поменял, а контейнер работает по-старому | переменные передаются при старте контейнера | `GET /restart?token=…`, затем `POST /run?token=…` |
+
+---
+
+## Безопасность (коротко)
+
+* `.session` = полный доступ к аккаунту Telegram. Живёт только в R2, в git и в образ не попадает
+  (`.gitignore` + `.dockerignore` — и то и другое проверено офлайн-тестом).
+* Все данные Worker отдаёт только с `RADAR_TOKEN`; без токена отвечают `/healthz` и справка.
+  Если секрет `RADAR_TOKEN` не задан, Worker отвечает 500 с подсказкой — молча данные не отдаёт.
+* Секреты — только `wrangler secret put` или дашборд, никогда не `vars` в `wrangler.jsonc`.
+* Токен R2 создавай с правом «Object Read & Write» **на один бакет**, а не на весь аккаунт.
+
+---
+
+## Локальная проверка без Cloudflare
+
+```bash
+python3 deploy/selftest_cloud.py      # 118 проверок: подпись R2, состояние, проход, эндпоинты, конфиг
+python3 selftest_monitor.py           # 154 проверки конвейера (включая пульс разового прохода)
+python3 selftest_panel.py             # 86 проверок бот-панели (включая живость в схеме B)
+python3 selftest_metrics.py           # 65 проверок метрик расхода
+python3 selftest_login.py             # 77 проверок мастера авторизации (--login)
+python3 selftest.py                   # 7 быстрых проверок расчётов
+npm test                              # то же самое одной командой (все 6 наборов, 507 проверок)
+```
+
+`deploy/selftest_cloud.py` не выходит в интернет: R2 подменяется локальным сервером, который
+**пересчитывает подпись** так же, как настоящий R2, запуск радара подставляется функцией.
+Отдельно проверяется эталонный вектор подписи AWS — если он сходится, R2 примет наши запросы.
+
+Образ можно собрать и погонять локально (нужен Docker):
+
+```bash
+docker build --platform linux/amd64 -t radar .
+docker run --rm -p 8080:8080 \
+  -e TG_API_ID=... -e TG_API_HASH=... -e TG_BOT_TOKEN=... -e TG_NOTIFY_CHAT=... \
+  -e R2_ACCOUNT_ID=... -e R2_BUCKET=radar-state \
+  -e R2_ACCESS_KEY_ID=... -e R2_SECRET_ACCESS_KEY=... -e RADAR_TOKEN=test-token \
+  radar
+curl -X POST "http://127.0.0.1:8080/run" -H "x-radar-token: test-token"
+```
+
+---
+
+## Что добавить позже (по желанию)
+
+* **Схема A в контейнере**: `sleepAfter` больше, `RADAR_ARGS` без `--once`, cron не будит,
+  а только проверяет живость. Дороже (контейнер не спит) и требует `renewActivityTimeout()` —
+  фоновая работа таймер простоя не сбрасывает.
+* **Уведомления о провале прохода**: сейчас итог пишется в лог Worker'а, а бот-панель шлёт
+  алерты по пульсу; можно добавить алерт «проход не удался N раз подряд».
+* **Вторая копия для отладки**: отдельный Worker с `--env staging` и своим бакетом, чтобы не
+  трогать боевую сессию.

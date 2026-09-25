@@ -1396,10 +1396,91 @@ async def main() -> None:
     checks.append(("доктор показывает аккаунты и файлы сессий",
                    "аккаунты:" in doctor_src and "файла нет, потребуется вход" in doctor_src,
                    "секция в --doctor"))
+    # несколько аккаунтов = несколько сессий, но ОДНА пара ключей приложения: частая ошибка —
+    # вписать в TG_API_ID/TG_API_HASH значения через запятую, по аккаунту на каждое
+    checks.append(("доктор отличает «несколько значений через запятую» от «обрезано»",
+                   doctor_src.count("содержит несколько значений") == 2
+                   and "общие для всех аккаунтов" in doctor_src,
+                   "ветки для TG_API_ID и TG_API_HASH"))
+    # получатель уведомлений один: список в TG_NOTIFY_CHAT означал бы молчаливую недоставку
+    checks.append(("доктор требует числовой TG_NOTIFY_CHAT, а не «что-нибудь непустое»",
+                   "это не числовой id" in doctor_src and "получатель уведомлений ОДИН" in doctor_src,
+                   "ветка проверки chat_id"))
     order_check = order_sources(split_sources, "random")
     checks.append(("случайный порядок работает и с несколькими аккаунтами",
                    sorted(x.target for x in order_check) == sorted(x.target for x in split_sources),
                    f"{len(order_check)} чатов"))
+
+    # ---------------------------------------------------------- схема B: пульс разового прохода
+    section("Схема B: пульс разового прохода")
+    once_src = Path("monitor.py").read_text(encoding="utf-8")
+    checks.append(("разовый проход (--once) пишет пульс — иначе панель в схеме B не видит живость",
+                   "monitor.log_pulse(read=read_total, found=found_total)" in once_src,
+                   "ветка --once в main()"))
+
+    b_store = HitStore(":memory:")
+    b_source = Source(target="@once_chat", title="Разовый чат", profile="chat", min_score=4, catchup=10)
+    b_other = Source(target="@other_chat", title="Чужой чат", profile="chat", min_score=4, catchup=10)
+    b_entity = FakeEntity(-1009999999999, b_source.title, username="once_chat")
+
+    async def b_pass(messages, account="main"):
+        """Один разовый проход: catch-up -> flush_stats -> пульс (ровно как в ветке --once)."""
+        client = FakeClient(b_entity, messages)
+        mon = Monitor(client, b_store, [b_source], silent, Paced(0), account=account)
+        mon.entities = {b_source.target: b_entity}
+        mon.meta = {b_source.target: b_source}
+        await mon.catch_up([b_source])
+        mon.flush_stats()
+        keys = [mon.chat_key(s) for s in mon.sources]
+        read_total, found_total = b_store.totals_for_chats(keys)
+        mon.log_pulse(read=read_total, found=found_total)
+        return mon
+
+    # база «помнит» проход двухчасовой давности: по нему панель считает окно «за час»
+    two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(timespec="seconds")
+    b_store.log_heartbeat("pulse", account="main", detail="прочитано 1, найдено 1", ts=two_hours_ago)
+
+    pass1 = await b_pass([
+        fake_message(200, "Возьму посылку из Минска в Варшаву, еду 20.09, есть 2 места в машине"),
+        fake_message(201, "нужно передать документы в Вильнюс, кто едет на этой неделе?"),
+        fake_message(202, "Подписывайтесь на канал, скидки 50%"),
+    ])
+    checks.append(("проход 1: 2 объявления из 3 сообщений",
+                   pass1.counter["matched"] == 2 and pass1.counter["scanned"] == 3,
+                   str(pass1.counter)))
+    b_pulses = b_store.heartbeats_since(hours=24.0, kind="pulse", account="main")
+    b_read, b_found = HitStore.parse_pulse_detail(b_pulses[-1]["detail"])
+    checks.append(("пульс прохода хранит накопительные суммы из базы, а не счётчики процесса",
+                   (b_read, b_found) == (3, 2) and len(b_pulses) == 2,
+                   f"detail={b_pulses[-1]['detail']}"))
+    checks.append(("суммы считаются только по чатам своего аккаунта (второй аккаунт не мешает)",
+                   b_store.totals_for_chats([pass1.chat_key(b_other)]) == (0, 0)
+                   and b_store.totals_for_chats([]) == (3, 2),
+                   f"чужой чат: {b_store.totals_for_chats([pass1.chat_key(b_other)])}"))
+    checks.append(("панель сразу видит аккаунт живым: пульс свежий",
+                   b_store.heartbeat_age_minutes("pulse", account="main") < 1.0,
+                   f"{b_store.heartbeat_age_minutes('pulse', account='main'):.2f} мин"))
+
+    # второй проход — новый контейнер: счётчики процесса с нуля, суммы в базе растут
+    pass2 = await b_pass([
+        fake_message(203, "Еду завтра из Гродно в Белосток, возьму небольшую посылку, есть место"),
+        fake_message(204, "Правительство Литвы продлило ограничения до 30 ноября"),
+    ])
+    checks.append(("проход 2: счётчики процесса снова с нуля, находка одна",
+                   pass2.counter["scanned"] == 2 and pass2.counter["matched"] == 1,
+                   str(pass2.counter)))
+    b_progress = b_store.pulse_progress(hours=1.0, account="main")
+    checks.append(("нагрузка за час считает оба прохода (4 прочитано, 2 найдено)",
+                   b_progress == (4, 2), f"pulse_progress={b_progress}"))
+
+    # контраст: если писать счётчики процесса (как было до этой правки), разница всегда ноль
+    c_store = HitStore(":memory:")
+    c_store.log_heartbeat("pulse", account="main", detail="прочитано 3, найдено 2", ts=two_hours_ago)
+    c_store.log_heartbeat("pulse", account="main", detail="прочитано 3, найдено 2")   # проход 1
+    c_store.log_heartbeat("pulse", account="main", detail="прочитано 2, найдено 1")   # проход 2
+    checks.append(("без сумм из базы схема B показывала бы «прочитано 0 за час» — регрессия закрыта",
+                   c_store.pulse_progress(hours=1.0, account="main") == (0, 0),
+                   f"pulse_progress={c_store.pulse_progress(hours=1.0, account='main')}"))
 
     # ---------------------------------------------------------- итог
     section("Итог")

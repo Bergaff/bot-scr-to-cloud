@@ -1,0 +1,35 @@
+# секреты, сессии, база и выгрузки — никогда в git
+*.session
+*.session-journal
+.env
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+hits.log
+monitor.log
+state.json
+found.jsonl
+metrics.csv
+out/
+__pycache__/
+hits.txt
+hits-*.txt
+
+# временные файлы офлайн-тестов (базы, csv, логи прогонов)
+tests/_tmp*/
+
+# облачный слой: зависимости wrangler и его кэш в git не храним
+node_modules/
+.wrangler/
+.dev.vars
+
+# файл для `npx wrangler secret bulk`: заполненная копия deploy/secrets.example.env.
+# В git — только шаблон с заглушками (*.example.env), настоящие значения не должны лежать даже рядом.
+deploy/secrets.env
+secrets.env
+secrets.json
+*.secrets.json
+secrets.txt
+.env.production
+.env.local
+.env.secrets
