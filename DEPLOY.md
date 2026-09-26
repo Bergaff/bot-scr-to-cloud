@@ -231,7 +231,36 @@ npx wrangler r2 object get radar-state/sessions/monitor_session.session --file /
 ```
 
 `.session` — это **полный доступ к твоему аккаунту Telegram**. В git он не попадает
-(`.gitignore`), в образ контейнера тоже (`.dockerignore`) — только в R2.
+(`.gitignore`), в образ контейнера тоже (`.dockerignore`) — только в R2. И ни в коем случае
+не вставляй содержимое файла в чат, тикет или issue: в текстовом виде там виден `auth_key`.
+
+### Если сессии уже готовы (Pyrogram)
+
+Радар работает на Telethon, а он читает только свой формат `.session`. Конвертировать можно
+**без повторного входа**: переносится `auth_key` — тот же самый ключ на дата-центр, он не
+привязан ни к библиотеке, ни к `api_id`.
+
+```bat
+:: один файл: результат monitor_session.session
+start.bat --convert-session pyro.session --out monitor_session
+
+:: пачка: имена сохраняются, результаты лягут в каталог sessions\
+start.bat --convert-session 79123456789.session 79123456790.session --out-dir sessions
+```
+
+Что конвертируется, а что нет:
+
+| Что на руках | Результат |
+|---|---|
+| Pyrogram `.session` (SQLite: `version` + `peers` + `sessions`) | ✅ переносится, вход не нужен |
+| Telethon `.session` | ✅ уже подходит — грузи в R2 как есть (конвертер сам это скажет) |
+| `tdata` (папка Telegram Desktop) | ❌ зашифрованное хранилище десктопа — только вход по QR |
+| JSON с «ключами» | ❌ не формат ни Telethon, ни Pyrogram — только вход по QR |
+| StringSession (base64-строка) | ❌ пока не поддерживается — только вход по QR |
+
+Конвертер не печатает ключ, не трогает исходный файл и не перезаписывает существующий
+`.session` без `--force`. Проверка после записи — перечитывание и сверка ключа побайтово,
+сеть при этом не нужна.
 
 Если аккаунтов несколько, положи каждый: `sessions/<имя>.session`, и перечисли имена в
 переменной `RADAR_SESSIONS` (через запятую) либо в `accounts:` в `sources.yaml`.
@@ -460,6 +489,7 @@ python3 selftest_monitor.py           # 154 проверки конвейера 
 python3 selftest_panel.py             # 86 проверок бот-панели (включая живость в схеме B)
 python3 selftest_metrics.py           # 65 проверок метрик расхода
 python3 selftest_login.py             # 77 проверок мастера авторизации (--login)
+python3 selftest_session.py           # 57 проверок конвертера сессий (Pyrogram → Telethon)
 python3 selftest.py                   # 7 быстрых проверок расчётов
 npm test                              # то же самое одной командой (все 6 наборов, 507 проверок)
 ```

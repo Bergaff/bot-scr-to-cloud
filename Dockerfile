@@ -32,6 +32,7 @@ RUN python -c "import monitor, bot_panel, metrics, forwarder, matcher, core_tele
 	&& python -c "import telethon, yaml, qrcode, socks; print('[i] зависимости ok:', telethon.__version__)" \
 	&& python deploy/selftest_cloud.py >/dev/null \
 	&& python selftest_metrics.py >/dev/null \
+	&& python selftest_session.py >/dev/null \
 	&& echo '[i] самопроверки ok'
 
 # Порт, который ждёт Worker (defaultPort в src/index.js)

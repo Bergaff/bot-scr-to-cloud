@@ -8,6 +8,8 @@ rem  Examples:
 rem    start.bat                                    live mode, console + hits.log
 rem    start.bat --login                            wizard: api keys -> .env -> QR sign-in -> bot
 rem    start.bat --login-qr                         sign in by QR code (no SMS needed)
+rem    start.bat --convert-session pyro.session --out monitor_session
+rem                                                Pyrogram session -> Telethon, no login
 rem    start.bat --doctor                           check environment
 rem    start.bat --once --catchup 20                one pass, then exit
 rem    start.bat --once --notify bot --no-pause     for Task Scheduler
@@ -53,6 +55,7 @@ if "%~1"=="--show-stats" set "NEEDS_KEYS=0"
 if "%~1"=="--stats-only" set "NEEDS_KEYS=0"
 if "%~1"=="--panel-only" set "NEEDS_KEYS=0"
 if "%~1"=="--login" set "NEEDS_KEYS=0"
+if "%~1"=="--convert-session" set "NEEDS_KEYS=0"
 if "%~1"=="--help" set "NEEDS_KEYS=0"
 
 if "%NEEDS_KEYS%"=="1" (
@@ -80,6 +83,17 @@ if "%~1"=="--login" (
 rem --- QR login (no SMS/code needed) -----------------------------------
 if "%~1"=="--login-qr" (
   %PY% login_qr.py %*
+  pause
+  exit /b !errorlevel!
+)
+
+rem --- convert Pyrogram session -> Telethon (no login needed) -----------
+rem tokens=1,* отдаёт всё после первого слова целиком: кавычки в путях с пробелами
+rem не теряются, лишних пустых аргументов не возникает.
+if "%~1"=="--convert-session" (
+  set "REST="
+  for /f "tokens=1,*" %%a in ("%*") do set "REST=%%b"
+  %PY% session_convert.py !REST!
   pause
   exit /b !errorlevel!
 )

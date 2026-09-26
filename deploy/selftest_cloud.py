@@ -628,7 +628,8 @@ async def main() -> None:
     # Список ниже — явный договор: всё перечисленное обязано дойти до контейнера.
     read_by_selftest = [".dockerignore", ".gitignore", "DEPLOY.md", "Dockerfile", "wrangler.jsonc",
                         "src/index.js", "cloud_panel.bat", "cloud_panel.sh", "monitor.py",
-                        "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/secrets.example.env"]
+                        "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/secrets.example.env",
+                        "start.bat", "session_convert.py", "selftest_session.py"]
     absent = [name for name in read_by_selftest if not (ROOT / name).exists()]
     checks.append(("всё, что читает самопроверка, дошло до контекста сборки (не вырезано)",
                    not absent,
