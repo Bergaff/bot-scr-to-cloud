@@ -489,7 +489,7 @@ python3 selftest_monitor.py           # 154 проверки конвейера 
 python3 selftest_panel.py             # 86 проверок бот-панели (включая живость в схеме B)
 python3 selftest_metrics.py           # 65 проверок метрик расхода
 python3 selftest_login.py             # 77 проверок мастера авторизации (--login)
-python3 selftest_session.py           # 57 проверок конвертера сессий (Pyrogram → Telethon)
+python3 selftest_session.py           # 63 проверки: конвертер сессий (Pyrogram → Telethon) и обвязка Windows
 python3 selftest.py                   # 7 быстрых проверок расчётов
 npm test                              # то же самое одной командой (все 6 наборов, 507 проверок)
 ```

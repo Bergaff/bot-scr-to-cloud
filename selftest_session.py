@@ -306,6 +306,30 @@ def run_checks() -> None:
     check("*.session в .gitignore", "*.session" in gitignore, "")
     check("*.session в .dockerignore", "*.session" in dockerignore, "")
 
+    # ── переводы строк в .bat: cmd.exe рвёт LF-файлы на куски ───────────
+    section("Переводы строк (Windows)")
+    bat_files = sorted(str(p) for p in Path(".").rglob("*.bat") if ".git" not in p.parts)
+    bat_files += sorted(str(p) for p in Path(".").rglob("*.cmd") if ".git" not in p.parts)
+    check(".bat/.cmd в проекте найдены", len(bat_files) >= 2, ", ".join(bat_files))
+
+    not_crlf, lone_lf = [], []
+    for name in bat_files:
+        raw = Path(name).read_bytes()
+        if raw.count(b"\r\n") == 0 or raw.count(b"\n") > raw.count(b"\r\n"):
+            not_crlf.append(name)
+        if raw[:3] == b"\xef\xbb\xbf":
+            lone_lf.append(name + " (BOM)")
+    check("все .bat/.cmd с переводами CRLF (иначе cmd.exe ломает файл)", not not_crlf,
+          ", ".join(not_crlf) or "ok")
+    check("в .bat/.cmd нет BOM", not lone_lf, ", ".join(lone_lf) or "ok")
+
+    attrs = Path(".gitattributes").read_text(encoding="utf-8") if Path(".gitattributes").exists() else ""
+    check(".gitattributes: .bat без нормализации переводов (-text)", "*.bat -text" in attrs,
+          attrs[:60] or "файла нет")
+    check(".gitattributes: .sh с LF", "*.sh text eol=lf" in attrs, "")
+    start_raw = Path("start.bat").read_bytes()
+    check("start.bat начинается с @echo off", start_raw.startswith(b"@echo off"), start_raw[:12])
+
     doc = Path("session_convert.py").read_text(encoding="utf-8", errors="replace")
     # печатать можно что угодно, кроме самого ключа: dc_id, user_id, длина — можно
     leaking = [line.strip() for line in doc.splitlines()
