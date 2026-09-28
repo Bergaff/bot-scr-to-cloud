@@ -2353,6 +2353,15 @@ async def answer_pending_commands(store, accounts, stats_file: str = "stats.txt"
     if not ok:
         print(f"[i] команды из Telegram недоступны: {why}", file=sys.stderr)
         return 0
+    # меню бота: без setMyCommands команды работают, но в Telegram их не видно
+    try:
+        menu_ok, menu_why = await panel.register_commands()
+        if menu_ok:
+            print("[i] меню команд бота обновлено", file=sys.stderr)
+        elif menu_why:
+            print(f"[!] меню команд не обновилось: {menu_why}", file=sys.stderr)
+    except Exception as exc:                                      # не роняем проход из-за меню
+        print(f"[!] меню команд не обновилось: {type(exc).__name__}: {exc}", file=sys.stderr)
     if panel.offset <= 0:
         # первый раз: сбрасываем накопившееся, чтобы не отвечать на старые команды
         try:
@@ -2375,6 +2384,22 @@ def tg_commands_enabled(args) -> bool:
     if mode == "on":
         return True
     return bool(os.getenv("TG_BOT_TOKEN") and os.getenv("TG_NOTIFY_CHAT"))
+
+
+def tg_commands_reason(args) -> str:
+    """Почему команды из Telegram выключены.
+
+    Молчание выглядит как поломка: эту строку печатаем в лог, чтобы по /status
+    было видно, что радар их не отвечает по причине, а не «потому что сломался».
+    """
+    mode = getattr(args, "tg_commands", "auto") or "auto"
+    if mode == "off":
+        return "сняты флагом --tg-commands off"
+    missing = [name for name in ("TG_BOT_TOKEN", "TG_NOTIFY_CHAT") if not os.getenv(name)]
+    if missing:
+        return (f"не заданы {', '.join(missing)} — нужны секреты воркера "
+                f"(npx wrangler secret put {missing[0]})")
+    return "не задан --tg-commands, а переменные найдены"
 
 
 def build_marker() -> str:
@@ -2808,6 +2833,10 @@ async def async_main(args) -> None:
             print(f"[!] команды из Telegram не обработаны: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
             store.log_error("TgCommands", f"{type(exc).__name__}: {exc}"[:300])
+    elif getattr(args, "once", False):
+        # молчание выглядит как поломка: пишем причину, а не просто ничего
+        print(f"[i] команды из Telegram выключены: {tg_commands_reason(args)}",
+              file=sys.stderr)
 
     # файл статистики: откуда и сколько сообщений идёт
     if args.stats_file:

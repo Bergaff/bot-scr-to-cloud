@@ -788,6 +788,44 @@ async def main() -> None:
     checks.append(("/cost есть в справке бота, иначе её не найти",
                    any(line[0] == "cost" for line in HELP_LINES), ""))
 
+    section("16. Меню бота: команды видны в Telegram, а не только в голове")
+
+    class MenuTransport(FakeTransport):
+        """Запоминает вызов setMyCommands — меню живёт на стороне Telegram."""
+
+        def __init__(self, clock: FakeClock):
+            super().__init__(clock)
+            self.menu: list[dict] = []
+            self.menu_calls = 0
+
+        async def set_my_commands(self, commands: list[dict]) -> tuple[bool, str]:
+            self.menu_calls += 1
+            self.menu = commands
+            return True, ""
+
+    menu_store = HitStore(":memory:")
+    menu_panel = BotPanel(menu_store, token="123456:TEST-TOKEN", chat_id=OWNER,
+                          transport=MenuTransport(FakeClock()))
+    menu = menu_panel.menu_commands()
+    checks.append(("в меню все команды радара, включая новую /cost",
+                   len(menu) == len(HELP_LINES) and any(c["command"] == "cost" for c in menu),
+                   f"{len(menu)} команд"))
+    checks.append(("имя без слэша и с описанием — ровно как ждёт Bot API",
+                   all(c["command"] and not c["command"].startswith("/") and c["description"]
+                       for c in menu), menu[0]["command"]))
+
+    sent_first, why_first = await menu_panel.register_commands(force=True)
+    checks.append(("меню уезжает в Telegram вызовом setMyCommands",
+                   sent_first and menu_panel.transport.menu_calls == 1
+                   and menu_panel.transport.menu == menu, why_first or "ok"))
+    sent_again, _ = await menu_panel.register_commands()
+    checks.append(("каждый проход меню не шлём — только раз в неделю",
+                   not sent_again and menu_panel.transport.menu_calls == 1,
+                   f"вызовов {menu_panel.transport.menu_calls}"))
+    sent_forced, _ = await menu_panel.register_commands(force=True)
+    checks.append(("force=True обновляет меню принудительно — сразу после релиза",
+                   sent_forced and menu_panel.transport.menu_calls == 2, ""))
+
     section("Итог")
     for name, ok, detail in checks:
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))

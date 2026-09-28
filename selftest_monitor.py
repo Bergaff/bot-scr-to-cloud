@@ -1902,6 +1902,13 @@ async def main() -> None:
                    marker == expected and monitor_module.build_marker() == marker, expected))
     checks.append(("метка печатается в конце прохода — её видно в /status и /log",
                    "код: monitor.py {build_marker()}" in mon_src, ""))
+    checks.append(("меню команд регистрируется в конце прохода: иначе в Telegram их не видно",
+                   "panel.register_commands()" in mon_src
+                   and "async def set_my_commands" in open(str(Path(monitor_module.__file__).with_name("bot_panel.py")), encoding="utf-8").read(),
+                   ""))
+    checks.append(("выключенные команды не молчат: причина видна в логе прохода",
+                   "команды из Telegram выключены: {tg_commands_reason(args)}" in mon_src
+                   and "def tg_commands_reason" in mon_src, ""))
 
     # ---------------------------------------------------------- итог
     section("Итог")

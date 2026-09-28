@@ -254,6 +254,15 @@ class HttpTransport:
             return True, ""
         return False, _describe_result(result)
 
+    async def set_my_commands(self, commands: list[dict]) -> tuple[bool, str]:
+        """Показать команды в меню бота (Bot API setMyCommands)."""
+        try:
+            result = await asyncio.to_thread(self._request, "setMyCommands",
+                                             {"commands": commands})
+        except Exception as exc:                                  # noqa: BLE001
+            return False, _bot_error_text(exc)
+        return (True, "") if result.get("ok") else (False, _describe_result(result))
+
     async def get_me(self) -> tuple[bool, str]:
         try:
             result = await asyncio.to_thread(self._request, "getMe", {})
@@ -480,6 +489,33 @@ class BotPanel:
         return by_pulse
 
     # --- запуск
+
+    MENU_TTL_MINUTES = 7 * 24 * 60      # меню бота обновляем раз в неделю, не каждый проход
+
+    def menu_commands(self) -> list[dict]:
+        """Команды для меню бота: имя без слэша и описание (Bot API, максимум 100 штук)."""
+        return [{"command": name.split()[0], "description": description}
+                for name, description in HELP_LINES][:100]
+
+    async def register_commands(self, force: bool = False) -> tuple[bool, str]:
+        """Показать команды в меню бота (setMyCommands).
+
+        Меню живёт на стороне Telegram, а не в контейнере: без этого вызова команды
+        работают, но в интерфейсе их не видно — хозяину неоткуда узнать про /cost.
+        Обновляем редко: это лишний вызов Bot API, а меняется меню только с релизом.
+        """
+        if self.transport is None:
+            return False, "нет транспорта Bot API"
+        if not force:
+            age = minutes_ago(self.store.bot_state_get("menu_registered_at"))
+            if age is not None and age < self.MENU_TTL_MINUTES:
+                return False, ""
+        ok, why = await self.transport.set_my_commands(self.menu_commands())
+        if ok:
+            self.store.bot_state_set("menu_registered_at", utc_now().isoformat(timespec="seconds"))
+        elif why:
+            self._log_error("bot_api", f"меню команд не обновилось: {why}")
+        return ok, why
 
     def ready(self) -> tuple[bool, str]:
         """Можно ли стартовать: нужны токен бота и числовой id владельца."""
