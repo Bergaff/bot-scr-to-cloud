@@ -32,7 +32,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core_telegram import (BOT_TOKEN_HINT, Paced, add_flood_hook, build_notifier, call,
+from core_telegram import (BOT_TOKEN_HINT, FloodWaitTooLong, Paced, add_flood_hook,
+                           build_notifier, call,
                            collect_topics, display_name, format_hit, hidden_author_reason,
                            invite_hash, load_dotenv, make_client, message_link, peer_id,
                            resolve_targets, topic_of, topic_title_of)
@@ -1127,7 +1128,8 @@ class Monitor:
                  only_directions: tuple[str, ...] = (), max_age: float = 0.0,
                  only_categories: tuple[str, ...] = (), forwarder=None, auto_join: bool = False,
                  heartbeat_minutes: float = 0.0, keep_hidden: bool = False,
-                 account: str = "", show_account: bool = False):
+                 account: str = "", show_account: bool = False,
+                 deadline: float | None = None, flood_wait_limit: float = 0.0):
         self.client, self.store, self.sources = client, store, sources
         self.notify, self.paced, self.explain, self.skip_out = notifier, paced, explain, skip_out
         self.dedup_window = dedup_window
@@ -1153,6 +1155,34 @@ class Monitor:
         self.counter = {"scanned": 0, "matched": 0, "saved": 0, "duplicates": 0,
                         "text_duplicates": 0, "cross_chat_duplicates": 0, "filtered": 0,
                         "too_old": 0, "hidden": 0}
+        # Бюджет прохода (time.monotonic). Схема B — это один проход на запуск: если его
+        # оборвут по таймауту снаружи, не успеют записаться ни пульс, ни счётчики, ни
+        # очередь пересылок. Поэтому радар сам следит за временем и не начинает новые чаты,
+        # когда пора заканчивать. deadline=None — читать всё (живой режим, своя машина).
+        self.deadline = deadline
+        self.flood_wait_limit = float(flood_wait_limit or 0.0)
+        self.catchup_left: list[str] = []          # чаты, до которых не дошли в этот проход
+        self.paced.max_wait = self.flood_budget    # подсказка для call(): сколько можно спать
+
+    # --- бюджет прохода: чтобы его не обрывал таймаут
+
+    def time_left(self) -> float:
+        """Сколько секунд осталось на проход (inf, если бюджет не задан)."""
+        if self.deadline is None:
+            return float("inf")
+        return max(self.deadline - time.monotonic(), 0.0)
+
+    def flood_budget(self) -> float | None:
+        """Сколько можно спать по FloodWait: остаток бюджета, но не больше лимита.
+
+        None — ждать сколько угодно (своя машина, процесс живёт долго).
+        """
+        if self.deadline is None and self.flood_wait_limit <= 0:
+            return None
+        left = self.time_left()
+        if self.flood_wait_limit > 0:
+            return max(min(left, self.flood_wait_limit), 0.0)
+        return max(left, 0.0)
 
     # --- счётчики для файла статистики
 
@@ -1366,9 +1396,16 @@ class Monitor:
     # --- старт
 
     async def catch_up(self, sources: list[Source]) -> None:
+        """Догоняем хвосты чатов. Когда бюджет прохода на исходе — новые чаты не начинаем:
+        недочитанное пойдёт в следующий проход (чаты обходятся в случайном порядке, поэтому
+        ни один не застаивается), зато этот проход закончится сам и всё сохранит.
+        """
         for source in sources:
             entity = self.entities.get(source.target)
             if entity is None or source.catchup <= 0:
+                continue
+            if self.time_left() < 5:
+                self.catchup_left.append(source.target)
                 continue
             if source.topics:
                 # форум-чат: читаем только выбранные темы (по каждой — свой хвост)
@@ -1402,6 +1439,10 @@ class Monitor:
             note = f", старше {self.max_age_hours:g} ч пропущено {too_old}" if self.max_age_hours > 0 else ""
             print(f"[i] catch-up {source.target}: прочитано {len(messages or [])}, "
                   f"совпадений {found}{note}", file=sys.stderr)
+        if self.catchup_left:
+            print(f"[i] бюджет прохода кончился: не прочитано чатов {len(self.catchup_left)} "
+                  f"({', '.join(self.catchup_left[:5])}{'…' if len(self.catchup_left) > 5 else ''}) "
+                  f"— дойдут в следующий проход", file=sys.stderr)
 
     # --- пульс: чтобы долгая тишина не выглядела как зависание
 
@@ -2250,7 +2291,8 @@ class ServiceNotify:
     @staticmethod
     def pass_summary(now: datetime, seconds: float, read: int, found: int, forwarded: int,
                      per_account: list, errors: int, db_total: str,
-                     gap_minutes: float | None = None, expected_minutes: float = 0.0) -> str:
+                     gap_minutes: float | None = None, expected_minutes: float = 0.0,
+                     leftover: list | None = None) -> str:
         """Текст сводки прохода. Коротко: чтобы читалось с телефона за пару секунд."""
         lines = [f"Проход {now.strftime('%d.%m %H:%M')} UTC, {seconds:.0f} с",
                  f"• прочитано {read}, найдено {found}, переслано {forwarded}"]
@@ -2261,6 +2303,9 @@ class ServiceNotify:
         if gap_minutes is not None and expected_minutes and gap_minutes > expected_minutes * 2:
             lines.append(f"• предыдущий проход был {gap_minutes:.0f} мин назад "
                          f"(обычно {expected_minutes:.0f}) — радар простаивал")
+        if leftover:
+            lines.append(f"• не успел прочитать {len(leftover)} чатов: время прохода вышло — "
+                         f"дойдут в следующий раз (порядок чатов случайный)")
         return "\n".join(lines)
 
     @staticmethod
@@ -2552,7 +2597,8 @@ async def async_main(args) -> None:
                           keep_hidden=keep_hidden,
                           account=acc.name, show_account=multi,
                           only_intents=tuple(x.strip() for x in (args.only_intent or "").split(",") if x.strip()),
-                          only_directions=tuple(x.strip() for x in (args.only_direction or "").split(",") if x.strip()))
+                          only_directions=tuple(x.strip() for x in (args.only_direction or "").split(",") if x.strip()),
+                          deadline=deadline, flood_wait_limit=args.flood_wait_limit)
         runners.append((acc, client, monitor))
 
     if not runners:
@@ -2571,6 +2617,19 @@ async def async_main(args) -> None:
     elif args.bot_panel and args.once:
         print("[i] --bot-panel с --once не запускается: проход короткий, панель нужна в живом "
               "режиме. Для схемы B держи панель отдельным процессом: start.bat --panel-only",
+              file=sys.stderr)
+
+    # Бюджет прохода: в облаке RADAR_TIMEOUT обрывает процесс снаружи, а оборванный проход
+    # не успевает записать ни пульс, ни очередь. Поэтому радар сам следит за временем.
+    budget = args.pass_budget
+    if budget <= 0:
+        env_timeout = float(os.getenv("RADAR_TIMEOUT") or 0)
+        if env_timeout > 0:
+            budget = env_timeout * 0.75          # четвёртая часть — на запись в R2 и выход
+    deadline = time.monotonic() + budget if budget > 0 else None
+    if args.once and budget > 0:
+        print(f"[i] бюджет прохода: {budget:.0f} с (RADAR_TIMEOUT={os.getenv('RADAR_TIMEOUT', 'нет')}), "
+              f"лимит ожидания FloodWait {min(args.flood_wait_limit or budget * 0.25, budget):.0f} с",
               file=sys.stderr)
 
     # служебные сообщения — в TG_NOTIFY_CHAT (сводка прохода, падения). Находки идут
@@ -2643,7 +2702,8 @@ async def async_main(args) -> None:
             now=datetime.now(timezone.utc), seconds=time.time() - pass_started,
             read=read, found=found, forwarded=forwarded, per_account=per_account,
             errors=store.errors_count(since_hours=24.0), db_total=store.stats(),
-            gap_minutes=gap_before, expected_minutes=args.service_gap)
+            gap_minutes=gap_before, expected_minutes=args.service_gap,
+            leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])])
         await service.send(text, key="summary", force=bool(found or forwarded or not read))
 
     # файл статистики: откуда и сколько сообщений идёт
@@ -2794,6 +2854,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "(по умолчанию 30; 0 — не слать)")
     ap.add_argument("--digest", choices=["on", "off"], default=None,
                     help="утренний дайджест в 09:00 местного времени (то же, что /digest у бота)")
+    ap.add_argument("--pass-budget", type=float, default=0.0, metavar="СЕК",
+                    help="сколько секунд отвести на проход: радар сам перестанет начинать "
+                         "новые чаты и закончит чисто, вместо того чтобы быть убитым по "
+                         "таймауту (0 — из RADAR_TIMEOUT минус четверть, нет его — без лимита)")
+    ap.add_argument("--flood-wait-limit", type=float, default=0.0, metavar="СЕК",
+                    help="не ждать FloodWait дольше этого: чат пропускается и дойдёт в "
+                         "следующий проход (0 — не больше четверти бюджета)")
     ap.add_argument("--service-notify", choices=("auto", "bot", "none"), default="auto",
                     help="служебные сообщения ботом в TG_NOTIFY_CHAT: сводка прохода "
                          "(прочитано/найдено/переслано), падения, долгие паузы. Находки сюда "

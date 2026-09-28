@@ -58,6 +58,10 @@ def display_name(entity, fallback: str = "аккаунт") -> str:
     return title or f"id={getattr(entity, 'id', '?')}"
 
 
+class FloodWaitTooLong(RuntimeError):
+    """Telegram просит подождать дольше, чем осталось у прохода (схема B, один проход)."""
+
+
 class Paced:
     """Гарантирует паузу между вызовами API + джиттер (ровный робот-ритм тоже палится)."""
 
@@ -96,7 +100,14 @@ def notify_flood(label: str, seconds: float, wait: float) -> None:
 
 
 async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
-    """Вызов API: при FloodWait спим ровно столько, сколько просит Telegram, плюс буфер."""
+    """Вызов API: при FloodWait спим ровно столько, сколько просит Telegram, плюс буфер.
+
+    Сколько можно ждать, подсказывает paced.max_wait — число или функция без аргументов
+    (Monitor подкладывает туда остаток бюджета прохода). В облаке проход живёт ровно
+    отведённые секунды: уснуть на 400 с из 780 — значит убить весь проход, поэтому
+    слишком долгое ожидание превращается в ошибку, чат пропускается и дойдёт в следующий
+    раз. Локально (max_wait нет) поведение прежнее.
+    """
     from telethon.errors import FloodWaitError, RPCError  # ленивый импорт
 
     for attempt in range(retries):
@@ -105,6 +116,12 @@ async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
             return await factory()
         except FloodWaitError as exc:
             wait = exc.seconds * 1.2 + 5
+            limit = getattr(paced, "max_wait", None)
+            limit = limit() if callable(limit) else limit
+            if limit is not None and wait > limit:
+                raise FloodWaitTooLong(
+                    f"{label}: Telegram просит ждать {wait:.0f} с, а в бюджете прохода "
+                    f"осталось {limit:.0f} с — чат пропущен, дойдёт в следующий проход")
             print(f"[flood] {label}: ждём {wait:.0f} с (Telegram просит {exc.seconds} с)", file=sys.stderr)
             notify_flood(label, exc.seconds, wait)     # бот-панель увидит ограничение (ТЗ §7.3)
             await asyncio.sleep(wait)

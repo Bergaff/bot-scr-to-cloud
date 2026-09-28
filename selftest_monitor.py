@@ -13,13 +13,16 @@ import random
 import json
 import os
 import shutil
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import sqlite3 as _sqlite3
 
-from core_telegram import Paced, call, format_hit, hidden_author_reason, message_link
+import core_telegram
+from core_telegram import (Paced, call, format_hit, hidden_author_reason,
+                           message_link)
 import monitor as monitor_module
 
 from matcher import analyze
@@ -1699,6 +1702,96 @@ async def main() -> None:
     checks.append(("падение прохода уходит в TG_NOTIFY_CHAT и пишется в журнал ошибок",
                    'key="failure", force=True' in parser_src
                    and "store.log_error(type(exc).__name__" in parser_src, ""))
+
+
+    # ----------------------------------------------------- бюджет прохода (схема B)
+    section("Бюджет прохода: радар укладывается в отведённое время")
+
+    # В схеме B проход один: если его оборвут снаружи по таймауту, не успеют записаться
+    # ни пульс, ни счётчики, ни очередь пересылок. Поэтому радар следит за временем сам.
+    mon_src = Path("monitor.py").read_text(encoding="utf-8", errors="replace")
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+    mon = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                 core_telegram.Paced(0.0), deadline=None)
+    checks.append(("без бюджета времени читаем всё (своя машина, живой режим)",
+                   mon.time_left() == float("inf") and mon.flood_budget() is None, ""))
+
+    mon2 = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                  core_telegram.Paced(0.0), deadline=time.monotonic() + 100,
+                                  flood_wait_limit=30)
+    checks.append(("с бюджетом: остаток виден и FloodWait им ограничен",
+                   90 <= mon2.time_left() <= 100 and mon2.flood_budget() == 30.0,
+                   f"{mon2.time_left():.0f} с, лимит {mon2.flood_budget()}"))
+
+    mon3 = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                  core_telegram.Paced(0.0), deadline=time.monotonic() + 10)
+    checks.append(("без лимита FloodWait ждём не дольше остатка бюджета",
+                   0 < mon3.flood_budget() <= 10.0, f"{mon3.flood_budget():.1f}"))
+
+    # просроченный бюджет: catch_up не начинает новые чаты, а помечает их на следующий раз
+    passed = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                    core_telegram.Paced(0.0), deadline=time.monotonic() - 1)
+    sources_left = [monitor_module.Source(target="@a", catchup=50, topics=(), min_score=0),
+                    monitor_module.Source(target="@b", catchup=50, topics=(), min_score=0)]
+    passed.entities = {"@a": object(), "@b": object()}
+    await passed.catch_up(sources_left)
+    checks.append(("просроченный бюджет: чаты не читаются, а откладываются на следующий проход",
+                   passed.catchup_left == ["@a", "@b"], str(passed.catchup_left)))
+
+    # FloodWait дольше бюджета — не спим, а пропускаем чат
+    async def flood_factory():
+        from telethon.errors import FloodWaitError
+        raise FloodWaitError(request=None, capture=600)
+
+    paced_fast = core_telegram.Paced(0.0)
+    paced_fast.max_wait = lambda: 30.0
+    try:
+        await core_telegram.call(flood_factory, paced_fast, retries=1, label="get_entity(@a)")
+        waited = "дождался"
+    except core_telegram.FloodWaitTooLong as exc:
+        waited = str(exc)
+    checks.append(("FloodWait дольше бюджета: не спим, а пропускаем чат",
+                   "пропущен" in waited and "725" in waited, waited[:90]))
+
+    paced_slow = core_telegram.Paced(0.0)
+    paced_slow.max_wait = lambda: 1e9
+    try:
+        async def tiny_factory():
+            from telethon.errors import FloodWaitError
+            raise FloodWaitError(request=None, capture=1)
+        await core_telegram.call(tiny_factory, paced_slow, retries=1, label="tiny")
+        tiny_note = "дошло"
+    except core_telegram.FloodWaitTooLong:
+        tiny_note = "пропустили по бюджету — зря"
+    except Exception:                                   # noqa: BLE001 - исчерпал попытки
+        tiny_note = "ждал, как и раньше"
+    checks.append(("короткий FloodWait в бюджете ждём, как и раньше (обычный режим не сломан)",
+                   tiny_note == "ждал, как и раньше", tiny_note))
+
+    text_left = monitor_module.ServiceNotify.pass_summary(
+        now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=540.0,
+        read=100, found=0, forwarded=0, per_account=[("main", 100, 0)], errors=0,
+        db_total="0 совпадений", leftover=["@c", "@d"])
+    checks.append(("сводка честно говорит, сколько чатов не успел",
+                   "не успел прочитать 2 чатов" in text_left and "в следующий раз" in text_left,
+                   text_left.splitlines()[-1]))
+    checks.append(("сводка без отложенных чатов не пугает",
+                   "не успел" not in monitor_module.ServiceNotify.pass_summary(
+                       now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+                       read=0, found=0, forwarded=0, per_account=[], errors=0,
+                       db_total="0 совпадений"), ""))
+    checks.append(("бюджет берётся из RADAR_TIMEOUT, если флагом не задан",
+                   "env_timeout = float(os.getenv(\"RADAR_TIMEOUT\")" in mon_src
+                   and "budget = env_timeout * 0.75" in mon_src, ""))
+    checks.append(("флаги --pass-budget и --flood-wait-limit описаны",
+                   '"--pass-budget"' in mon_src and '"--flood-wait-limit"' in mon_src, ""))
+    checks.append(("RADAR_TIMEOUT поднят под cron (было 540, предел Workers 900 с)",
+                   '"RADAR_TIMEOUT": "780"' in Path("wrangler.jsonc").read_text(
+                       encoding="utf-8", errors="replace"), ""))
 
     # ---------------------------------------------------------- итог
     section("Итог")

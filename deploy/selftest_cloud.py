@@ -413,6 +413,20 @@ async def main() -> None:
                    slow_result["ok"] is False and "таймаут" in str(slow_result.get("error"))
                    and slow_result.get("log_tail"), str(slow_result.get("error"))[:50]))
 
+    # Реальная форма TimeoutExpired: stdout=None, stderr — bytes. Раньше из-за этого лог
+    # оборванного прохода оказывался пустым и понять, где проход встал, было нельзя.
+    def timeout_run_bytes(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 1),
+                                        output=None, stderr=b"[i] catch-up @a: 50\n[!] flood\n")
+
+    slow_bytes = cloud_entry.RadarRunner(workdir=bare, client=client, runner=timeout_run_bytes,
+                                         timeout=3, sessions=("monitor_session",), log=quiet)
+    slow_bytes.run_pass()
+    saved_log = slow_bytes.read_log()
+    checks.append(("таймаут: то, что радар успел напечатать, не теряется (bytes/null)",
+                   "catch-up @a" in saved_log and "[!] flood" in saved_log
+                   and "оборван по таймауту" in saved_log, saved_log[:80].replace("\n", " | ")))
+
     def broken_run(command, **kwargs):
         return types.SimpleNamespace(returncode=2, stdout="", stderr="[!] ошибка сессии: AUTH_KEY_UNREGISTERED\n")
 
@@ -682,6 +696,19 @@ async def main() -> None:
                                                      if "catchup" in p],
                        "; ".join(report["problems"])[:80]))
 
+
+    # разовый запуск с другими аргументами: проверить доставку, не пересобирая контейнер
+    for args, ok, why in (
+            ("--once --test-forward --notify console", True, ""),
+            ("--once --check-sources", True, ""),
+            ("--once --catchup 0 --mode B", False, "--catchup 0"),
+            ("--bot-panel", False, "--bot-panel"),
+            ("--once --notify console '(", False, "не разобрал"),
+    ):
+        good, reason = cloud_entry.allowed_run_args(args)
+        checks.append((f"разовый запуск: «{args[:34]}» — {'можно' if ok else 'нельзя'}",
+                       good is ok and (not why or why in reason),
+                       (reason or "разрешено")[:70]))
 
     # находки и служебные сообщения — разные каналы: находки пересылкой аккаунта в бота
     # (forward.to), а TG_NOTIFY_CHAT — сводка прохода и падения для хозяина

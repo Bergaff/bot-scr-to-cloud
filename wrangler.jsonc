@@ -20,7 +20,7 @@
 		"R2_BUCKET": "radar-state",
 		"TG_SESSION": "monitor_session,second_session",
 		"RADAR_ARGS": "--once --notify console --mode B --auto-join --service-notify bot",
-		"RADAR_TIMEOUT": "540"
+		"RADAR_TIMEOUT": "780"
 	},
 
 	// Контейнер с Python-радаром. image указывает на Dockerfile — wrangler сам соберёт

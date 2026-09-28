@@ -35,6 +35,7 @@ import hmac
 import json
 import os
 import re
+import copy
 import shlex
 import signal
 import subprocess
@@ -64,6 +65,47 @@ def env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on", "да")
+
+
+def _decode(chunk) -> str:
+    """Кусок вывода подпроцесса в строку: на таймауте приходят bytes, а stdout бывает None.
+
+    Именно из-за этого лог оборванного прохода раньше был пустым: проверка
+    `isinstance(exc.stdout, str)` не проходила, и всё, что радар успел напечатать,
+    выбрасывалось — вместо него писалось «проход не завершился за N с».
+    """
+    if not chunk:
+        return ""
+    if isinstance(chunk, bytes):
+        return chunk.decode("utf-8", "replace")
+    return str(chunk)
+
+
+# Что НЕльзя передать в разовом запуске: долгоиграющие и меняющие состояние режимы.
+# Облачный контейнер живёт один проход, поэтому панель, демон и вход по QR здесь бессмысленны,
+# а --catchup 0 ломает схему B (догон — единственный читатель чатов), см. preflight().
+FORBIDDEN_RUN_FLAGS = ("--bot-panel", "--panel-only", "--login", "--login-qr", "--daemon")
+FORBIDDEN_RUN_VALUES = (("--catchup", "0"),)
+
+
+def allowed_run_args(args: str) -> tuple[bool, str]:
+    """Можно ли запустить проход с такими аргументами. (да/нет, причина отказа)."""
+    try:
+        tokens = shlex.split(args or "")
+    except ValueError as exc:
+        return False, f"не разобрал аргументы: {exc}"
+    if len(tokens) > 20:
+        return False, "слишком много аргументов"
+    for flag in FORBIDDEN_RUN_FLAGS:
+        if flag in tokens:
+            return False, f"{flag} в облаке запускать нельзя: контейнер живёт один проход"
+    for flag, value in FORBIDDEN_RUN_VALUES:
+        if flag in tokens:
+            rest = tokens[tokens.index(flag) + 1:]
+            if rest and rest[0] == value:
+                return False, (f"{flag} {value} отключит догон, а в схеме B он единственный "
+                               f"читатель чатов: проход будет всегда читать ноль")
+    return True, ""
 
 
 class RadarRunner:
@@ -154,8 +196,16 @@ class RadarRunner:
             completed = self._runner(command, cwd=str(self.workdir), capture_output=True,
                                      text=True, timeout=self.timeout, env=self.environment())
         except subprocess.TimeoutExpired as exc:
-            text = ((exc.stdout or "") + (exc.stderr or "")) if isinstance(exc.stdout, str) else ""
-            self._write_log(text or f"проход не завершился за {self.timeout:g} с")
+            # Важно не потерять то, что радар успел напечатать: при text=True обёртка
+            # subprocess на таймауте отдаёт куски как bytes (и stdout может быть None),
+            # поэтому строку собираем вручную. Без этого лог после таймаута пустой —
+            # и непонятно, на каком чате проход встал.
+            text = _decode(exc.stdout) + _decode(exc.stderr)
+            tail = text.strip().splitlines()[-40:]
+            body = "\n".join(tail) if tail else f"проход не завершился за {self.timeout:g} с"
+            self._write_log(body + f"\n[!] оборван по таймауту {self.timeout:g} с — что не "
+                                   f"успело, дойдёт в следующий проход (порядок чатов "
+                                   f"случайный, поэтому не застаиваются)")
             return {"ok": False, "error": f"таймаут прохода ({self.timeout:g} с)",
                     "seconds": round(time.time() - started, 1), "restored": restored,
                     "hint": "уменьши число чатов или увеличь RADAR_TIMEOUT; лог сохранён",
@@ -475,6 +525,10 @@ class Handler(BaseHTTPRequestHandler):
         from urllib.parse import urlparse
         return urlparse(self.path).path.rstrip("/") or "/"
 
+    def _query(self) -> dict:
+        from urllib.parse import parse_qs, urlparse
+        return parse_qs(urlparse(self.path).query)
+
     def _guard(self) -> bool:
         """Проверяет пароль; при отказе сама отвечает 403 и возвращает False."""
         if self._authorized():
@@ -537,7 +591,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(409, json.dumps({"ok": False, "error": "проход уже идёт"},
                                        ensure_ascii=False), "application/json; charset=utf-8")
             return
-        result = self.runner.run_pass()
+
+        # Разовый запуск с другими аргументами: проверить доставку (--test-forward),
+        # диагностику чатов или один проход втихую — не пересобирая контейнер.
+        extra = self._query().get("args", [""])[0].strip()
+        runner = self.runner
+        if extra:
+            ok, why = allowed_run_args(extra)
+            if not ok:
+                self._send(400, json.dumps({"ok": False, "error": why}, ensure_ascii=False),
+                           "application/json; charset=utf-8")
+                return
+            runner = copy.copy(self.runner)
+            runner.args = extra
+        result = runner.run_pass()
+        if extra:
+            result["args"] = extra
         self._send(200 if result.get("ok") else 500,
                    json.dumps(result, ensure_ascii=False, indent=2),
                    "application/json; charset=utf-8")
