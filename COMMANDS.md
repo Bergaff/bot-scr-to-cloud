@@ -401,7 +401,7 @@ sources:
 | `python login_wizard.py` | мастер авторизации (то же, что `start.bat --login`): ключи приложения, `.env`, вход по QR, `chat_id` бота |
 | `python selftest_login.py` | самопроверка мастера авторизации (валидация ключей, правка `.env`, определение `chat_id`, флаги) — 77 проверок, без сети и без аккаунта |
 | `python session_convert.py pyro.session --out monitor_session` | конвертер готовой сессии **Pyrogram → Telethon**: переносит `auth_key`, вход в Telegram и сеть не нужны. Пачка файлов: `--out-dir sessions` (имена сохраняются); перезаписать существующий `.session`: `--force` |
-| `python selftest_session.py` | самопроверка конвертера (форматы, перенос ключа побайтово, ключ не утекает в вывод, ничего не затирается молча, понятные отказы, переводы строк в .bat) — 63 проверки, без сети |
+| `python selftest_session.py` | самопроверка конвертера (форматы, перенос ключа побайтово, ключ не утекает в вывод, ничего не затирается молча, понятные отказы, переводы строк в .bat) — 62 проверки, без сети |
 | `python login_qr.py --session second_session` | вход вторым аккаунтом по QR (то же, что `start.bat --login-qr --session second_session`); без `--session` берётся `monitor_session` |
 | `python login_qr.py --ascii-qr` | QR в виде текста в консоли (если картинка не открывается) |
 | `python scraper.py --mode history --channels @chan --limit 3000 --out out/raw.jsonl` | разовый сбор истории канала (отдельный инструмент, не мониторинг) |

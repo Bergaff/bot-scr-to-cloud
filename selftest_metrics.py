@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import sys
 import asyncio
 import os
 import shutil
@@ -431,6 +432,10 @@ async def main() -> None:
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))
     failed = [name for name, ok, _ in checks if not ok]
     print("\nИТОГ:", "всё ок" if not failed else f"провалено: {failed}")
+    if failed:
+        # сборка образа запускает эти самопроверки с >/dev/null: stdout не виден,
+        # поэтому провал обязан попасть в лог сборки сам
+        print("[!] проваленные проверки:", *failed, sep="\n    ", file=sys.stderr)
     shutil.rmtree(WORKDIR, ignore_errors=True)
     if failed:
         raise SystemExit(1)

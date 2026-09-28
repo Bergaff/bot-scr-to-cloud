@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import base64
+import sys
 import contextlib
 import io
 import os
@@ -73,6 +74,17 @@ def make_pyrogram(path: str, dc: int = 2, key: bytes | None = None, test_mode: i
     return key
 
 
+def repo_text(*parts: str) -> str:
+    """Текст файла репозитория; пустая строка, если файла нет.
+
+    Самопроверка запускается и при сборке образа, где часть файлов вырезана .dockerignore.
+    Пустая строка вместо FileNotFoundError — пропавший файл даёт внятный FAIL конкретной
+    проверки, а не трейсбек и падение сборки.
+    """
+    path = Path(*parts)
+    return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+
+
 def main() -> int:
     WORKDIR.mkdir(parents=True, exist_ok=True)
     saved_environ = dict(os.environ)
@@ -88,6 +100,13 @@ def main() -> int:
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))
     failed = [name for name, ok, _ in checks if not ok]
     print("\nИТОГ:", "всё ок" if not failed else f"провалено: {failed}")
+    if failed:
+        # Сборка образа запускает эту самопроверку с >/dev/null, поэтому stdout не виден.
+        # Провал обязан попасть в лог сборки сам, иначе непонятно, что именно сломалось.
+        print("[!] проваленные проверки:", file=sys.stderr)
+        for name, ok, detail in checks:
+            if not ok:
+                print(f"    FAIL  {name}" + (f"  ({detail})" if detail else ""), file=sys.stderr)
     return 1 if failed else 0
 
 
@@ -292,45 +311,51 @@ def run_checks() -> None:
         code = conv.main([str(junk)])
     check("битый файл: код 1, ошибка в stderr", code == 1 and "не похоже" in err.getvalue(), str(code))
 
-    # ── обвязка: ключи заранее не нужны, секреты не в git и не в образ ──
-    section("Обвязка")
-    start_bat = Path("start.bat").read_text(encoding="utf-8", errors="replace")
-    check("start.bat: --convert-session идёт в session_convert.py",
-          "--convert-session" in start_bat and "session_convert.py" in start_bat, "")
-    check("start.bat: для конвертации ключи не спрашиваем",
-          'if "%~1"=="--convert-session" set "NEEDS_KEYS=0"' in start_bat.replace("'", '"'), "")
-    check("start.bat: аргументы передаются целиком (tokens=1,*)", "tokens=1,*" in start_bat, "")
-
-    gitignore = Path(".gitignore").read_text(encoding="utf-8", errors="replace")
-    dockerignore = Path(".dockerignore").read_text(encoding="utf-8", errors="replace")
-    check("*.session в .gitignore", "*.session" in gitignore, "")
-    check("*.session в .dockerignore", "*.session" in dockerignore, "")
-
     # ── переводы строк в .bat: cmd.exe рвёт LF-файлы на куски ───────────
+    # Проверки идут, только если файлы доехали до этой папки: при сборке образа часть из них
+    # вырезана .dockerignore, и отсутствие файла — не поломка радара, а отсутствие повода
+    # проверять. Иначе самопроверка роняет деплой из-за файла, который в контейнере не нужен.
     section("Переводы строк (Windows)")
+    present = [name for name in (".dockerignore", ".gitignore", ".gitattributes", "start.bat")
+               if Path(name).exists()]
+    missing = [name for name in (".dockerignore", ".gitignore", ".gitattributes", "start.bat")
+               if not Path(name).exists()]
+    if missing:
+        print("[i] нет в этой папке, проверки пропущены:", ", ".join(missing))
+
     bat_files = sorted(str(p) for p in Path(".").rglob("*.bat") if ".git" not in p.parts)
     bat_files += sorted(str(p) for p in Path(".").rglob("*.cmd") if ".git" not in p.parts)
-    check(".bat/.cmd в проекте найдены", len(bat_files) >= 2, ", ".join(bat_files))
+    if bat_files:
+        not_crlf = [name for name in bat_files
+                    if Path(name).read_bytes().count(b"\r\n") == 0
+                    or Path(name).read_bytes().count(b"\n") > Path(name).read_bytes().count(b"\r\n")]
+        bom = [name for name in bat_files if Path(name).read_bytes()[:3] == b"\xef\xbb\xbf"]
+        check("все .bat/.cmd с переводами CRLF (иначе cmd.exe ломает файл)", not not_crlf,
+              ", ".join(not_crlf) or f"ok, файлов {len(bat_files)}")
+        check("в .bat/.cmd нет BOM", not bom, ", ".join(bom) or "ok")
+    else:
+        print("[i] .bat/.cmd не найдены — проверка переводов строк пропущена")
 
-    not_crlf, lone_lf = [], []
-    for name in bat_files:
-        raw = Path(name).read_bytes()
-        if raw.count(b"\r\n") == 0 or raw.count(b"\n") > raw.count(b"\r\n"):
-            not_crlf.append(name)
-        if raw[:3] == b"\xef\xbb\xbf":
-            lone_lf.append(name + " (BOM)")
-    check("все .bat/.cmd с переводами CRLF (иначе cmd.exe ломает файл)", not not_crlf,
-          ", ".join(not_crlf) or "ok")
-    check("в .bat/.cmd нет BOM", not lone_lf, ", ".join(lone_lf) or "ok")
+    if Path(".gitattributes").exists():
+        attrs = repo_text(".gitattributes")
+        check(".gitattributes: .bat без нормализации переводов (-text)", "*.bat -text" in attrs,
+              attrs[:60] or "пусто")
+        check(".gitattributes: .sh с LF", "*.sh text eol=lf" in attrs, "")
+    if Path("start.bat").exists():
+        start_bat = repo_text("start.bat")
+        check("start.bat: --convert-session идёт в session_convert.py",
+              "--convert-session" in start_bat and "session_convert.py" in start_bat, "")
+        check("start.bat: для конвертации ключи не спрашиваем",
+              'set "NEEDS_KEYS=0"' in start_bat, "")
+        check("start.bat: аргументы передаются целиком (tokens=1,*)", "tokens=1,*" in start_bat, "")
+        check("start.bat начинается с @echo off",
+              Path("start.bat").read_bytes().startswith(b"@echo off"), "")
+    if Path(".gitignore").exists():
+        check("*.session в .gitignore", "*.session" in repo_text(".gitignore"), "")
+    if Path(".dockerignore").exists():
+        check("*.session в .dockerignore", "*.session" in repo_text(".dockerignore"), "")
 
-    attrs = Path(".gitattributes").read_text(encoding="utf-8") if Path(".gitattributes").exists() else ""
-    check(".gitattributes: .bat без нормализации переводов (-text)", "*.bat -text" in attrs,
-          attrs[:60] or "файла нет")
-    check(".gitattributes: .sh с LF", "*.sh text eol=lf" in attrs, "")
-    start_raw = Path("start.bat").read_bytes()
-    check("start.bat начинается с @echo off", start_raw.startswith(b"@echo off"), start_raw[:12])
-
-    doc = Path("session_convert.py").read_text(encoding="utf-8", errors="replace")
+    doc = repo_text("session_convert.py")
     # печатать можно что угодно, кроме самого ключа: dc_id, user_id, длина — можно
     leaking = [line.strip() for line in doc.splitlines()
                if "print" in line and ('data["auth_key"]' in line
