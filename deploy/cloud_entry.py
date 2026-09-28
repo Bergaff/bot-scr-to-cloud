@@ -10,7 +10,7 @@ Worker'а, диск у него эфемерный, а входящих TCP-по
         -> поднять/разбудить контейнер
         -> POST /run
              -> восстановить .session и hits.sqlite3 из R2
-             -> monitor.py --once --catchup 0 --notify bot --mode B
+             -> monitor.py --once --notify bot --mode B
              -> вернуть базу, сессии, metrics.csv и лог в R2
         -> контейнер засыпает через sleepAfter
 

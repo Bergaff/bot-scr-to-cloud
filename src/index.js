@@ -52,7 +52,12 @@ export class RadarContainer extends Container {
 	}
 }
 
-/** Что передаём в контейнер: ключи Telegram, доступ к R2 и аргументы прохода. */
+/**
+ * Что передаём в контейнер: ключи Telegram, доступ к R2, аргументы прохода и выключатели.
+ * Выключатели ОБЯЗАТЕЛЬНЫ здесь: контейнер читает только своё окружение, и без этих двух
+ * строк RADAR_ON/TG_COMMANDS из дашборда до monitor.py не доходили — радар «слушал», пока
+ * его явно не остановили.
+ */
 function containerEnv(env) {
 	return {
 		TG_API_ID: String(env.TG_API_ID ?? ''),
@@ -65,9 +70,21 @@ function containerEnv(env) {
 		R2_ACCESS_KEY_ID: String(env.R2_ACCESS_KEY_ID ?? ''),
 		R2_SECRET_ACCESS_KEY: String(env.R2_SECRET_ACCESS_KEY ?? ''),
 		RADAR_TOKEN: String(env.RADAR_TOKEN ?? ''),
-		RADAR_ARGS: String(env.RADAR_ARGS ?? '--once --catchup 0 --notify bot --mode B'),
+		RADAR_ARGS: String(env.RADAR_ARGS ?? '--once --notify bot --mode B'),
 		RADAR_TIMEOUT: String(env.RADAR_TIMEOUT ?? '540'),
+		RADAR_ON: String(env.RADAR_ON ?? '1'),
+		TG_COMMANDS: String(env.TG_COMMANDS ?? '1'),
 	};
+}
+
+/**
+ * Выключатель из Variables воркера: ровно эти значения (регистр и пробелы не важны)
+ * означают «выкл». Всё остальное — пусто, «yes», опечатка — включено: радар работает,
+ * пока его не выключили явным нулём. Зеркало env_flag() из monitor.py.
+ */
+function isOff(value) {
+	return ['0', 'off', 'false', 'no', 'нет', 'выкл']
+		.includes(String(value ?? '').trim().toLowerCase());
 }
 
 function authHeaders(env) {
@@ -87,6 +104,22 @@ async function ready(env) {
 
 /** Один проход радара: ответ контейнера отдаём как есть (JSON с итогом). */
 async function runPass(env) {
+	// Выключатель RADAR_ON=0 отрабатывает здесь, а не только в monitor.py: Worker видит
+	// переменные дашборда в момент вызова, поэтому проход встаёт сразу после смены значения
+	// (без /restart и деплоя), а контейнер даже не поднимается — не платим за холодный старт.
+	// Внутри контейнера RADAR_ON продублирован в containerEnv — страховка для ручного /run.
+	if (isOff(env.RADAR_ON)) {
+		console.log('[radar] RADAR_ON=0 — проход пропущен, контейнер не поднимается');
+		return new Response(JSON.stringify({
+			ok: false,
+			skipped: 'RADAR_ON=0',
+			error: 'радар выключен переменной RADAR_ON=0 — проход не запускался; '
+				+ 'включить: Variables → RADAR_ON=1',
+		}) + '\n', {
+			status: 200,
+			headers: { 'content-type': 'application/json; charset=utf-8' },
+		});
+	}
 	const started = Date.now();
 	const container = await ready(env);
 	const response = await container.containerFetch('http://localhost/run', {
@@ -133,7 +166,7 @@ const HELP = `Telegram-радар (схема B: проход по распис�
 
 С токеном (?token=<RADAR_TOKEN> или заголовок x-radar-token):
   GET  /check       — готов ли радар: секреты, доступ к R2, наличие .session (проход НЕ запускает)
-  POST /run         — проход вне очереди
+  POST /run         — проход вне очереди (при RADAR_ON=0 — откажет: радар выключен)
   GET  /status      — итог последнего прохода (JSON)
   GET  /usage       — расход и вердикт «A подходит / рекомендую B»
   GET  /metrics.csv — срезы расхода (открывается в Excel)

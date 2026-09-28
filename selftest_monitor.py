@@ -1871,13 +1871,24 @@ async def main() -> None:
             {"update_id": 10, "message": {"chat": {"id": 999888777}, "text": "/cost"}},
             {"update_id": 11, "message": {"chat": {"id": 999888777}, "text": "/status"}},
         ])
-        answered = await monitor_module.answer_pending_commands(cmd_store, [], transport=transport)
+        cloud_acc = monitor_module.AccountConfig(name="main", session="s",
+                                                 forward={"max_per_day": 50})
+        answered = await monitor_module.answer_pending_commands(
+            cmd_store, [cloud_acc], transport=transport,
+            titles={"chat-key": "Граница (чат)"}, chats={"main": 3})
         checks.append(("команды из Telegram разбираются в конце прохода (панель отдельно не нужна)",
                        answered == 2 and len(transport.sent) == 2, f"ответов {answered}"))
         checks.append(("на /cost отвечают деньгами, на /status — состоянием радара",
                        any("Стоимость" in text for text in transport.sent)
                        and any("Радар" in text for text in transport.sent),
                        transport.sent[0].splitlines()[0][:50]))
+        status_text = next((t for t in transport.sent if "Радар" in t), "")
+        checks.append(("в /status из облака — реальные чаты и дневной лимит, а не «чаты: 0»",
+                       "чаты: 3" in status_text and "переслано 0/50" in status_text,
+                       next((line for line in status_text.splitlines()
+                             if "чаты" in line or "переслано" in line), status_text[:60])))
+        checks.append(("проход --once пишет heartbeat(start): /status не показывает «жив н/д»",
+                       'store.log_heartbeat("start"' in mon_src, ""))
         again = await monitor_module.answer_pending_commands(cmd_store, [], transport=transport)
         checks.append(("одна команда — один ответ: offset помнят между проходами",
                        again == 0, f"повторных ответов {again}"))

@@ -2334,7 +2334,8 @@ def rotate_runners(runners: list, store) -> list:
 
 
 async def answer_pending_commands(store, accounts, stats_file: str = "stats.txt",
-                                  transport=None) -> int:
+                                  transport=None, titles: dict | None = None,
+                                  chats: dict | None = None) -> int:
     """Раз в проход забираем команды хозяина из Telegram и отвечаем на них.
 
     В схеме B отдельной панели нет — контейнер живёт ровно один проход, — поэтому
@@ -2344,10 +2345,15 @@ async def answer_pending_commands(store, accounts, stats_file: str = "stats.txt"
 
     Обработчики команд уже написаны в bot_panel (16 штук: /status, /last, /sources,
     /limits, /errors, /cost…), поэтому здесь только доставка апдейтов до них.
+    titles (target -> человекочитаемое имя) и chats (имя аккаунта -> число чатов) —
+    чтобы /status показывал реальные «чаты: N», а не «чаты: 0»: здесь панель собирается
+    без build_panel(), и без этих цифр AccountView уходит без чатов.
     """
-    from bot_panel import BotPanel
+    from bot_panel import AccountView, BotPanel
 
-    panel = BotPanel(store, accounts=accounts, mode="B", panel_only=True,
+    views = [AccountView.from_config(acc, int((chats or {}).get(acc.name, 0) or 0))
+             for acc in accounts]
+    panel = BotPanel(store, accounts=views, titles=titles or {}, mode="B", panel_only=True,
                      stats_file=stats_file, transport=transport)
     ok, why = panel.ready()
     if not ok:
@@ -2712,6 +2718,10 @@ async def async_main(args) -> None:
     if args.once:
         print(f"[i] выключатели: RADAR_ON=1, TG_COMMANDS={int(tg_commands_enabled(args))} "
               f"(правятся в Variables воркера, 0 — выкл, 1 — вкл)", file=sys.stderr)
+        # Метка «жив» для /status: в схеме B проход идёт через --once, Monitor.run()
+        # (heartbeat start там) не вызывается — без этой записи статус показывал «жив н/д».
+        # Пишем на каждый проход: статус отвечается в конце прохода, значению не устареть.
+        store.log_heartbeat("start", detail="проход --once (схема B)")
 
     runners: list[tuple[AccountConfig, object, Monitor]] = []
     for acc in accounts:
@@ -2858,8 +2868,10 @@ async def async_main(args) -> None:
     # команды из Telegram: /status, /cost, /last, /sources… разбираем в конце прохода
     if getattr(args, "once", False) and tg_commands_enabled(args):
         try:
-            answered = await answer_pending_commands(store, accounts,
-                                                     stats_file=args.stats_file)
+            answered = await answer_pending_commands(
+                store, accounts, stats_file=args.stats_file,
+                titles=titles_by_key(sources),
+                chats={acc.name: len(buckets.get(acc.name, [])) for acc in accounts})
             if answered:
                 print(f"[i] ответили на команд из Telegram: {answered}", file=sys.stderr)
         except Exception as exc:                                  # не роняем проход из-за бота

@@ -780,6 +780,15 @@ async def main() -> None:
                    "'/restart'" in worker and "container.stop()" in worker, "ok"))
     checks.append(("/check проксируется Worker'ом и закрыт токеном (как остальные данные)",
                   "'/check'" in worker and "'/check': 'application/json" in worker, "ok"))
+    checks.append(("выключатели RADAR_ON и TG_COMMANDS пробрасываются в контейнер "
+                   "(иначе дашборд их не видит)",
+                   "RADAR_ON: String(env.RADAR_ON" in worker
+                   and "TG_COMMANDS: String(env.TG_COMMANDS" in worker, "ok"))
+    checks.append(("RADAR_ON=0 гасит cron и /run в Worker'е: контейнер даже не поднимается",
+                   "isOff(env.RADAR_ON)" in worker and "контейнер не поднимается" in worker,
+                   "ok"))
+    checks.append(("дефолт RADAR_ARGS без «--catchup 0» (иначе проход читает 0 сообщений)",
+                   "--catchup 0" not in worker, "ok"))
 
     # ---------- шаблон секретов для `wrangler secret bulk`: не должен разъехаться с Worker'ом
     template_text = repo_text("deploy", "secrets.example.env")
