@@ -367,6 +367,7 @@ TOKEN="<RADAR_TOKEN из шага 2>"
 curl -i "$URL/healthz"                     # 204 — Worker жив (без пароля)
 curl "$URL/"                               # справка (без пароля, без данных)
 curl "$URL/check?token=$TOKEN"             # ГОТОВНОСТЬ: секреты, доступ к R2, наличие .session
+curl "$URL/sources-check?token=$TOKEN"    # ЧАТЫ: что читается, куда вступить, где 0 прочитанных
 curl -X POST "$URL/run?token=$TOKEN"       # проход ВНЕ очереди: весь цикл R2 → радар → R2
 curl "$URL/status?token=$TOKEN"            # итог последнего прохода (JSON)
 curl "$URL/usage?token=$TOKEN"             # расход и вердикт «A подходит / рекомендую B»
@@ -484,8 +485,9 @@ $0.000020 за vCPU-секунду, $0.00000007 за ГБ-секунду дис�
 ## Локальная проверка без Cloudflare
 
 ```bash
-python3 deploy/selftest_cloud.py      # 118 проверок: подпись R2, состояние, проход, эндпоинты, конфиг
-python3 selftest_monitor.py           # 154 проверки конвейера (включая пульс разового прохода)
+python3 deploy/selftest_cloud.py      # 124 проверки: подпись R2, состояние, проход, эндпоинты, конфиг
+python3 selftest_monitor.py           # 178 проверок конвейера (включая пульс разового прохода
+                                      # и диагностику источников)
 python3 selftest_panel.py             # 86 проверок бот-панели (включая живость в схеме B)
 python3 selftest_metrics.py           # 65 проверок метрик расхода
 python3 selftest_login.py             # 77 проверок мастера авторизации (--login)

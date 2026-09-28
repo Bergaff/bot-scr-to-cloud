@@ -1482,6 +1482,130 @@ async def main() -> None:
                    c_store.pulse_progress(hours=1.0, account="main") == (0, 0),
                    f"pulse_progress={c_store.pulse_progress(hours=1.0, account='main')}"))
 
+
+    # ------------------------------------------------- диагностика источников
+    section("Диагностика источников (--check-sources)")
+    monitor_src = Path("monitor.py").read_text(encoding="utf-8", errors="replace")
+
+    # Классификация ошибок Telegram: текст, а не тип исключения — проверяется без Telethon.
+    cases = [
+        ("ValueError: Cannot get entity from https://t.me/+abc", "https://t.me/+abc", "join"),
+        ("ChannelPrivateError: The channel specified is private", "@closed", "join"),
+        ("UsernameNotOccupiedError: Nobody is using this username", "@opechatka", "missing"),
+        ("UsernameInvalidError: The username is invalid", "@opechatka", "missing"),
+        ("FloodWaitError: A wait of 12 seconds is required", "@chan", "flood"),
+        ("InviteHashExpiredError: invite hash expired", "https://t.me/+old", "expired"),
+        ("RuntimeError: something odd", "@chan", "error"),
+    ]
+    for text, target, want in cases:
+        verdict, advice = monitor_module.classify_source_error(text, target)
+        checks.append((f"ошибка «{text.split(':')[0]}» = {want}",
+                       verdict == want and bool(advice), f"{verdict}: {advice[:40]}"))
+
+    # ссылка-приглашение отличается от обычного чата: про неё можно сказать «--auto-join»
+    join_link = monitor_module.classify_source_error("Cannot get entity", "https://t.me/+abc")[1]
+    join_plain = monitor_module.classify_source_error("Cannot get entity", "@closed")[1]
+    checks.append(("совет для ссылки-приглашения упоминает --auto-join",
+                   "--auto-join" in join_link, join_link[:60]))
+    checks.append(("для закрытого чата без ссылки --auto-join не советуем (он не поможет)",
+                   "--auto-join" not in join_plain, join_plain[:60]))
+
+    # ключи чатов: по ним ищется статистика в базе
+    mk = lambda target, **kw: monitor_module.Source(target=target, **kw)
+    checks.append(("ключ @username = имя без @ в нижнем регистре",
+                   monitor_module.source_chat_key(mk("@TravelersMinsk")) == "travelersminsk",
+                   monitor_module.source_chat_key(mk("@TravelersMinsk"))))
+    checks.append(("ключ ссылки-приглашения = invite:<hash>",
+                   monitor_module.source_chat_key(mk("https://t.me/+CmQyl50rf-NlODFi"))
+                   == "invite:CmQyl50rf-NlODFi",
+                   monitor_module.source_chat_key(mk("https://t.me/+CmQyl50rf-NlODFi"))))
+    checks.append(("Monitor.chat_key и общая функция дают одно и то же",
+                   monitor_module.Monitor.chat_key(None, mk("@some_chat"))
+                   == monitor_module.source_chat_key(mk("@some_chat")), "ok"))
+
+    # замечания по конфигу без сети
+    srcs = [mk("@a", account="main"), mk("@b", account="second"), mk("@c", account="")]
+    accs = [monitor_module.AccountConfig(name="main", session="monitor_session", forward={}),
+            monitor_module.AccountConfig(name="second", session="second_session", forward={})]
+    buckets = monitor_module.sources_for_account(srcs, accs)
+    notes = " ".join(monitor_module.diagnose_sources_config(srcs, accs, buckets, None))
+    checks.append(("конфиг: источник без account: достаётся первому аккаунту — об этом сказано",
+                   "без account:" in notes and "main" in notes, notes[:80]))
+
+    dupes = [mk("@a", account="main"), mk("@a", account="main")]
+    notes_dup = " ".join(monitor_module.diagnose_sources_config(
+        dupes, accs, monitor_module.sources_for_account(dupes, accs), None))
+    checks.append(("конфиг: чат-дубль замечается", "дважды" in notes_dup, notes_dup[:60]))
+
+    idle = [mk("@a", account="main")]
+    notes_idle = " ".join(monitor_module.diagnose_sources_config(
+        idle, accs, monitor_module.sources_for_account(idle, accs), None))
+    checks.append(("конфиг: аккаунт без чатов — простой виден заранее",
+                   "простаивает" in notes_idle, notes_idle[:70]))
+
+    off = [mk("@a", account="main", enabled=False)]
+    notes_off = " ".join(monitor_module.diagnose_sources_config(
+        off, accs, monitor_module.sources_for_account(off, accs), None))
+    checks.append(("конфиг: выключенный источник назван", "выключено в конфиге" in notes_off,
+                   notes_off[:70]))
+
+    # «читался раньше, но пропал из конфига» — берётся из базы
+    store_diag = monitor_module.HitStore(":memory:")
+    store_diag.bump_stats("gone_chat", scanned=5, matched=1, saved=1, forwarded=0, account="main")
+    notes_db = " ".join(monitor_module.diagnose_sources_config(idle, accs,
+                                                        monitor_module.sources_for_account(idle, accs),
+                                                        store_diag))
+    checks.append(("конфиг: чат из базы, которого нет в списке, назван",
+                   "нет в конфиге" in notes_db and "gone_chat" in notes_db, notes_db[:90]))
+
+    # проверка читает конфиг, но не трогает базу: флаг есть и ведёт в свою функцию
+    checks.append(("флаг --check-sources есть в monitor.py",
+                   '"--check-sources"' in monitor_src, ""))
+    checks.append(("--check-sources диспетчеризуется в check_sources()",
+                   "await check_sources(args, defaults, sources, store, api_id, api_hash)"
+                   in monitor_src, ""))
+    checks.append(("--force отключает защиту «радар работает» (для контейнера)",
+                   'getattr(args, "force", False)' in monitor_src, ""))
+
+    # живая проверка источников на заглушке клиента: вердикты и сводка
+    class FakeSourceClient:
+        """get_entity/get_messages без сети: что отвечать — задаётся списком."""
+
+        def __init__(self, behaviour: dict, messages: int = 1):
+            self.behaviour, self.messages = behaviour, messages
+
+        async def get_entity(self, target):
+            if target in self.behaviour:
+                raise RuntimeError(self.behaviour[target])
+            return SimpleNamespace(id=1, title="fake")
+
+        async def get_messages(self, entity, limit=1):
+            if not self.messages:
+                return []
+            stamp = datetime(2026, 9, 27, 18, 41, tzinfo=timezone.utc)
+            return [SimpleNamespace(id=5, date=stamp)]
+
+    paced = monitor_module.Paced(0)
+    ok_client = FakeSourceClient({})
+    verdict, detail = await monitor_module.probe_source(ok_client, mk("@ok"), paced)
+    checks.append(("живая проверка: доступный чат = «читается» с датой последнего сообщения",
+                   verdict == "ok" and "27.09 18:41" in detail, f"{verdict}: {detail}"))
+
+    empty_client = FakeSourceClient({}, messages=0)
+    verdict, detail = await monitor_module.probe_source(empty_client, mk("@empty"), paced)
+    checks.append(("живая проверка: пустой чат = «ПУСТО», а не «читается»",
+                   verdict == "empty", f"{verdict}: {detail}"))
+
+    join_client = FakeSourceClient({"@closed": "Cannot get entity from @closed"})
+    verdict, detail = await monitor_module.probe_source(join_client, mk("@closed"), paced)
+    checks.append(("живая проверка: закрытый чат = «нужно вступить»",
+                   verdict == "join", f"{verdict}: {detail}"))
+
+    missing_client = FakeSourceClient({"@opechatka": "Nobody is using this username"})
+    verdict, detail = await monitor_module.probe_source(missing_client, mk("@opechatka"), paced)
+    checks.append(("живая проверка: опечатка в имени = «не найден»",
+                   verdict == "missing", f"{verdict}: {detail}"))
+
     # ---------------------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:

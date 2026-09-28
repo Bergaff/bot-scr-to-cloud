@@ -627,6 +627,7 @@ async def main() -> None:
     # не попадал, и проверка «файл с секретами в .gitignore» роняла сборку с FileNotFoundError.
     # Список ниже — явный договор: всё перечисленное обязано дойти до контейнера.
     read_by_selftest = [".dockerignore", ".gitignore", "DEPLOY.md", "Dockerfile", "wrangler.jsonc",
+                        "sources.yaml", "monitor.py", "session_convert.py", "selftest_session.py",
                         "src/index.js", "cloud_panel.bat", "cloud_panel.sh", "monitor.py",
                         "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/secrets.example.env",
                         "start.bat", "session_convert.py", "selftest_session.py"]
@@ -634,6 +635,28 @@ async def main() -> None:
     checks.append(("всё, что читает самопроверка, дошло до контекста сборки (не вырезано)",
                    not absent,
                    (", ".join(absent) + " — вырезан .dockerignore, нужно исключение !имя") if absent else "ok"))
+
+
+    # диагностика чатов: контейнер проверяет источники сам — на своей машине при живом cron
+    # этого делать нельзя (второй клиент на тот же .session отзывает ключ Telegram)
+    checks.append(("/sources-check есть в контейнере",
+                   "/sources-check" in repo_text("deploy/cloud_entry.py"), ""))
+    checks.append(("/sources-check запускает monitor.py --check-sources --force",
+                   '"--check-sources", "--force"' in repo_text("deploy/cloud_entry.py"), ""))
+    checks.append(("/sources-check не пускают во время прохода (иначе два клиента на сессию)",
+                   "lock.locked()" in repo_text("deploy/cloud_entry.py"), ""))
+    checks.append(("Worker пускает /sources-check только с токеном",
+                   "'/sources-check'" in repo_text("src/index.js")
+                   and "PROTECTED" in repo_text("src/index.js"), ""))
+    checks.append(("локалка предупреждена: --check-sources при живом радаре отзывает ключ",
+                   "AuthKeyDuplicatedError" in repo_text("monitor.py")
+                   and "check_sources" in repo_text("monitor.py"), ""))
+
+    # два аккаунта читают разные чаты: это видно прямо в конфиге
+    config_raw = repo_text("sources.yaml")
+    checks.append(("в sources.yaml два аккаунта: monitor_session и second_session",
+                   "session: monitor_session" in config_raw
+                   and "session: second_session" in config_raw, ""))
 
     config_text = repo_text("wrangler.jsonc")
     plain = re.sub(r"^\s*//.*$", "", config_text, flags=re.MULTILINE)

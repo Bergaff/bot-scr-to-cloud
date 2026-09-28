@@ -138,11 +138,13 @@ const HELP = `Telegram-радар (схема B: проход по распис�
   GET  /usage       — расход и вердикт «A подходит / рекомендую B»
   GET  /metrics.csv — срезы расхода (открывается в Excel)
   GET  /log         — лог последнего прохода
+  GET  /sources-check — живая проверка чатов: что читается, куда надо вступить, где прочитано 0
   GET  /restart     — остановить контейнер (нужно после смены секретов)
 Без токена отвечает только /healthz.
 `;
 
-const PROTECTED = ['/check', '/run', '/status', '/usage', '/metrics.csv', '/log', '/restart'];
+const PROTECTED = ['/check', '/run', '/status', '/usage', '/metrics.csv', '/log', '/restart',
+	'/sources-check'];
 
 export default {
 	/** Cron: wall-clock до 15 минут, поэтому дожидаемся прохода целиком и пишем итог в лог. */

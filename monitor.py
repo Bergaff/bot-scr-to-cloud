@@ -33,8 +33,8 @@ from pathlib import Path
 
 from core_telegram import (BOT_TOKEN_HINT, Paced, add_flood_hook, build_notifier, call,
                            collect_topics, display_name, format_hit, hidden_author_reason,
-                           load_dotenv, make_client, message_link, peer_id, resolve_targets,
-                           topic_of, topic_title_of)
+                           invite_hash, load_dotenv, make_client, message_link, peer_id,
+                           resolve_targets, topic_of, topic_title_of)
 from matcher import analyze
 
 HEADERS_TXT = {
@@ -1216,11 +1216,7 @@ class Monitor:
     # --- служебное
 
     def chat_key(self, source: Source) -> str:
-        raw = source.target.strip()
-        if "t.me/+" in raw or "joinchat/" in raw or raw.startswith("+"):
-            invite = raw.rstrip("/").split("/")[-1].lstrip("+")
-            return f"invite:{invite}"          # например invite:CmQyl50rf-NlODFi
-        return raw.lstrip("@").rstrip("/").split("/")[-1].lower()
+        return source_chat_key(source)         # общая функция: её же использует --check-sources
 
     async def sender_name(self, sender_id: int | None) -> str | None:
         if not sender_id:
@@ -1976,6 +1972,211 @@ async def check_sessions(args, defaults: dict, store: "HitStore", api_id: int,
     return code
 
 
+# --- диагностика источников: «вступить», «не найден», «не смотрит» ---------------
+#
+# Три разные беды выглядят одинаково — «находок нет». Проверка разводит их:
+#   * join    — аккаунт не состоит в чате: радар до чата просто не доходит, нужен вход в чат;
+#   * missing — имя набрано с опечаткой либо чат удалён;
+#   * quiet   — чат читается, но прочитано 0 сообщений: не привязан к аккаунту, выключен,
+#               отсекается профилем/порогом или в чате давно nothing не пишут.
+# Проверка живая (подключается к Telegram), но в базу не пишет и ничего не пересылает.
+
+VERDICT_LABEL = {
+    "ok": "читается", "join": "НУЖНО ВСТУПИТЬ", "missing": "НЕ НАЙДЕН",
+    "expired": "ССЫЛКА ИСТЕКЛА", "flood": "ПАУЗА ОТ TELEGRAM", "error": "ОШИБКА",
+    "empty": "ПУСТО",
+}
+
+# Подстроки в тексте ошибки Telegram. Типы исключений не используем: тексты стабильнее,
+# и разбор можно проверить тестом, не поднимая Telethon.
+# Telethon дублирует смысл и словами, и в snake_case — ловим оба вида
+_JOIN_HINTS = ("not part of", "cannot get entity", "channel_private", "channel is private",
+               "channel specified is private", "private channel", "user_not_participant",
+               "participant_id_invalid", "chat_admin_required")
+# Telethon пишет эти ошибки и словами, и в snake_case — ловим оба вида
+_MISSING_HINTS = ("username not occupied", "username_not_occupied", "username invalid", "username is invalid",
+                  "username_invalid", "username_is_invalid", "no user has", "nobody is using", "there is no")
+_FLOOD_HINTS = ("flood", "wait of", "too many requests")
+_EXPIRED_HINTS = ("expired", "истек")
+
+
+def classify_source_error(text: str, target: str = "") -> tuple[str, str]:
+    """Вердикт и совет по тексту ошибки Telegram. target нужен, чтобы отличить ссылку-приглашение."""
+    low = (text or "").lower()
+    if any(hint in low for hint in _FLOOD_HINTS):
+        return "flood", "Telegram просит подождать — лимит на запросы, повтори позже"
+    if any(hint in low for hint in _EXPIRED_HINTS):
+        return "expired", "ссылка-приглашение истекла: попроси свежую у администратора чата"
+    if any(hint in low for hint in _MISSING_HINTS):
+        return "missing", "такого имени нет: проверь написание (или чат удалён)"
+    if any(hint in low for hint in _JOIN_HINTS):
+        if invite_hash(target):
+            return "join", "аккаунт не в чате: вступи вручную или запусти радар с --auto-join"
+        return "join", ("аккаунт не состоит в чате: вступи с него вручную "
+                        "(приватный чат без ссылки-приглашения — только так)")
+    return "error", "неожиданная ошибка — смотри текст ниже"
+
+
+def source_chat_key(source: "Source") -> str:
+    """Ключ чата в базе: @username без @ в нижнем регистре; для ссылок — invite:<hash>."""
+    raw = source.target.strip()
+    if "t.me/+" in raw or "joinchat/" in raw or raw.startswith("+"):
+        invite = raw.rstrip("/").split("/")[-1].lstrip("+")
+        return f"invite:{invite}"
+    return raw.lstrip("@").rstrip("/").split("/")[-1].lower()
+
+
+def diagnose_sources_config(sources: list, accounts: list, buckets: dict,
+                            store=None) -> list[str]:
+    """Замечания по конфигу без сети: выключенное, дубли, без привязки, пропавшее из списка."""
+    notes: list[str] = []
+    disabled = [s.target for s in sources if not s.enabled]
+    if disabled:
+        notes.append(f"[i] выключено в конфиге (enabled: false) — радар их не читает: "
+                     f"{', '.join(disabled)}")
+
+    counts: dict[str, int] = {}
+    for source in sources:
+        key = source_chat_key(source)
+        counts[key] = counts.get(key, 0) + 1
+    duplicates = sorted(key for key, count in counts.items() if count > 1)
+    if duplicates:
+        notes.append(f"[!] чат указан дважды — читаться будет дважды, лимиты тоже: "
+                     f"{', '.join(duplicates)}")
+
+    if len(accounts) > 1:
+        unassigned = [s.target for s in sources if not (s.account or "").strip()]
+        if unassigned:
+            notes.append(f"[i] без account: {len(unassigned)} шт. — достаются первому аккаунту "
+                         f"«{accounts[0].name}»")
+
+    for name, bucket in buckets.items():
+        if not bucket:
+            notes.append(f"[!] аккаунту «{name}» не назначен ни один чат — он простаивает")
+
+    if store is not None:
+        keys = {source_chat_key(s) for s in sources}
+        stale = sorted(key for key in (store.scanned_by_chat() or {}) if key and key not in keys)
+        if stale:
+            notes.append(f"[i] читались раньше, но сейчас их нет в конфиге: {', '.join(stale)}")
+    return notes
+
+
+async def probe_source(client, source: "Source", paced) -> tuple[str, str]:
+    """Один источник: (вердикт, подробность). Базу не трогает, ничего не пересылает."""
+    try:
+        entity = await call(lambda: client.get_entity(source.target), paced,
+                            label=f"get_entity({source.target})")
+    except Exception as exc:                                        # noqa: BLE001
+        return classify_source_error(f"{type(exc).__name__}: {exc}", source.target)
+    try:
+        messages = await call(lambda: client.get_messages(entity, limit=1), paced,
+                              label=f"get_messages({source.target})")
+    except Exception as exc:                                        # noqa: BLE001
+        return classify_source_error(f"{type(exc).__name__}: {exc}", source.target)
+    if not messages:
+        return "empty", ("чат доступен, но сообщений не видно: пустой чат либо история закрыта "
+                         "для новых участников")
+    stamp = getattr(messages[0], "date", None)
+    return "ok", ("последнее сообщение " + stamp.strftime("%d.%m %H:%M") if stamp
+                  else "сообщения есть")
+
+
+async def check_sources(args, defaults: dict, sources: list, store, api_id: int,
+                        api_hash: str) -> int:
+    """Живая проверка источников: что читается, куда вступить, где радар «не смотрит».
+
+    Открывает по клиенту на каждый аккаунт, поэтому допустима ТОЛЬКО когда радар остановлен
+    (второй клиент на тот же .session = AuthKeyDuplicatedError). В облаке это единственный
+    клиент — там проверку запускает эндпоинт /sources-check внутри контейнера с --force.
+    """
+    from bot_panel import BotPanel
+
+    if not getattr(args, "force", False):
+        busy = BotPanel.sessions_busy(store, minutes=3.0)
+        if busy:
+            print(f"[!] Отказ: аккаунт «{busy}» только что слал пульс — похоже, радар работает. "
+                  f"Живая проверка откроет второй клиент на тот же .session, и Telegram отзовёт "
+                  f"ключ (AuthKeyDuplicatedError). Останови радар (Ctrl+C в его окне), потом "
+                  f"повтори: start.bat --check-sources", file=sys.stderr)
+            return 1
+
+    accounts = resolve_accounts(args, defaults)
+    buckets = sources_for_account(sources, accounts)
+    print("[i] проверка источников: подключаюсь к каждому аккаунту, базу не меняю")
+
+    for note in diagnose_sources_config(sources, accounts, buckets, store):
+        print(note)
+    if not sources:
+        print("[!] в конфиге нет ни одного источника — проверять нечего")
+        return 1
+
+    paced = Paced(getattr(args, "delay", 2.0))
+    scanned = store.scanned_by_chat() or {}
+    matched = store.matched_by_chat() or {}
+    last_hit = store.last_hit_at_by_chat() or {}
+    verdicts: dict[str, int] = {}
+    code = 0
+
+    for acc in accounts:
+        own = buckets.get(acc.name, [])
+        session_file = Path(f"{acc.session}.session")
+        print(f"\n── {acc.name} · {session_file.name} · чатов {len(own)} ──")
+        if not session_file.exists():
+            print(f"    [!] файла {session_file.name} нет: "
+                  f"start.bat --login-qr --session {acc.session}")
+            code = 1
+            continue
+        client = make_client(acc.session, api_id, api_hash, delay=args.delay,
+                             proxy=acc.proxy or args.proxy)
+        try:
+            await client.connect()
+            me = await client.get_me() if await client.is_user_authorized() else None
+            if me is None:
+                print(f"    [!] сессия не авторизована: "
+                      f"start.bat --login-qr --session {acc.session}")
+                code = 1
+                continue
+            print(f"    [+] {display_name(me)} (id={me.id})")
+            for source in own:
+                verdict, detail = await probe_source(client, source, paced)
+                verdicts[verdict] = verdicts.get(verdict, 0) + 1
+                key = source_chat_key(source)
+                read = int(scanned.get(key, 0))
+                found = int(matched.get(key, 0))
+                hit = last_hit.get(key, "")
+                stats = (f" · прочитано {read}, найдено {found}"
+                         + (f", последняя находка {hit[:16].replace('T', ' ')}" if hit else ""))
+                label = VERDICT_LABEL.get(verdict, verdict)
+                print(f"    {source.target[:42]:42} {label:16} {detail}{stats if verdict == 'ok' else ''}")
+                if verdict == "ok" and read == 0:
+                    verdicts["quiet"] = verdicts.get("quiet", 0) + 1
+                    print(f"    {'':42} └─ сюда радар не смотрел: чат новый, либо не тот аккаунт, "
+                          f"либо отсекается профилем «{source.profile}» с порогом {source.min_score}")
+                elif verdict != "ok":
+                    code = 1
+        except Exception as exc:                                    # noqa: BLE001
+            print(f"    [!] {type(exc).__name__}: {exc}", file=sys.stderr)
+            store.log_error(type(exc).__name__, str(exc)[:300], account=acc.name)
+            code = 1
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:                                       # noqa: BLE001
+                pass
+
+    if verdicts:
+        parts = [f"{VERDICT_LABEL.get(v, v).lower()} — {n}" for v, n in sorted(verdicts.items())]
+        print("\nИТОГ: " + ", ".join(parts))
+    todo = verdicts.get("join", 0) + verdicts.get("missing", 0) + verdicts.get("expired", 0)
+    if todo:
+        print(f"[i] нужно вступить или исправить: {todo} из {sum(verdicts.values())} источников")
+    if verdicts.get("quiet"):
+        print(f"[i] читаются, но по ним 0 прочитанных сообщений: {verdicts['quiet']} — "
+              f"проверь account: у источника и порог min_score")
+    return code
+
+
 def resolve_mode(args) -> str:
     """Схема работы для отчётов панели: A — постоянный слушатель, B — проходы по расписанию.
 
@@ -2192,6 +2393,9 @@ async def async_main(args) -> None:
 
     if args.check_sessions:
         sys.exit(await check_sessions(args, defaults, store, api_id, api_hash))
+
+    if args.check_sources:
+        sys.exit(await check_sources(args, defaults, sources, store, api_id, api_hash))
 
     paced = Paced(args.delay)
     accounts = resolve_accounts(args, defaults)
@@ -2470,6 +2674,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--check-sessions", action="store_true",
                     help="живая проверка сессий (get_me по каждому аккаунту) — ТОЛЬКО когда радар "
                          "остановлен: второй клиент на тот же .session отзывает ключ")
+    ap.add_argument("--check-sources", action="store_true",
+                    help="живая проверка чатов из конфига: что читается, куда надо вступить, где "
+                         "радар «не смотрит» (0 прочитанных). Базу не меняет; ТОЛЬКО при "
+                         "остановленном радаре (в облаке: GET /sources-check)")
+    ap.add_argument("--force", action="store_true",
+                    help="для --check-sources: проверить, даже если в базе виден живой пульс "
+                         "(использует сам контейнер: он и есть единственный клиент)")
     ap.add_argument("--metrics-interval", type=float, default=15.0, metavar="MIN",
                     help="как часто писать срез ресурсов (память, CPU, нагрузка) в базу и раз в час "
                          "в metrics.csv; 0 — выключить метрики (по умолчанию 15)")

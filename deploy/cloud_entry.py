@@ -193,6 +193,26 @@ class RadarRunner:
 
     # --- отчёты
 
+    def sources_check(self, timeout: float = 300.0) -> str:
+        """Диагностика чатов: monitor.py --check-sources внутри контейнера.
+
+        Именно здесь, а не на своей машине: контейнер — тот самый единственный клиент на
+        эти .session. Второй (локальный --check-sources при живом cron) отозвал бы ключ
+        Telegram. --force нужен, чтобы проверка не спотыкалась о собственный свежий пульс
+        радара в базе: параллельный проход здесь невозможен, их разводит замок run_pass.
+        """
+        command = [self.python, "monitor.py", "--check-sources", "--force",
+                   "--db", self.db_name, "--config", "sources.yaml"]
+        self._log(f"[i] диагностика чатов: {' '.join(command)}")
+        try:
+            completed = self._runner(command, cwd=str(self.workdir), capture_output=True,
+                                     text=True, timeout=timeout, env=self.environment())
+        except subprocess.TimeoutExpired as exc:
+            text = ((exc.stdout or "") + (exc.stderr or "")) if isinstance(exc.stdout, str) else ""
+            return (f"диагностика не уложилась в {timeout:g} с\n"
+                    + (text or "попробуй ещё раз: контейнер мог прогреваться"))
+        return ((completed.stdout or "") + (completed.stderr or "")).strip() or "вывода нет"
+
     def usage_text(self) -> str:
         """Тот же текст, что бот показывает на /usage (берётся из восстановленной базы)."""
         db_path = self.workdir / self.db_name
@@ -225,7 +245,7 @@ class RadarRunner:
             "args": self.args,
             "last_run": self.last,
             "endpoints": ["/check", "/run (POST)", "/status", "/usage", "/metrics.csv", "/log",
-                          "/healthz"],
+                          "/sources-check", "/healthz"],
         }
 
     # --- проверка готовности без прохода
@@ -452,6 +472,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/log":
             text = self.runner.read_log()
             self._send(200 if text else 404, text or "лога ещё нет\n")
+        elif path == "/sources-check":
+            if self.runner.lock.locked():
+                self._send(409, "проход уже идёт — запроси /sources-check после его окончания\n")
+                return
+            self._send(200, self.runner.sources_check() + "\n")
         else:
             self._send(404, f"нет такого пути: {path}\n{INDEX_TEXT}")
 
@@ -487,6 +512,8 @@ INDEX_TEXT = """Telegram-радар в Cloudflare Containers (схема B: пр
   GET  /usage       — расход и вердикт «A подходит / рекомендую B»
   GET  /metrics.csv — срезы расхода (открывается в Excel)
   GET  /log         — лог последнего прохода
+  GET  /sources-check — живая проверка чатов: что читается, куда надо вступить,
+                      где прочитано 0 сообщений
 Без пароля отвечает только /healthz.
 """
 
