@@ -2333,6 +2333,50 @@ def rotate_runners(runners: list, store) -> list:
     return rotated
 
 
+async def answer_pending_commands(store, accounts, stats_file: str = "stats.txt",
+                                  transport=None) -> int:
+    """Раз в проход забираем команды хозяина из Telegram и отвечаем на них.
+
+    В схеме B отдельной панели нет — контейнер живёт ровно один проход, — поэтому
+    команды разбираются в конце прохода: отвечаем на всё, что накопилось с прошлого раза.
+    Задержка — до интервала cron (10 мин), зато без отдельного процесса, без второго
+    клиента на ту же сессию и без лишних денег: это 2-3 вызова Bot API за проход.
+
+    Обработчики команд уже написаны в bot_panel (16 штук: /status, /last, /sources,
+    /limits, /errors, /cost…), поэтому здесь только доставка апдейтов до них.
+    """
+    from bot_panel import BotPanel
+
+    panel = BotPanel(store, accounts=accounts, mode="B", panel_only=True,
+                     stats_file=stats_file, transport=transport)
+    ok, why = panel.ready()
+    if not ok:
+        print(f"[i] команды из Telegram недоступны: {why}", file=sys.stderr)
+        return 0
+    if panel.offset <= 0:
+        # первый раз: сбрасываем накопившееся, чтобы не отвечать на старые команды
+        try:
+            stale = await panel.transport.get_updates(-1, timeout=1)
+            if stale:
+                panel.offset = int(stale[-1].get("update_id", 0)) + 1
+                panel._save_offset()
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"[!] старые апдейты не сбросились: {exc}", file=sys.stderr)
+    updates = await panel.transport.get_updates(panel.offset, timeout=0)
+    answers = await panel.handle_updates(updates or [])
+    return len(answers)
+
+
+def tg_commands_enabled(args) -> bool:
+    """Нужно ли разбирать команды из Telegram в конце прохода."""
+    mode = getattr(args, "tg_commands", "auto") or "auto"
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    return bool(os.getenv("TG_BOT_TOKEN") and os.getenv("TG_NOTIFY_CHAT"))
+
+
 def resolve_mode(args) -> str:
     """Схема работы для отчётов панели: A — постоянный слушатель, B — проходы по расписанию.
 
@@ -2732,6 +2776,21 @@ async def async_main(args) -> None:
             leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])])
         await service.send(text, key="summary", force=bool(found or forwarded or not read))
 
+    # длительность прохода пригодится для /cost: стоимость считаем от фактического расхода
+    store.bot_state_set("pass:last_seconds", f"{time.time() - pass_started:.1f}")
+
+    # команды из Telegram: /status, /cost, /last, /sources… разбираем в конце прохода
+    if getattr(args, "once", False) and tg_commands_enabled(args):
+        try:
+            answered = await answer_pending_commands(store, accounts,
+                                                     stats_file=args.stats_file)
+            if answered:
+                print(f"[i] ответили на команд из Telegram: {answered}", file=sys.stderr)
+        except Exception as exc:                                  # не роняем проход из-за бота
+            print(f"[!] команды из Telegram не обработаны: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            store.log_error("TgCommands", f"{type(exc).__name__}: {exc}"[:300])
+
     # файл статистики: откуда и сколько сообщений идёт
     if args.stats_file:
         report = store.stats_report(days=args.stats_days, titles_from_config=titles_by_key(sources))
@@ -2887,6 +2946,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--flood-wait-limit", type=float, default=0.0, metavar="СЕК",
                     help="не ждать FloodWait дольше этого: чат пропускается и дойдёт в "
                          "следующий проход (0 — не больше четверти бюджета)")
+    ap.add_argument("--tg-commands", choices=("auto", "on", "off"), default="auto",
+                    help="разбирать команды из Telegram в конце прохода (/status, /cost, "
+                         "/last, /sources, /limits…). Ответ приходит со следующим проходом, "
+                         "зато без отдельной панели. auto — включено, если заданы "
+                         "TG_BOT_TOKEN и TG_NOTIFY_CHAT")
     ap.add_argument("--service-notify", choices=("auto", "bot", "none"), default="auto",
                     help="служебные сообщения ботом в TG_NOTIFY_CHAT: сводка прохода "
                          "(прочитано/найдено/переслано), падения, долгие паузы. Находки сюда "

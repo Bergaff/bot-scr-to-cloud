@@ -1844,6 +1844,53 @@ async def main() -> None:
     checks.append(("ротация вызывается перед проходом, а не только в тестах",
                    "runners = rotate_runners(runners, store)" in mon_src, ""))
 
+
+    # ----------------------------------------- команды из Telegram без отдельной панели
+    section("Команды из Telegram: разбор в конце прохода")
+
+    class _FakeTransport:
+        def __init__(self, updates):
+            self.updates, self.sent = updates, []
+
+        async def get_updates(self, offset, timeout=0):
+            return [] if offset == -1 else [u for u in self.updates if u["update_id"] >= offset]
+
+        async def send_message(self, chat_id, text, **kwargs):
+            self.sent.append(text)
+            return True, ""
+
+        async def send_document(self, chat_id, path, caption=""):
+            return True, ""
+
+    os.environ["TG_BOT_TOKEN"] = "1234567890:AAH-test-token-abcdefghij"
+    os.environ["TG_NOTIFY_CHAT"] = "999888777"
+    try:
+        cmd_store = monitor_module.HitStore(":memory:")
+        cmd_store.bot_state_set("pass:last_seconds", "370")
+        transport = _FakeTransport([
+            {"update_id": 10, "message": {"chat": {"id": 999888777}, "text": "/cost"}},
+            {"update_id": 11, "message": {"chat": {"id": 999888777}, "text": "/status"}},
+        ])
+        answered = await monitor_module.answer_pending_commands(cmd_store, [], transport=transport)
+        checks.append(("команды из Telegram разбираются в конце прохода (панель отдельно не нужна)",
+                       answered == 2 and len(transport.sent) == 2, f"ответов {answered}"))
+        checks.append(("на /cost отвечают деньгами, на /status — состоянием радара",
+                       any("Стоимость" in text for text in transport.sent)
+                       and any("Радар" in text for text in transport.sent),
+                       transport.sent[0].splitlines()[0][:50]))
+        again = await monitor_module.answer_pending_commands(cmd_store, [], transport=transport)
+        checks.append(("одна команда — один ответ: offset помнят между проходами",
+                       again == 0, f"повторных ответов {again}"))
+        checks.append(("флаг --tg-commands есть, auto/on/off",
+                       '"--tg-commands", choices=("auto", "on", "off")' in mon_src, ""))
+        checks.append(("длительность прохода пишется в базу — /cost считает от неё",
+                       'store.bot_state_set("pass:last_seconds"' in mon_src, ""))
+        checks.append(("сбой бота не роняет проход (команды в отдельном try)",
+                       "команды из Telegram не обработаны" in mon_src, ""))
+    finally:
+        os.environ.pop("TG_BOT_TOKEN", None)
+        os.environ.pop("TG_NOTIFY_CHAT", None)
+
     # ---------------------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:

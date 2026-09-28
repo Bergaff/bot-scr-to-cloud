@@ -66,6 +66,7 @@ HELP_LINES = [
     ("top", "топ чатов за сутки по находкам"),
     ("limits", "лимиты пересылок и сколько осталось по аккаунтам"),
     ("why <id|ссылка>", "почему сообщение взяли или не взяли"),
+    ("cost", "стоимость работы в облаке: расход и сколько это в деньгах"),
 ]
 
 COMMANDS = {line[0].split()[0] for line in HELP_LINES}
@@ -330,6 +331,76 @@ class AccountView:
 # Панель
 # -----------------------------------------------------------------------------
 
+# ── стоимость работы в облаке ────────────────────────────────────────────────
+# Тарифы Cloudflare (проверено 2026-09): https://workers.cloudflare.com/plans
+# Containers считают три строки отдельно; что входит в Workers Paid — вычитаем.
+# CPU считается только за АКТИВНОЕ время, память и диск — за всё время жизни контейнера.
+CONTAINER_SIZES = {
+    # имя из wrangler.jsonc -> (vCPU, ГиБ памяти, ГБ диска)
+    "lite": (1 / 16, 0.25, 2.0),
+    "basic": (1 / 4, 1.0, 4.0),
+}
+RATE_CPU = 0.000020          # $ за vCPU-с активного времени
+RATE_MEM = 0.0000025         # $ за ГиБ-с
+RATE_DISK = 0.00000007       # $ за ГБ-с
+INCLUDED_MONTHLY = {"cpu": 375 * 60, "mem": 25 * 3600, "disk": 200 * 3600}
+PLAN_BASE = 5.0              # Workers Paid: абонентская плата, без неё контейнеры не дают
+HOURS_MONTH = 730.0          # 730 ч — средний месяц
+SECONDS_MONTH = HOURS_MONTH * 3600
+
+
+def monthly_cost(cpu_seconds: float, memory_gib_seconds: float,
+                 disk_gb_seconds: float) -> tuple[float, dict]:
+    """Месячный счёт: платим только за то, что сверх включённого в Workers Paid.
+
+    Возвращает (итого, разбивка по строкам). Ничего не округляем внутри — округляет
+    тот, кто печатает.
+    """
+    lines = {
+        "cpu": max(cpu_seconds - INCLUDED_MONTHLY["cpu"], 0.0) * RATE_CPU,
+        "mem": max(memory_gib_seconds - INCLUDED_MONTHLY["mem"], 0.0) * RATE_MEM,
+        "disk": max(disk_gb_seconds - INCLUDED_MONTHLY["disk"], 0.0) * RATE_DISK,
+    }
+    return PLAN_BASE + sum(lines.values()), lines
+
+
+def cost_report(seconds_per_pass: float, passes_per_day: float, instance: str = "lite",
+                cpu_share: float = 0.0) -> str:
+    """Текст для /cost: из чего складывается счёт и сколько это в деньгах.
+
+    Считаем по фактическому расходу: сколько длится проход и сколько их в сутки.
+    Два сценария по памяти — контейнер тёплый круглые сутки (cron чаще, чем sleepAfter)
+    или засыпает между проходами: разница видна сразу.
+    """
+    vcpu, gib, gb = CONTAINER_SIZES.get(instance, CONTAINER_SIZES["lite"])
+    passes_month = (passes_per_day or 0) * 30.4
+    share = min(max(cpu_share or 0.0, 0.0), 1.0) or 0.3      # без замеров берём 30 %
+
+    cpu_sec = seconds_per_pass * passes_month * vcpu * share
+    work_sec = seconds_per_pass * passes_month               # контейнер жив только на проходе
+    warm_mem = gib * SECONDS_MONTH                           # не засыпает — платим всегда
+
+    warm_total, warm_lines = monthly_cost(cpu_sec, warm_mem, gb * SECONDS_MONTH)
+    sleep_total, sleep_lines = monthly_cost(cpu_sec, gib * work_sec, gb * work_sec)
+
+    lines = [f"Стоимость · {instance}: {vcpu:g} vCPU, {gib:g} ГиБ, {gb:g} ГБ"]
+    lines.append(f"Проход {seconds_per_pass:.0f} с × {passes_per_day:.0f} в сутки "
+                 f"= {passes_month:.0f} проходов в месяц, CPU занят ~{share * 100:.0f} %")
+    lines.append("")
+    lines.append(f"Память {'%.1f' % (warm_mem / 3600)} ГиБ·ч → ${warm_lines['mem']:.2f} "
+                 f"(сверх 25 ГиБ·ч, входящих в план)")
+    lines.append(f"Диск {'%.0f' % (gb * SECONDS_MONTH / 3600)} ГБ·ч → ${warm_lines['disk']:.2f}")
+    lines.append(f"CPU {cpu_sec:.0f} vCPU·с → ${warm_lines['cpu']:.2f} "
+                 f"(входит в 375 vCPU·мин плана)" if cpu_sec <= INCLUDED_MONTHLY["cpu"]
+                 else f"CPU {cpu_sec:.0f} vCPU·с → ${warm_lines['cpu']:.2f}")
+    lines.append("")
+    lines.append(f"Итого: ~${warm_total:.2f}/мес (из них ${PLAN_BASE:.2f} — абонентская плата)")
+    if sleep_total + 0.01 < warm_total:
+        lines.append(f"Если контейнер засыпает между проходами: ~${sleep_total:.2f}/мес")
+    lines.append("Точно: дашборд → Workers & Pages → Billable usage")
+    return "\n".join(lines)
+
+
 class BotPanel:
     """Приёмник команд и источник статусов. Работает и внутри радара, и отдельным процессом."""
 
@@ -341,7 +412,8 @@ class BotPanel:
                  titles: dict | None = None, db_path: str | None = None,
                  poll_timeout: int = POLL_TIMEOUT, min_send_gap: float = 1.0,
                  heavy_gap: float = 5.0, message_limit: int = MESSAGE_LIMIT,
-                 clock=None, sleep=None, api_calls_counter=None):
+                 clock=None, sleep=None, api_calls_counter=None,
+                 instance_type: str = "lite"):
         self.store = store
         self.token = token if token is not None else (os.getenv("TG_BOT_TOKEN") or "")
         raw_chat = chat_id if chat_id is not None else (os.getenv("TG_NOTIFY_CHAT") or "")
@@ -358,6 +430,7 @@ class BotPanel:
         self.stats_file = stats_file
         self.stats_days = stats_days
         self.titles = titles or {}
+        self.instance_type = (instance_type or "lite").strip()
         self.db_path = db_path or getattr(store, "path", None)
         self.poll_timeout = poll_timeout
         self.min_send_gap = min_send_gap
@@ -719,6 +792,25 @@ class BotPanel:
         lines.append("Живость аккаунтов определяется по пульсу (--heartbeat), а не по находкам:")
         lines.append("тихий чат ночью — это норма, а не поломка.")
         return "\n".join(lines)
+
+    def cpu_share(self) -> float:
+        """Какая доля vCPU занята: берём последний замер метрик, иначе 0 (возьмём 30 %)."""
+        try:
+            rows = self.store.metrics_recent(hours=24.0)
+        except Exception:                                     # noqa: BLE001
+            return 0.0
+        values = [float(row.get("cpu_percent") or row.get("cpu") or 0) for row in rows]
+        values = [value for value in values if value > 0]
+        if not values:
+            return 0.0
+        return min(sum(values) / len(values) / 100.0, 1.0)
+
+    def cmd_cost(self) -> str:
+        """Стоимость: считаем по фактическому расходу, а не «на глаз»."""
+        seconds = float(self.store.bot_state_get("pass:last_seconds") or 0)
+        passes_day = len(self.store.heartbeats_since(24.0, kind="pulse") or [])
+        return cost_report(seconds, passes_day, instance=self.instance_type,
+                           cpu_share=self.cpu_share())
 
     def cmd_status(self) -> str:
         states = self.account_states()

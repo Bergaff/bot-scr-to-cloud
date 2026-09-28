@@ -23,8 +23,8 @@ from pathlib import Path
 import core_telegram
 import metrics as metrics_module
 import monitor as monitor_module
-from bot_panel import (COMMANDS, AccountView, BotPanel, HttpTransport, parse_owner_chat,
-                       retry_after_of, truncate)
+from bot_panel import (COMMANDS, HELP_LINES, AccountView, BotPanel, HttpTransport,
+                       cost_report, monthly_cost, parse_owner_chat, retry_after_of, truncate)
 from monitor import SCHEMA, HitStore, Monitor, build_parser, resolve_mode
 
 WORKDIR = Path("tests/_tmp_panel")
@@ -752,6 +752,42 @@ async def main() -> None:
                    str(len(retention_store.metrics_recent(hours=24 * 2)))))
 
     # ---------------------------------------------------- итог
+
+    # ----------------------------------------------------- стоимость работы в облаке
+    section("15. Стоимость: /cost считает, а не угадывает")
+
+    total, lines = monthly_cost(0, 0, 0)
+    checks.append(("в пределах включённого в Workers Paid платим только абонентскую плату",
+                   abs(total - 5.0) < 1e-9 and lines["mem"] == 0.0, f"${total:.2f}"))
+
+    total, lines = monthly_cost(1012, 0.25 * 730 * 3600, 2 * 730 * 3600)
+    checks.append(("реальный расход lite (тёплый контейнер): план + память + диск",
+                   6.7 <= total <= 6.8 and lines["cpu"] == 0.0
+                   and 1.4 <= lines["mem"] <= 1.45, f"${total:.2f}"))
+    checks.append(("память — главная строка счёта, а не CPU",
+                   lines["mem"] > lines["disk"] and lines["cpu"] == 0.0,
+                   f"память ${lines['mem']:.2f}, диск ${lines['disk']:.2f}"))
+
+    text = cost_report(370, 144, "lite", 0.01)
+    checks.append(("/cost показывает итог и где проверить точные цифры",
+                   "Итого:" in text and "Billable usage" in text and "Проход 370 с" in text,
+                   text.splitlines()[-2][:56]))
+    checks.append(("/cost показывает разницу: засыпает контейнер или нет",
+                   "засыпает между проходами" in text, ""))
+    checks.append(("CPU внутри плана помечен как бесплатный, а не «копейки для красоты»",
+                   "входит в 375 vCPU·мин" in text, ""))
+
+    cost_store = HitStore(":memory:")
+    cost_store.bot_state_set("pass:last_seconds", "370")
+    # имя НЕ answer: в этой функции есть вспомогательная функция answer(), и локальная
+    # переменная с тем же именем затенила бы её (UnboundLocalError — уже ловили в monitor.py)
+    cost_answer = BotPanel(cost_store, transport=object()).dispatch("/cost")
+    checks.append(("команда /cost работает через общий диспетчер панели",
+                   "Стоимость" in cost_answer.text and "370 с" in cost_answer.text,
+                   cost_answer.text.splitlines()[1][:56]))
+    checks.append(("/cost есть в справке бота, иначе её не найти",
+                   any(line[0] == "cost" for line in HELP_LINES), ""))
+
     section("Итог")
     for name, ok, detail in checks:
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))
