@@ -2376,13 +2376,35 @@ async def answer_pending_commands(store, accounts, stats_file: str = "stats.txt"
     return len(answers)
 
 
+def env_flag(name: str, default: bool = True) -> bool:
+    """Выключатель из переменных воркера: 1 — включено, 0 — выключено.
+
+    Переменные правятся в дашборде (Workers & Pages → бот → Settings → Variables),
+    деплой для этого не нужен: контейнер читает их при старте, поэтому после смены
+    значения его надо остановить (GET /restart). Всё, что не 0 и не 1 — пусто,
+    опечатка, «yes» — считаем как default: радар работает, пока его явно не выключили.
+    """
+    raw = (os.getenv(name) or "").strip().lower()
+    if raw in ("1", "on", "true", "yes", "да", "вкл"):
+        return True
+    if raw in ("0", "off", "false", "no", "нет", "выкл"):
+        return False
+    return default
+
+
 def tg_commands_enabled(args) -> bool:
-    """Нужно ли разбирать команды из Telegram в конце прохода."""
+    """Нужно ли разбирать команды из Telegram в конце прохода.
+
+    Три уровня: флаг --tg-commands (явный), переменная воркера TG_COMMANDS (0/1)
+    и старое правило «есть токен и чат — значит включено».
+    """
     mode = getattr(args, "tg_commands", "auto") or "auto"
     if mode == "off":
         return False
     if mode == "on":
         return True
+    if not env_flag("TG_COMMANDS", True):
+        return False
     return bool(os.getenv("TG_BOT_TOKEN") and os.getenv("TG_NOTIFY_CHAT"))
 
 
@@ -2395,6 +2417,8 @@ def tg_commands_reason(args) -> str:
     mode = getattr(args, "tg_commands", "auto") or "auto"
     if mode == "off":
         return "сняты флагом --tg-commands off"
+    if not env_flag("TG_COMMANDS", True):
+        return "переменная TG_COMMANDS=0 — включить: Variables → TG_COMMANDS=1 и /restart"
     missing = [name for name in ("TG_BOT_TOKEN", "TG_NOTIFY_CHAT") if not os.getenv(name)]
     if missing:
         return (f"не заданы {', '.join(missing)} — нужны секреты воркера "
@@ -2679,6 +2703,15 @@ async def async_main(args) -> None:
         print(f"[i] бюджет прохода: {budget:.0f} с (RADAR_TIMEOUT={os.getenv('RADAR_TIMEOUT', 'нет')}), "
               f"лимит ожидания FloodWait {min(args.flood_wait_limit or budget * 0.25, budget):.0f} с",
               file=sys.stderr)
+
+    # выключатель радара: RADAR_ON=0 в Variables воркера — и проходы встают, без деплоя
+    if not env_flag("RADAR_ON", True):
+        print("[i] радар выключен переменной RADAR_ON=0 — проход пропущен. "
+              "Включить: Variables → RADAR_ON=1, затем GET /restart", file=sys.stderr)
+        return
+    if args.once:
+        print(f"[i] выключатели: RADAR_ON=1, TG_COMMANDS={int(tg_commands_enabled(args))} "
+              f"(правятся в Variables воркера, 0 — выкл, 1 — вкл)", file=sys.stderr)
 
     runners: list[tuple[AccountConfig, object, Monitor]] = []
     for acc in accounts:

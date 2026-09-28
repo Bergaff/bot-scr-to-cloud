@@ -20,7 +20,13 @@
 		"R2_BUCKET": "radar-state",
 		"TG_SESSION": "monitor_session,second_session",
 		"RADAR_ARGS": "--once --notify console --mode B --auto-join --service-notify bot",
-		"RADAR_TIMEOUT": "420"
+		"RADAR_TIMEOUT": "420",
+
+		// Выключатели: 1 — вкл, 0 — выкл. Правятся прямо в дашборде
+		// (Workers & Pages → bot-scr-to-cloud → Settings → Variables), деплой не нужен.
+		// Контейнер читает переменные при старте: после смены значения — GET /restart.
+		"RADAR_ON": "1",
+		"TG_COMMANDS": "1"
 	},
 
 	// Контейнер с Python-радаром. image указывает на Dockerfile — wrangler сам соберёт

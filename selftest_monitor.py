@@ -1891,6 +1891,41 @@ async def main() -> None:
         os.environ.pop("TG_BOT_TOKEN", None)
         os.environ.pop("TG_NOTIFY_CHAT", None)
 
+    # ------------------------------------------------- выключатели
+    section("Выключатели: 0/1 в Variables воркера, без деплоя")
+    for raw, want in (("1", True), ("on", True), ("true", True),
+                      ("0", False), ("off", False), ("выкл", False)):
+        os.environ["TEST_FLAG"] = raw
+        checks.append((f"переменная «{raw}» — это {'вкл' if want else 'выкл'}",
+                       monitor_module.env_flag("TEST_FLAG", True) is want, ""))
+    os.environ["TEST_FLAG"] = "  "
+    checks.append(("пусто или опечатка — значение по умолчанию, а не выключение",
+                   monitor_module.env_flag("TEST_FLAG", True) is True
+                   and monitor_module.env_flag("TEST_FLAG", False) is False, ""))
+    os.environ.pop("TEST_FLAG", None)
+    checks.append(("переменной нет вовсе — значение по умолчанию",
+                   monitor_module.env_flag("TEST_FLAG", True) is True, ""))
+
+    os.environ["TG_BOT_TOKEN"] = "123456:TEST-TOKEN"
+    os.environ["TG_NOTIFY_CHAT"] = "42"
+    os.environ["TG_COMMANDS"] = "0"
+    checks.append(("TG_COMMANDS=0 выключает команды, даже когда токен и чат заданы",
+                   not monitor_module.tg_commands_enabled(SimpleNamespace(tg_commands="auto")),
+                   monitor_module.tg_commands_reason(SimpleNamespace(tg_commands="auto"))[:48]))
+    os.environ["TG_COMMANDS"] = "1"
+    checks.append(("TG_COMMANDS=1 команды включает",
+                   monitor_module.tg_commands_enabled(SimpleNamespace(tg_commands="auto")), ""))
+    os.environ.pop("TG_COMMANDS", None)
+    os.environ.pop("TG_BOT_TOKEN", None)
+    os.environ.pop("TG_NOTIFY_CHAT", None)
+    checks.append(("RADAR_ON=0 останавливает проход до входа в аккаунты",
+                   'env_flag("RADAR_ON", True)' in mon_src and "проход пропущен" in mon_src, ""))
+    checks.append(("состояние выключателей видно в логе прохода, а не Only в дашборде",
+                   "выключатели: RADAR_ON=1" in mon_src, ""))
+    cfg_src = Path("wrangler.jsonc").read_text(encoding="utf-8", errors="replace")
+    checks.append(("оба выключателя объявлены в vars воркера и включены",
+                   '"RADAR_ON": "1"' in cfg_src and '"TG_COMMANDS": "1"' in cfg_src, ""))
+
     # ------------------------------------------------- метка сборки
     section("Метка сборки: видно, какой код реально работает в облаке")
     import hashlib
