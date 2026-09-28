@@ -50,7 +50,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from r2_state import (KEY_DB, R2Client, R2Error, checkpoint_db,  # noqa: E402
                       missing_sessions, restore_state, save_state, session_key)
 
-DEFAULT_ARGS = "--once --catchup 0 --notify bot --mode B"
+# БЕЗ «--catchup 0»: флаг перекрывает catchup у каждого чата, а в разовом проходе
+# (--once) другого чтения нет — радар прочитал бы ноль сообщений и промолчал.
+DEFAULT_ARGS = "--once --notify bot --mode B"
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 540.0          # 9 минут: проход должен успеть до следующего cron (10 минут)
 LOG_NAME = "last-run.log"
@@ -313,6 +315,22 @@ class RadarRunner:
                     f"нажать «Старт» своему боту и посмотреть "
                     f"https://api.telegram.org/bot<TG_BOT_TOKEN>/getUpdates → "
                     f"npx wrangler secret put TG_NOTIFY_CHAT")
+
+        # «--catchup 0» в схеме B означает «не читать ничего вообще»: флаг перекрывает
+        # catchup у КАЖДОГО чата, а в разовом проходе (--once) другого чтения нет. Проход
+        # при этом зелёный: чаты разрешены, 0 прочитано, 0 найдено. Ловим до прохода.
+        if "--once" in tokens and "--catchup" in tokens:
+            try:
+                value = tokens[tokens.index("--catchup") + 1]
+            except IndexError:
+                value = ""
+            if value.lstrip("-").isdigit() and int(value) == 0:
+                problems.append(
+                    "в RADAR_ARGS есть «--catchup 0»: в разовом проходе этот флаг перекрывает "
+                    "catchup у каждого чата, и радар не прочитает ни одного сообщения (в логе "
+                    "будет «чаты разрешены» и 0 прочитанных). Убери «--catchup 0» — тогда "
+                    "работает catchup из sources.yaml (50-100 сообщений на чат), либо задай "
+                    "число явно: --catchup 50")
 
         if self.client is None:
             problems.append("R2 не настроен: нужны R2_BUCKET, R2_ACCESS_KEY_ID, "

@@ -19,7 +19,7 @@
 	"vars": {
 		"R2_BUCKET": "radar-state",
 		"TG_SESSION": "monitor_session,second_session",
-		"RADAR_ARGS": "--once --catchup 0 --notify bot --mode B",
+		"RADAR_ARGS": "--once --notify bot --mode B --auto-join",
 		"RADAR_TIMEOUT": "540"
 	},
 

@@ -359,7 +359,7 @@ async def main() -> None:
     bare = WORKDIR / "bare"
     bare.mkdir(parents=True, exist_ok=True)
     runner = cloud_entry.RadarRunner(workdir=bare, client=client, runner=fake_run,
-                                     args="--once --catchup 0 --notify bot --mode B",
+                                     args="--once --notify bot --mode B --auto-join",
                                      sessions=("monitor_session",), log=quiet)
     OBJECTS.pop("sessions/monitor_session.session", None)   # сессии нет ни в R2, ни на диске
     result = runner.run_pass()
@@ -379,8 +379,8 @@ async def main() -> None:
                    json.dumps({k: v for k, v in result.items() if k in ("ok", "exit_code", "seconds")},
                               ensure_ascii=False)))
     checks.append(("команда прохода — monitor.py с аргументами схемы B",
-                   calls[0]["command"][1:] == ["monitor.py", "--once", "--catchup", "0",
-                                               "--notify", "bot", "--mode", "B"],
+                   calls[0]["command"][1:] == ["monitor.py", "--once", "--notify", "bot",
+                                               "--mode", "B", "--auto-join"],
                    " ".join(calls[0]["command"][1:])))
     checks.append(("проход ограничен по времени (иначе cron наложится на следующий)",
                    calls[0]["timeout"] == cloud_entry.DEFAULT_TIMEOUT, str(calls[0]["timeout"])))
@@ -600,7 +600,7 @@ async def main() -> None:
     checks.append(("preflight: «--notify bot» без токена бота виден заранее",
                   "TG_BOT_TOKEN" in problem and "TG_NOTIFY_CHAT" in problem, problem[:110]))
     console_runner = cloud_entry.RadarRunner(workdir=bare, client=client, runner=fake_run,
-                                             args="--once --catchup 0 --notify console --mode B",
+                                             args="--once --notify console --mode B",
                                              sessions=("monitor_session",), log=quiet)
     report = console_runner.preflight(env=dict(good_env, TG_BOT_TOKEN="", TG_NOTIFY_CHAT=""))
     checks.append(("preflight: без «--notify bot» токен бота не требуется (ложных тревог нет)",
@@ -657,6 +657,30 @@ async def main() -> None:
     checks.append(("в sources.yaml два аккаунта: monitor_session и second_session",
                    "session: monitor_session" in config_raw
                    and "session: second_session" in config_raw, ""))
+
+
+    # схема B читает сообщения ТОЛЬКО в catch-up: «--catchup 0» перекрывает catchup у каждого
+    # чата, проход остаётся зелёным (чаты разрешены, 0 прочитано). Ловим до прохода.
+    good_env2 = {"TG_API_ID": "1234567", "TG_API_HASH": "0" * 32,
+                 "TG_BOT_TOKEN": "123:token", "TG_NOTIFY_CHAT": "999888777"}
+    zero_runner = cloud_entry.RadarRunner(workdir=bare, client=client,
+                                          args="--once --catchup 0 --notify bot --mode B",
+                                          sessions=("monitor_session",), log=quiet)
+    zero = zero_runner.preflight(env=good_env2)
+    problem_zero = " ".join(zero["problems"])
+    checks.append(("preflight: «--catchup 0» в разовом проходе = «не прочитает ничего»",
+                   zero["ok"] is False and "catchup" in problem_zero
+                   and "не прочитает ни одного сообщения" in problem_zero,
+                   problem_zero[:150] or "нет проблемы"))
+    for args, note in (("--once --notify bot --mode B --auto-join", "без --catchup"),
+                       ("--once --catchup 50 --notify bot --mode B", "--catchup 50")):
+        runner = cloud_entry.RadarRunner(workdir=bare, client=client, args=args,
+                                         sessions=("monitor_session",), log=quiet)
+        report = runner.preflight(env=good_env2)
+        checks.append((f"preflight: {note} — ложной тревоги нет",
+                       report["ok"] is True and not [p for p in report["problems"]
+                                                     if "catchup" in p],
+                       "; ".join(report["problems"])[:80]))
 
     config_text = repo_text("wrangler.jsonc")
     plain = re.sub(r"^\s*//.*$", "", config_text, flags=re.MULTILINE)
