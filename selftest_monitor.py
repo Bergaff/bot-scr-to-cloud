@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import random
 import json
+import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1605,6 +1606,99 @@ async def main() -> None:
     verdict, detail = await monitor_module.probe_source(missing_client, mk("@opechatka"), paced)
     checks.append(("живая проверка: опечатка в имени = «не найден»",
                    verdict == "missing", f"{verdict}: {detail}"))
+
+
+    # ------------------------------------------- служебные сообщения (не находки)
+    section("Служебные сообщения: сводка и падения")
+
+    # Находки уходят пересылкой аккаунта получателю из sources.yaml (forward.to), а
+    # TG_NOTIFY_CHAT — канал хозяина: как прошёл проход, что упало. Разделяем.
+    store_svc = monitor_module.HitStore(":memory:")
+    saved_env = {k: os.environ.get(k) for k in ("TG_BOT_TOKEN", "TG_NOTIFY_CHAT")}
+    os.environ["TG_BOT_TOKEN"] = "1234567890:AAH-test-token-abcdefghij"
+    os.environ["TG_NOTIFY_CHAT"] = "999888777"
+    try:
+        svc = monitor_module.ServiceNotify(store_svc, mode="auto", every_hours=6.0)
+        checks.append(("ServiceNotify: auto включает бота, когда токен и chat_id заданы",
+                       svc.enabled is True and svc.why_disabled() == "", svc.why_disabled()))
+
+        text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=44.0,
+            read=412, found=3, forwarded=3,
+            per_account=[("main", 300, 2), ("second", 112, 1)],
+            errors=0, db_total="27 совпадений", gap_minutes=None)
+        checks.append(("сводка: прочитано/найдено/переслано и разбивка по аккаунтам",
+                       "прочитано 412, найдено 3, переслано 3" in text
+                       and "main: прочитано 300, найдено 2" in text
+                       and "second: прочитано 112, найдено 1" in text, text.splitlines()[1]))
+        checks.append(("сводка: в шапке время прохода и длительность",
+                       "28.09 12:40" in text and "44 с" in text, text.splitlines()[0]))
+
+        gap_text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+            read=0, found=0, forwarded=0, per_account=[("main", 0, 0)], errors=0,
+            db_total="0 совпадений", gap_minutes=45.0, expected_minutes=10.0)
+        checks.append(("сводка: простой вдвое больше обычного виден",
+                       "45 мин назад" in gap_text and "простаивал" in gap_text,
+                       gap_text.splitlines()[-1]))
+
+        quiet_text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+            read=0, found=0, forwarded=0, per_account=[("main", 0, 0)], errors=0,
+            db_total="0 совпадений", gap_minutes=11.0, expected_minutes=10.0)
+        checks.append(("сводка: обычная пауза между проходами не тревожит",
+                       "простаивал" not in quiet_text, ""))
+
+        # антиспам: плановая сводка — не чаще раза в every часов. Отметка лежит в базе,
+        # поэтому перезапуск контейнера (в облаке он каждый проход) счётчик не сбрасывает.
+        store_svc.bot_state_set("service:summary",
+                                datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        checks.append(("антиспам: свежая отметка в базе держит паузу",
+                       monitor_module.ServiceNotify(store_svc)._due("summary") is False,
+                       str(store_svc.bot_state_get("service:summary"))[:40]))
+        checks.append(("антиспам: на пустой базе плановая сводка уходит",
+                       monitor_module.ServiceNotify(
+                           monitor_module.HitStore(":memory:"))._due("summary") is True, ""))
+        old_stamp = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat(timespec="seconds")
+        store_svc.bot_state_set("service:summary", old_stamp)
+        checks.append(("антиспам: через every часов сводка снова уходит",
+                       monitor_module.ServiceNotify(store_svc)._due("summary") is True, old_stamp))
+        store_svc.bot_state_set("service:summary", "не-дата")
+        checks.append(("антиспам: испорченная отметка не блокирует отправку",
+                       monitor_module.ServiceNotify(store_svc)._due("summary") is True, ""))
+
+        # выключенные каналы
+        os.environ["TG_NOTIFY_CHAT"] = ""
+        no_chat = monitor_module.ServiceNotify(store_svc, mode="auto")
+        checks.append(("без TG_NOTIFY_CHAT канал выключен и причина названа",
+                       no_chat.enabled is False and "TG_NOTIFY_CHAT" in no_chat.why_disabled(),
+                       no_chat.why_disabled()))
+        os.environ["TG_NOTIFY_CHAT"] = "999888777"
+        off = monitor_module.ServiceNotify(store_svc, mode="none")
+        checks.append(("--service-notify none выключает канал",
+                       off.enabled is False and "none" in off.why_disabled(), off.why_disabled()))
+    finally:
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    fail_text = monitor_module.ServiceNotify.failure_text(RuntimeError("контейнер не поднялся"))
+    checks.append(("падение прохода: понятный текст с типом ошибки",
+                   "Проход упал" in fail_text and "RuntimeError" in fail_text
+                   and "контейнер не поднялся" in fail_text, fail_text[:60]))
+
+    # флаги и проводка
+    parser_src = Path("monitor.py").read_text(encoding="utf-8", errors="replace")
+    checks.append(("флаг --service-notify есть, выбор auto/bot/none",
+                   '"--service-notify", choices=("auto", "bot", "none")' in parser_src, ""))
+    checks.append(("сводка отправляется после прохода, а не вместо него",
+                   "# служебная сводка прохода" in parser_src
+                   and 'await service.send(text, key="summary"' in parser_src, ""))
+    checks.append(("падение прохода уходит в TG_NOTIFY_CHAT и пишется в журнал ошибок",
+                   'key="failure", force=True' in parser_src
+                   and "store.log_error(type(exc).__name__" in parser_src, ""))
 
     # ---------------------------------------------------------- итог
     section("Итог")

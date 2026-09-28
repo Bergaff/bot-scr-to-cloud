@@ -27,6 +27,7 @@ import random
 import re
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2177,6 +2178,96 @@ async def check_sources(args, defaults: dict, sources: list, store, api_id: int,
     return code
 
 
+class ServiceNotify:
+    """Служебные сообщения ботом в TG_NOTIFY_CHAT: как радар поработал, что упало.
+
+    Находки сюда НЕ приходят: они уходят пересылкой самого аккаунта получателю из
+    sources.yaml (forward.to — обычно @parcel_transfer_bot). Здесь — другое: сводка
+    прохода (прочитано/найдено/переслано), ошибки, падение прохода, подозрительно
+    долгая пауза между проходами. Иначе «работает ли радар» видно только по логам.
+
+    Антиспам: время последней отправки лежит в bot_state внутри базы, а база — в R2.
+    Контейнер в облаке живёт один проход, поэтому счётчик обязан переживать перезапуск,
+    иначе сводка приходила бы каждые 10 минут.
+    """
+
+    def __init__(self, store, mode: str = "auto", every_hours: float = 6.0):
+        self.store = store
+        self.every = max(float(every_hours or 0), 0.1)
+        self.token = (os.getenv("TG_BOT_TOKEN") or "").strip()
+        self.chat = (os.getenv("TG_NOTIFY_CHAT") or "").strip()
+        if mode == "auto":
+            self.enabled = bool(self.token and self.chat)
+        else:
+            self.enabled = (mode == "bot") and bool(self.token and self.chat)
+        self.sent: int = 0
+        self.last_error: str = ""
+
+    def why_disabled(self) -> str:
+        if self.enabled:
+            return ""
+        if not self.token and not self.chat:
+            return "не заданы TG_BOT_TOKEN и TG_NOTIFY_CHAT"
+        if not self.token:
+            return "не задан TG_BOT_TOKEN"
+        if not self.chat:
+            return "не задан TG_NOTIFY_CHAT"
+        return "служебные сообщения выключены (--service-notify none)"
+
+    def _due(self, key: str) -> bool:
+        """Пора ли слать: с прошлого раза прошло больше every часов (или не было ни разу)."""
+        raw = self.store.bot_state_get(f"service:{key}")
+        if not raw:
+            return True
+        try:
+            last = datetime.fromisoformat(raw)
+        except ValueError:
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() >= self.every * 3600.0
+
+    async def send(self, text: str, key: str = "summary", force: bool = False) -> bool:
+        """Отправить служебное сообщение. False — молча пропустили (антиспам) или не ушло."""
+        if not self.enabled or not text.strip():
+            return False
+        if not force and not self._due(key):
+            return False
+        from core_telegram import bot_send_text
+
+        error, fatal = await bot_send_text(self.token, self.chat, text)
+        if error:
+            self.last_error = error
+            print(f"[!] служебное сообщение не ушло: {error}", file=sys.stderr)
+            if fatal:
+                self.enabled = False      # 401/403: не повторяем до конца прогона
+            return False
+        self.store.bot_state_set(
+            f"service:{key}", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        self.sent += 1
+        return True
+
+    @staticmethod
+    def pass_summary(now: datetime, seconds: float, read: int, found: int, forwarded: int,
+                     per_account: list, errors: int, db_total: str,
+                     gap_minutes: float | None = None, expected_minutes: float = 0.0) -> str:
+        """Текст сводки прохода. Коротко: чтобы читалось с телефона за пару секунд."""
+        lines = [f"Проход {now.strftime('%d.%m %H:%M')} UTC, {seconds:.0f} с",
+                 f"• прочитано {read}, найдено {found}, переслано {forwarded}"]
+        for name, acc_read, acc_found in per_account:
+            lines.append(f"• {name}: прочитано {acc_read}, найдено {acc_found}")
+        lines.append(f"• ошибок за сутки: {errors}")
+        lines.append(f"• в базе: {db_total}")
+        if gap_minutes is not None and expected_minutes and gap_minutes > expected_minutes * 2:
+            lines.append(f"• предыдущий проход был {gap_minutes:.0f} мин назад "
+                         f"(обычно {expected_minutes:.0f}) — радар простаивал")
+        return "\n".join(lines)
+
+    @staticmethod
+    def failure_text(exc: BaseException) -> str:
+        return f"Проход упал: {type(exc).__name__}: {exc}"[:400]
+
+
 def resolve_mode(args) -> str:
     """Схема работы для отчётов панели: A — постоянный слушатель, B — проходы по расписанию.
 
@@ -2482,37 +2573,50 @@ async def async_main(args) -> None:
               "режиме. Для схемы B держи панель отдельным процессом: start.bat --panel-only",
               file=sys.stderr)
 
+    # служебные сообщения — в TG_NOTIFY_CHAT (сводка прохода, падения). Находки идут
+    # отдельно: пересылкой аккаунта получателю из sources.yaml (forward.to).
+    service = ServiceNotify(store, mode=args.service_notify, every_hours=args.service_every)
+    if not service.enabled:
+        print(f"[i] служебные сообщения выключены: {service.why_disabled()}", file=sys.stderr)
+    gap_before = store.heartbeat_age_minutes("pulse")      # сколько радар молчал до этого прохода
+    pass_started = time.time()
+
     if args.once:
-        for acc, client, monitor in runners:
-            prefix = f"[{acc.name}] " if multi else ""
-            resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
-                                             auto_join=args.auto_join)
-            monitor.entities = resolved
-            monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
-            if multi:
-                print(f"[i] {prefix}чатов разрешено: {len(resolved)} из {len(monitor.sources)}",
-                      file=sys.stderr)
-        for acc, client, monitor in runners:
-            await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
-            await monitor.catch_up(list(monitor.meta.values()))
-        run_read = sum(int(getattr(monitor, "counter", {}).get("scanned", 0) or 0)
-                       for _a, _c, monitor in runners)
-        for acc, client, monitor in runners:
-            monitor.flush_stats()                 # счётчики — в базу до среза метрик
-        for acc, client, monitor in runners:
-            # Пульс за проход. Без него панель (--panel-only) в схеме B не видела бы, жив ли
-            # радар вообще: живость определяется пульсом, а не находками (ТЗ §7.3, §16).
-            # Числа — накопительные суммы из базы по чатам этого аккаунта: контейнер в облаке
-            # живёт один проход, а суммы переживают его перезапуск.
-            keys = [monitor.chat_key(src) for src in monitor.sources]
-            read_total, found_total = store.totals_for_chats(keys)
-            monitor.log_pulse(read=read_total, found=found_total)
-        if collector is not None:
-            # схема B: проход короткий, поэтому срез метрик один — но именно он и показывает расход.
-            collector.msgs_provider = lambda: (store.scanned_total(), run_read)
-            print_metrics(collector.write())
-        for acc, client, monitor in runners:
-            await client.disconnect()
+        try:
+            for acc, client, monitor in runners:
+                prefix = f"[{acc.name}] " if multi else ""
+                resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
+                                                 auto_join=args.auto_join)
+                monitor.entities = resolved
+                monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
+                if multi:
+                    print(f"[i] {prefix}чатов разрешено: {len(resolved)} из {len(monitor.sources)}",
+                          file=sys.stderr)
+            for acc, client, monitor in runners:
+                await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
+                await monitor.catch_up(list(monitor.meta.values()))
+            run_read = sum(int(getattr(monitor, "counter", {}).get("scanned", 0) or 0)
+                           for _a, _c, monitor in runners)
+            for acc, client, monitor in runners:
+                monitor.flush_stats()                 # счётчики — в базу до среза метрик
+            for acc, client, monitor in runners:
+                # Пульс за проход. Без него панель (--panel-only) в схеме B не видела бы, жив ли
+                # радар вообще: живость определяется пульсом, а не находками (ТЗ §7.3, §16).
+                # Числа — накопительные суммы из базы по чатам этого аккаунта: контейнер в облаке
+                # живёт один проход, а суммы переживают его перезапуск.
+                keys = [monitor.chat_key(src) for src in monitor.sources]
+                read_total, found_total = store.totals_for_chats(keys)
+                monitor.log_pulse(read=read_total, found=found_total)
+            if collector is not None:
+                # схема B: проход короткий, поэтому срез метрик один — но именно он и показывает расход.
+                collector.msgs_provider = lambda: (store.scanned_total(), run_read)
+                print_metrics(collector.write())
+            for acc, client, monitor in runners:
+                await client.disconnect()
+        except Exception as exc:                                    # noqa: BLE001
+            await service.send(ServiceNotify.failure_text(exc), key="failure", force=True)
+            store.log_error(type(exc).__name__, str(exc)[:300])
+            raise
     else:
         tasks = [monitor.run() for _, _, monitor in runners]
         if panel is not None:
@@ -2522,6 +2626,25 @@ async def async_main(args) -> None:
         await asyncio.gather(*tasks)
     for _acc, _client, monitor in runners:
         monitor.flush_stats()
+
+    # служебная сводка прохода: пустыми проходами не спамим — пишем, если что-то нашлось,
+    # либо пришло время плановой сводки (антиспам по времени в базе, а не в памяти процесса)
+    if getattr(args, "once", False) and service.enabled:
+        read = sum(int(m.counter.get("scanned", 0) or 0) for _a, _c, m in runners)
+        found = sum(int(m.counter.get("matched", 0) or 0) for _a, _c, m in runners)
+        forwarded = sum(int(m.counter.get("forwarded", 0) or 0) for _a, _c, m in runners)
+        per_account = []
+        for acc in accounts:
+            own = [m for a2, _c2, m in runners if a2.name == acc.name]
+            per_account.append((acc.name,
+                                sum(int(m.counter.get("scanned", 0) or 0) for m in own),
+                                sum(int(m.counter.get("matched", 0) or 0) for m in own)))
+        text = ServiceNotify.pass_summary(
+            now=datetime.now(timezone.utc), seconds=time.time() - pass_started,
+            read=read, found=found, forwarded=forwarded, per_account=per_account,
+            errors=store.errors_count(since_hours=24.0), db_total=store.stats(),
+            gap_minutes=gap_before, expected_minutes=args.service_gap)
+        await service.send(text, key="summary", force=bool(found or forwarded or not read))
 
     # файл статистики: откуда и сколько сообщений идёт
     if args.stats_file:
@@ -2671,6 +2794,16 @@ def build_parser() -> argparse.ArgumentParser:
                          "(по умолчанию 30; 0 — не слать)")
     ap.add_argument("--digest", choices=["on", "off"], default=None,
                     help="утренний дайджест в 09:00 местного времени (то же, что /digest у бота)")
+    ap.add_argument("--service-notify", choices=("auto", "bot", "none"), default="auto",
+                    help="служебные сообщения ботом в TG_NOTIFY_CHAT: сводка прохода "
+                         "(прочитано/найдено/переслано), падения, долгие паузы. Находки сюда "
+                         "НЕ идут — они уходят пересылкой аккаунта получателю из sources.yaml "
+                         "(forward.to). auto — слать, если заданы TG_BOT_TOKEN и TG_NOTIFY_CHAT")
+    ap.add_argument("--service-every", type=float, default=6.0, metavar="ЧАСОВ",
+                    help="как часто слать плановую сводку, когда находок нет (по умолчанию 6)")
+    ap.add_argument("--service-gap", type=float, default=10.0, metavar="МИН",
+                    help="ожидаемая пауза между проходами: если простой вдвое больше, радар "
+                         "напишет об этом в сводке (по умолчанию 10 — как cron */10)")
     ap.add_argument("--check-sessions", action="store_true",
                     help="живая проверка сессий (get_me по каждому аккаунту) — ТОЛЬКО когда радар "
                          "остановлен: второй клиент на тот же .session отзывает ключ")

@@ -428,6 +428,35 @@ async def notify_telegram_bot(hit: dict, token: str, chat: str) -> tuple[str, bo
     return "", False
 
 
+async def bot_send_text(token: str, chat: str, text: str, *,
+                        preview: bool = False) -> tuple[str, bool]:
+    """Простое сообщение ботом в произвольный чат: сводки прохода, падения, алерты.
+
+    Отличается от notify_telegram_bot: там уведомление о КОНКРЕТНОЙ находке со ссылкой,
+    здесь — служебный текст. Именно сюда должны приходить «как радар поработал» и «проход
+    упал», а находки уходят пересылкой самого аккаунта (forward.to в sources.yaml).
+
+    Возвращает ('', False) при успехе либо (текст ошибки, фатальная ли).
+    """
+    import json as _json
+    import urllib.request
+
+    payload = _json.dumps({
+        "chat_id": chat, "text": text[:4000], "parse_mode": "HTML",
+        "disable_web_page_preview": not preview,
+    }).encode()
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage", data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            response.read()
+    except Exception as exc:                                        # noqa: BLE001
+        return bot_error_text(exc)
+    return "", False
+
+
 def build_notifier(mode: str, notify_file_path: str = "hits.log", explain: bool = False):
     """mode: console | file | bot | both | none
 

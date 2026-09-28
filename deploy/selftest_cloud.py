@@ -682,6 +682,32 @@ async def main() -> None:
                                                      if "catchup" in p],
                        "; ".join(report["problems"])[:80]))
 
+
+    # находки и служебные сообщения — разные каналы: находки пересылкой аккаунта в бота
+    # (forward.to), а TG_NOTIFY_CHAT — сводка прохода и падения для хозяина
+    svc_runner = cloud_entry.RadarRunner(workdir=bare, client=client,
+                                         args="--once --notify console --mode B "
+                                              "--service-notify bot",
+                                         sessions=("monitor_session",), log=quiet)
+    report = svc_runner.preflight(env=dict(good_env, TG_BOT_TOKEN="", TG_NOTIFY_CHAT=""))
+    svc_problem = " ".join(report["problems"])
+    checks.append(("preflight: «--service-notify bot» без секретов бота = не готов",
+                   report["ok"] is False and "--service-notify bot" in svc_problem
+                   and "TG_BOT_TOKEN" in svc_problem and "TG_NOTIFY_CHAT" in svc_problem,
+                   svc_problem[:150] or "нет проблемы"))
+    checks.append(("preflight: при «--notify console» про «--notify bot» не пишем (не врать)",
+                   "«--notify bot»" not in svc_problem, svc_problem[:80]))
+    report = svc_runner.preflight(env=good_env)
+    checks.append(("preflight: с секретами бота служебные сообщения проблем не добавляют",
+                   report["ok"] is True, "; ".join(report["problems"])[:80]))
+    console_runner2 = cloud_entry.RadarRunner(workdir=bare, client=client,
+                                              args="--once --notify console --mode B "
+                                                   "--service-notify none",
+                                              sessions=("monitor_session",), log=quiet)
+    checks.append(("preflight: «--service-notify none» не требует секретов бота",
+                   console_runner2.preflight(env=dict(good_env, TG_BOT_TOKEN="",
+                                                      TG_NOTIFY_CHAT=""))["ok"] is True, ""))
+
     config_text = repo_text("wrangler.jsonc")
     plain = re.sub(r"^\s*//.*$", "", config_text, flags=re.MULTILINE)
     config = json.loads(plain) if plain.strip() else {}

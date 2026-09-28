@@ -296,11 +296,36 @@ class RadarRunner:
                             f"npx wrangler secret put TG_API_HASH")
 
         tokens = shlex.split(self.args)
-        if "bot" in tokens or "both" in tokens:
+        # Уведомления о находках (--notify bot) и служебные сообщения (--service-notify bot)
+        # — разные каналы, но оба идут через бота в TG_NOTIFY_CHAT. Находки при этом
+        # уходят ещё и пересылкой самого аккаунта получателю из sources.yaml (forward.to):
+        # сводка «как радар поработал» и «проход упал» должна приходить хозяину, а не боту.
+        def flag_value(name: str) -> str:
+            """Значение флага в RADAR_ARGS: `--notify bot` -> 'bot'. Пусто, если флага нет."""
+            if name not in tokens:
+                return ""
+            rest = tokens[tokens.index(name) + 1:]
+            return rest[0] if rest and not rest[0].startswith("--") else ""
+
+        notify_mode = flag_value("--notify")
+        service_mode = flag_value("--service-notify")
+        notify_bot = notify_mode in ("bot", "both")
+        service_bot = service_mode == "bot"
+        if notify_bot or service_bot:
+            why = "«--notify bot»" if notify_bot else ""
+            if service_bot:
+                why = (why + " и " if why else "") + "«--service-notify bot»"
             for name in ("TG_BOT_TOKEN", "TG_NOTIFY_CHAT"):
                 if not (env.get(name) or "").strip():
-                    problems.append(f"в RADAR_ARGS есть «--notify bot», но не задан секрет {name}: "
-                                    f"npx wrangler secret put {name}")
+                    if notify_bot:
+                        effect = ("находки не придут в Telegram" if name == "TG_BOT_TOKEN"
+                                  else "уведомления о находках не дойдут")
+                    else:
+                        effect = ("служебные сообщения (сводка прохода, падения) не дойдут"
+                                  if name == "TG_BOT_TOKEN"
+                                  else "служебные сообщения не дойдут: некуда отправлять")
+                    problems.append(f"в RADAR_ARGS есть {why}, но не задан секрет {name}. "
+                                    f"Без него {effect}: npx wrangler secret put {name}")
             # TG_NOTIFY_CHAT — ОДИН адрес (твой чат с ботом), а не по аккаунту: находки всех
             # аккаунтов складываются в одну базу и уходят в одно место. Значение нигде не
             # делится по запятым, поэтому список означает «уведомления не дойдут» — причём
