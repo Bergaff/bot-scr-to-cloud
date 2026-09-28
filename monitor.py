@@ -2377,6 +2377,21 @@ def tg_commands_enabled(args) -> bool:
     return bool(os.getenv("TG_BOT_TOKEN") and os.getenv("TG_NOTIFY_CHAT"))
 
 
+def build_marker() -> str:
+    """Метка сборки: 8 символов sha256 по исходнику monitor.py.
+
+    DEPLOY.md: после деплоя контейнер может ещё долго крутить старый образ —
+    приложение обновлено, а живой инстанс нет. По этой метке в хвосте лога
+    (/status, /log) видно, какой код реально работает в облаке. Считается от
+    файла, поэтому править её при каждом релизе не нужно.
+    """
+    import hashlib
+    try:
+        return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:8]
+    except Exception:                                             # noqa: BLE001
+        return "?"
+
+
 def resolve_mode(args) -> str:
     """Схема работы для отчётов панели: A — постоянный слушатель, B — проходы по расписанию.
 
@@ -2778,6 +2793,9 @@ async def async_main(args) -> None:
 
     # длительность прохода пригодится для /cost: стоимость считаем от фактического расхода
     store.bot_state_set("pass:last_seconds", f"{time.time() - pass_started:.1f}")
+
+    # метка сборки: по ней видно, какой код реально работает в облаке (см. DEPLOY.md)
+    print(f"[i] код: monitor.py {build_marker()}", file=sys.stderr)
 
     # команды из Telegram: /status, /cost, /last, /sources… разбираем в конце прохода
     if getattr(args, "once", False) and tg_commands_enabled(args):

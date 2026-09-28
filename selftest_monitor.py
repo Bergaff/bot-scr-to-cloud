@@ -1891,6 +1891,18 @@ async def main() -> None:
         os.environ.pop("TG_BOT_TOKEN", None)
         os.environ.pop("TG_NOTIFY_CHAT", None)
 
+    # ------------------------------------------------- метка сборки
+    section("Метка сборки: видно, какой код реально работает в облаке")
+    import hashlib
+    marker = monitor_module.build_marker()
+    expected = hashlib.sha256(Path(monitor_module.__file__).read_bytes()).hexdigest()[:8]
+    checks.append(("метка сборки — 8 символов sha256 по исходнику monitor.py",
+                   len(marker) == 8 and all(ch in "0123456789abcdef" for ch in marker), marker))
+    checks.append(("метка совпадает с sha256 файла и не меняется между вызовами",
+                   marker == expected and monitor_module.build_marker() == marker, expected))
+    checks.append(("метка печатается в конце прохода — её видно в /status и /log",
+                   "код: monitor.py {build_marker()}" in mon_src, ""))
+
     # ---------------------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:
