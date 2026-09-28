@@ -2563,6 +2563,19 @@ async def async_main(args) -> None:
         print("[i] для бот-панели включён пульс каждые 15 мин: без него панель не видит, жив ли "
               "аккаунт. Отключить: --heartbeat 0", file=sys.stderr)
 
+    # Бюджет прохода: в облаке RADAR_TIMEOUT обрывает процесс снаружи, а оборванный проход
+    # не успевает записать ни пульс, ни очередь. Поэтому радар сам следит за временем.
+    budget = args.pass_budget
+    if budget <= 0:
+        env_timeout = float(os.getenv("RADAR_TIMEOUT") or 0)
+        if env_timeout > 0:
+            budget = env_timeout * 0.75          # четвёртая часть — на запись в R2 и выход
+    deadline = time.monotonic() + budget if budget > 0 else None
+    if args.once and budget > 0:
+        print(f"[i] бюджет прохода: {budget:.0f} с (RADAR_TIMEOUT={os.getenv('RADAR_TIMEOUT', 'нет')}), "
+              f"лимит ожидания FloodWait {min(args.flood_wait_limit or budget * 0.25, budget):.0f} с",
+              file=sys.stderr)
+
     runners: list[tuple[AccountConfig, object, Monitor]] = []
     for acc in accounts:
         acc_sources = buckets[acc.name]
@@ -2617,19 +2630,6 @@ async def async_main(args) -> None:
     elif args.bot_panel and args.once:
         print("[i] --bot-panel с --once не запускается: проход короткий, панель нужна в живом "
               "режиме. Для схемы B держи панель отдельным процессом: start.bat --panel-only",
-              file=sys.stderr)
-
-    # Бюджет прохода: в облаке RADAR_TIMEOUT обрывает процесс снаружи, а оборванный проход
-    # не успевает записать ни пульс, ни очередь. Поэтому радар сам следит за временем.
-    budget = args.pass_budget
-    if budget <= 0:
-        env_timeout = float(os.getenv("RADAR_TIMEOUT") or 0)
-        if env_timeout > 0:
-            budget = env_timeout * 0.75          # четвёртая часть — на запись в R2 и выход
-    deadline = time.monotonic() + budget if budget > 0 else None
-    if args.once and budget > 0:
-        print(f"[i] бюджет прохода: {budget:.0f} с (RADAR_TIMEOUT={os.getenv('RADAR_TIMEOUT', 'нет')}), "
-              f"лимит ожидания FloodWait {min(args.flood_wait_limit or budget * 0.25, budget):.0f} с",
               file=sys.stderr)
 
     # служебные сообщения — в TG_NOTIFY_CHAT (сводка прохода, падения). Находки идут

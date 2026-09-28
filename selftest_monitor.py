@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import random
 import json
+import ast
 import os
 import re
 import shutil
@@ -1788,6 +1789,22 @@ async def main() -> None:
     checks.append(("бюджет берётся из RADAR_TIMEOUT, если флагом не задан",
                    "env_timeout = float(os.getenv(\"RADAR_TIMEOUT\")" in mon_src
                    and "budget = env_timeout * 0.75" in mon_src, ""))
+    # Регрессия: бюджет считали ПОСЛЕ создания Monitor'ов, и проход падал через 7 секунд
+    # с UnboundLocalError: deadline. Проверяем порядок по дереву кода, а не по тексту.
+    tree = ast.parse(mon_src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "async_main")
+    assign = use = None
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and node.id == "deadline":
+            if isinstance(node.ctx, ast.Store):
+                assign = node.lineno if assign is None else min(assign, node.lineno)
+            else:
+                use = node.lineno if use is None else max(use, node.lineno)
+    checks.append(("бюджет считается до создания Monitor'ов (иначе UnboundLocalError)",
+                   assign is not None and use is not None and assign < use,
+                   f"присвоение {assign}, использование {use}"))
+
     checks.append(("флаги --pass-budget и --flood-wait-limit описаны",
                    '"--pass-budget"' in mon_src and '"--flood-wait-limit"' in mon_src, ""))
     # Проход обязан быть короче интервала cron: иначе контейнер не засыпает, а Cloudflare
