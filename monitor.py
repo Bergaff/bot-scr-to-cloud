@@ -2313,6 +2313,26 @@ class ServiceNotify:
         return f"Проход упал: {type(exc).__name__}: {exc}"[:400]
 
 
+def rotate_runners(runners: list, store) -> list:
+    """Порядок аккаунтов на этот проход: первым идёт тот, кто в прошлый раз был последним.
+
+    Аккаунты читаются по очереди, а бюджет прохода обычно кончается на первом из них —
+    без ротации второй аккаунт не читался бы никогда. Порядок помним в базе (она в R2),
+    поэтому перезапуск контейнера, который в схеме B происходит каждый проход, его не
+    сбрасывает: иначе «ротация» давала бы один и тот же порядок.
+    """
+    if len(runners) < 2:
+        return runners
+    last = store.bot_state_get("pass:last_account") or ""
+    names = [acc.name for acc, _client, _monitor in runners]
+    # Начинает тот, кто в прошлый раз шёл последним: именно он не успел почитать, потому
+    # что бюджет кончился. Сдвиг на «следующий после последнего» оставил бы порядок тем же.
+    start = names.index(last) if last in names else 0
+    rotated = runners[start:] + runners[:start]
+    store.bot_state_set("pass:last_account", rotated[-1][0].name)
+    return rotated
+
+
 def resolve_mode(args) -> str:
     """Схема работы для отчётов панели: A — постоянный слушатель, B — проходы по расписанию.
 
@@ -2631,6 +2651,12 @@ async def async_main(args) -> None:
         print("[i] --bot-panel с --once не запускается: проход короткий, панель нужна в живом "
               "режиме. Для схемы B держи панель отдельным процессом: start.bat --panel-only",
               file=sys.stderr)
+
+    if args.once and len(runners) > 1:
+        previous_last = store.bot_state_get("pass:last_account") or ""
+        runners = rotate_runners(runners, store)
+        print(f"[i] порядок аккаунтов: первым идёт «{runners[0][0].name}» — в прошлый "
+              f"проход последним был «{previous_last or 'никто'}»", file=sys.stderr)
 
     # служебные сообщения — в TG_NOTIFY_CHAT (сводка прохода, падения). Находки идут
     # отдельно: пересылкой аккаунта получателю из sources.yaml (forward.to).

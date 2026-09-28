@@ -1820,6 +1820,30 @@ async def main() -> None:
     checks.append(("RADAR_TIMEOUT не выходит за предел Workers на cron (900 с)",
                    timeout_s <= 900, f"{timeout_s:.0f} с"))
 
+
+    # ------------------------------------------ второй аккаунт не должен голодать
+    section("Очерёдность аккаунтов: бюджет не достаётся всегда первому")
+
+    # Проход читает аккаунты по очереди, и бюджет часто кончается на первом: без ротации
+    # второй аккаунт не читался бы никогда (в первом живом прогоне так и вышло — main
+    # прочитал 310 сообщений, second — 0).
+    rot_store = monitor_module.HitStore(":memory:")
+    pair = [(SimpleNamespace(name="main"), None, None),
+            (SimpleNamespace(name="second"), None, None)]
+    order = []
+    for _ in range(4):
+        rotated = monitor_module.rotate_runners(list(pair), rot_store)
+        order.append(rotated[0][0].name)
+    checks.append(("аккаунты чередуются: первый не забирает весь бюджет себе",
+                   order == ["main", "second", "main", "second"], str(order)))
+    checks.append(("очерёдность помнят в базе, а не в памяти (контейнер живёт один проход)",
+                   monitor_module.rotate_runners(list(pair), monitor_module.HitStore(":memory:")
+                                                 )[0][0].name == "main", ""))
+    checks.append(("один аккаунт — ротация не нужна и ничего не ломает",
+                   monitor_module.rotate_runners(pair[:1], rot_store)[0][0].name == "main", ""))
+    checks.append(("ротация вызывается перед проходом, а не только в тестах",
+                   "runners = rotate_runners(runners, store)" in mon_src, ""))
+
     # ---------------------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:
