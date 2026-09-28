@@ -12,6 +12,7 @@ import asyncio
 import random
 import json
 import os
+import re
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
@@ -1789,9 +1790,18 @@ async def main() -> None:
                    and "budget = env_timeout * 0.75" in mon_src, ""))
     checks.append(("флаги --pass-budget и --flood-wait-limit описаны",
                    '"--pass-budget"' in mon_src and '"--flood-wait-limit"' in mon_src, ""))
-    checks.append(("RADAR_TIMEOUT поднят под cron (было 540, предел Workers 900 с)",
-                   '"RADAR_TIMEOUT": "780"' in Path("wrangler.jsonc").read_text(
-                       encoding="utf-8", errors="replace"), ""))
+    # Проход обязан быть короче интервала cron: иначе контейнер не засыпает, а Cloudflare
+    # не обновляет приложение с живым инстансом — деплой падает уже после сборки образа.
+    cfg = Path("wrangler.jsonc").read_text(encoding="utf-8", errors="replace")
+    timeout_s = float(re.search(r'"RADAR_TIMEOUT":\s*"(\d+)"', cfg).group(1))
+    cron = re.search(r'"crons":\s*\[\s*"([^"]+)"', cfg).group(1)
+    step_match = re.match(r"\*/(\d+) \* \* \* \*", cron)
+    cron_s = float(step_match.group(1)) * 60 if step_match else 0.0
+    checks.append(("проход короче интервала cron: контейнер успевает заснуть",
+                   cron_s > 0 and timeout_s < cron_s * 0.9,
+                   f"RADAR_TIMEOUT {timeout_s:.0f} с, cron каждые {cron_s:.0f} с"))
+    checks.append(("RADAR_TIMEOUT не выходит за предел Workers на cron (900 с)",
+                   timeout_s <= 900, f"{timeout_s:.0f} с"))
 
     # ---------------------------------------------------------- итог
     section("Итог")

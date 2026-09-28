@@ -20,7 +20,7 @@
 		"R2_BUCKET": "radar-state",
 		"TG_SESSION": "monitor_session,second_session",
 		"RADAR_ARGS": "--once --notify console --mode B --auto-join --service-notify bot",
-		"RADAR_TIMEOUT": "780"
+		"RADAR_TIMEOUT": "420"
 	},
 
 	// Контейнер с Python-радаром. image указывает на Dockerfile — wrangler сам соберёт
@@ -47,6 +47,12 @@
 
 	// Схема B: проход раз в 10 минут. Хочешь реже и дешевле — поставь "*/30 * * * *"
 	// и уменьши sleepAfter в src/index.js (задержка находок при этом вырастет до получаса).
+	//
+	// ВАЖНО: проход должен быть КОРОЧЕ интервала cron, иначе контейнер не успевает
+	// заснуть и работает почти без пауз — тогда Cloudflare не даёт обновить приложение
+	// («Error modifying application: Internal Server Error») и деплой падает уже после
+	// успешной сборки образа. Поэтому RADAR_TIMEOUT держим заметно меньше 600 с:
+	// контейнер читает сколько успеет, остальное догоняет следующим проходом.
 	"triggers": {
 		"crons": ["*/10 * * * *"]
 	}
