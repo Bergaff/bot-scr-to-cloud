@@ -242,6 +242,36 @@ async def main() -> None:
     checks.append(("добранное попало в статистику по своему чату",
                    "granica_by_lt_pl" in mstore.stats_report(), ""))
 
+    # ---------- бюджет прохода: добор не съедает проход целиком
+    # Добор шлёт по ~2 с на сообщение и раньше не был ограничен: накопилось 211 — проход
+    # убивали по таймауту, сводка и ответы команд (конец прохода) не успевали НИКОГДА.
+    _msg4, _hit4 = queue_hit(9004)
+    qstore.queue_forward("granica_by_lt_pl", 9004)
+    drain_past = await flusher.flush_deferred(fetch_queued, deadline=time.monotonic() - 0.001)
+    checks.append(("добор останавливается по бюджету прохода: очередь ждёт следующего",
+                   drain_past["sent"] == 0 and drain_past["leftover"] == 1
+                   and qstore.deferred_count() == 1, str(drain_past)))
+    drain_ok = await flusher.flush_deferred(fetch_queued, deadline=time.monotonic() + 3600)
+    checks.append(("с живым бюджетом добор доходит до конца",
+                   drain_ok["sent"] == 1 and qstore.deferred_count() == 0, str(drain_ok)))
+
+    # Monitor передаёт свой дедлайн в добор: с прошедшим дедлайном — ничего не отправляем
+    mon_hit2 = dict(mon_hit, msg_id=9102, link="https://t.me/granica_BY_LT_PL/9102")
+    mstore.save_hit(mon_hit2)
+    mstore.queue_forward("granica_by_lt_pl", 9102)
+    monitor_poor = Monitor(mon_client, mstore, [src], lambda hit: None, Paced(0),
+                           forwarder=mforwarder, deadline=time.monotonic() - 1)
+    monitor_poor.entities = {src.target: entity}
+    monitor_poor.meta = {src.target: src}
+    drained_poor = await monitor_poor.flush_deferred()
+    checks.append(("Monitor передаёт бюджет в добор: прошедший дедлайн — очередь цела",
+                   drained_poor.get("sent", 0) == 0 and mstore.deferred_count() == 1,
+                   str(drained_poor)))
+    drained_final = await monitor.flush_deferred()   # без дедлайна — очередь не должна зависнуть
+    checks.append(("очередь добирается, когда бюджет не задан",
+                   drained_final.get("sent") == 1 and mstore.deferred_count() == 0,
+                   str(drained_final)))
+
     # ---------- скрытые авторы («hidden by user»): такие не пересылаем
     from telethon.tl import types as _t
 

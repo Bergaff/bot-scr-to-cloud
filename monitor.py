@@ -1318,7 +1318,7 @@ class Monitor:
         before = self.store.deferred_count()
         if not before:
             return {}
-        result = await self.forwarder.flush_deferred(self.fetch_queued)
+        result = await self.forwarder.flush_deferred(self.fetch_queued, deadline=self.deadline)
         if result.get("sent"):
             self.counter["forwarded"] = self.counter.get("forwarded", 0) + result["sent"]
         return result

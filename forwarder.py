@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 from core_telegram import call
@@ -141,12 +142,17 @@ class Forwarder:
 
     # ------------------------------------------------------------------ добор очереди
 
-    async def flush_deferred(self, fetch) -> dict:
+    async def flush_deferred(self, fetch, deadline: float | None = None) -> dict:
         """Отправляет то, что не влезло в лимит в прошлые сутки.
 
         fetch(chat_key, msg_id) — как достать исходное сообщение (даёт Monitor).
         Сообщения, которые уже недоступны (чат удалён/вышел), снимаются с очереди навсегда.
         Порядок: сначала самое старое. Свободен весь дневной лимит, но он общий с новыми находками.
+
+        deadline (time.monotonic()) — граница бюджета прохода: добор останавливается по ней,
+        остаток уходит в следующий проход. Без неё накопившаяся очередь (сотни пересылок)
+        съедала весь бюджет, проход убивали по таймауту, и сводка с ответами команд — они
+        в конце прохода — не успевали никогда.
         """
         result = {"sent": 0, "failed": 0, "gone": 0, "leftover": 0}
         queue = self.store.deferred_queue(self.account or None)
@@ -158,7 +164,12 @@ class Forwarder:
             result["leftover"] = len(queue)
             print("[i] добор: dry-run — ничего не отправляю, очередь не трогаю", file=sys.stderr)
             return result
-        for chat_key, msg_id in queue:
+        for index, (chat_key, msg_id) in enumerate(queue):
+            if deadline is not None and time.monotonic() >= deadline:
+                result["leftover"] += len(queue) - index
+                print(f"[i] добор: бюджет прохода кончился — остановились, "
+                      f"{result['leftover']} дойдут в следующий проход", file=sys.stderr)
+                break
             if self._cap_reached():
                 result["leftover"] += 1
                 continue
