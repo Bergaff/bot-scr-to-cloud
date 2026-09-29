@@ -332,6 +332,14 @@ async def main() -> None:
 
     # ---------------------------------------------------- 6. идемпотентность (§14.7 п.6)
     section("6. Идемпотентность")
+    # подсказка из последнего прохода видна в /queue (пишет monitor.py в queue_hint)
+    store.queue_forward("granica_BY_LT_PL", 4311, account="main")
+    store.bot_state_set("queue_hint", "⚠ main: лимит 180/180, в очереди 1 · second свободен")
+    hint_queue = panel.cmd_queue()
+    checks.append(("/queue показывает подсказку про лимит и перевод каналов",
+                   "⚠ main: лимит 180/180" in hint_queue and "second свободен" in hint_queue,
+                   hint_queue.splitlines()[-2:]))
+    store.bot_state_set("queue_hint", "")
     transport.sent.clear()
     clock.now += 10.0
     first = await panel.handle_update(update(9100, "/queue"))

@@ -272,6 +272,39 @@ async def main() -> None:
                    drained_final.get("sent") == 1 and mstore.deferred_count() == 0,
                    str(drained_final)))
 
+    # ---------- подсказка «переведи открытые каналы на свободный аккаунт»
+    hint_store = HitStore(":memory:")
+    hint_store.queue_forward("granica_by_lt_pl", 5001, account="main")
+    hint_srcs = [Source(target="@granica_BY_LT_PL", title="Граница", account="main"),
+                 Source(target="-1001234567", title="Закрытый чат", account="main"),
+                 Source(target="@phuketadver", title="Пхукет (без account)", account=""),
+                 Source(target="@th_second", title="Канал second", account="second")]
+    hint_states = [{"name": "main", "sent_today": 180, "max_per_day": 180},
+                   {"name": "second", "sent_today": 0, "max_per_day": 120}]
+    notes_ok = monitor_module.limit_transfer_notes(hint_store, hint_srcs, hint_states)
+    joined_ok = " ".join(notes_ok)
+    checks.append(("подсказка: лимит + очередь + свободный аккаунт → перевод открытых каналов",
+                   len(notes_ok) == 1 and "180/180" in joined_ok and "в очереди 1" in joined_ok
+                   and "second" in joined_ok and "@granica_BY_LT_PL" in joined_ok
+                   and "account: second" in joined_ok, joined_ok))
+    checks.append(("закрытые (без @) и каналы свободного аккаунта в подсказку не попадают",
+                   "@th_second" not in joined_ok and "-1001234567" not in joined_ok, joined_ok))
+    checks.append(("источник без account — канал первого аккаунта",
+                   "@phuketadver" in joined_ok, joined_ok))
+    notes_nosq = monitor_module.limit_transfer_notes(HitStore(":memory:"), hint_srcs, hint_states)
+    checks.append(("очереди нет — подсказки нет", notes_nosq == [], str(notes_nosq)))
+    notes_alone = monitor_module.limit_transfer_notes(hint_store, hint_srcs, [hint_states[0]])
+    joined_alone = " ".join(notes_alone)
+    checks.append(("без свободного аккаунта — только факт про лимит, без перевода",
+                   len(notes_alone) == 1 and "перевести" not in joined_alone
+                   and "лимит" in joined_alone, joined_alone))
+    sum_hint = monitor_module.ServiceNotify.pass_summary(
+        now=datetime(2026, 9, 29, 14, 0, tzinfo=timezone.utc), seconds=100.0,
+        read=50, found=1, forwarded=1, per_account=[("main", 50, 1)], errors=0,
+        db_total="10 совпадений", notes=["⚠ main: лимит 180/180, в очереди 31"])
+    checks.append(("сводка показывает подсказку про лимит",
+                   "⚠ main: лимит 180/180" in sum_hint, sum_hint.splitlines()[1:4]))
+
     # ---------- скрытые авторы («hidden by user»): такие не пересылаем
     from telethon.tl import types as _t
 

@@ -2391,12 +2391,14 @@ class ServiceNotify:
     def pass_summary(now: datetime, seconds: float, read: int, found: int, forwarded: int,
                      per_account: list, errors: int, db_total: str,
                      gap_minutes: float | None = None, expected_minutes: float = 0.0,
-                     leftover: list | None = None) -> str:
+                     leftover: list | None = None, notes: list | None = None) -> str:
         """Текст сводки прохода. Коротко: чтобы читалось с телефона за пару секунд."""
         lines = [f"Проход {now.strftime('%d.%m %H:%M')} UTC, {seconds:.0f} с",
                  f"• прочитано {read}, найдено {found}, переслано {forwarded}"]
         for name, acc_read, acc_found in per_account:
             lines.append(f"• {name}: прочитано {acc_read}, найдено {acc_found}")
+        if notes:
+            lines.extend(notes)
         lines.append(f"• ошибок за сутки: {errors}")
         lines.append(f"• в базе: {db_total}")
         if gap_minutes is not None and expected_minutes and gap_minutes > expected_minutes * 2:
@@ -2410,6 +2412,39 @@ class ServiceNotify:
     @staticmethod
     def failure_text(exc: BaseException) -> str:
         return f"Проход упал: {type(exc).__name__}: {exc}"[:400]
+
+
+def limit_transfer_notes(store, sources: list, states: list[dict]) -> list[str]:
+    """Подсказка «переведи открытые каналы на свободный аккаунт» для сводки и /queue.
+
+    states — по одному dict на аккаунт: name, sent_today, max_per_day (из forwarder'а).
+    Показываем строку, только когда аккаунт упёрся в дневной лимит И у него есть очередь:
+    открытые (@username) каналы этого аккаунта можно добавить свободному аккаунту в
+    sources.yaml (account: <свободный>) — тогда новые находки и добор пойдут через него.
+    Закрытые чаты (numeric id / invite-ссылки) второй аккаунт не подхватит — не предлагаем.
+    """
+    notes = []
+    first_name = states[0]["name"] if states else "main"
+    for st in states:
+        name = str(st.get("name") or "")
+        limit = int(st.get("max_per_day") or 0)
+        sent = int(st.get("sent_today") or 0)
+        queue = store.deferred_count(name)
+        if not (limit and sent >= limit and queue):
+            continue
+        free = [s["name"] for s in states
+                if s["name"] != name
+                and not (int(s.get("max_per_day") or 0)
+                         and int(s.get("sent_today") or 0) >= int(s.get("max_per_day") or 0))]
+        line = f"⚠ {name}: лимит {sent}/{limit} исчерпан, в очереди {queue} (добор после полуночи)"
+        open_ch = [src.target for src in sources
+                   if (src.account or first_name) == name and str(src.target).startswith("@")]
+        if free and open_ch:
+            shown = ", ".join(open_ch[:4]) + (f" и ещё {len(open_ch) - 4}" if len(open_ch) > 4 else "")
+            line += (f" · {', '.join(free)} свободен — можно перевести открытые каналы "
+                     f"{name}: {shown} (в sources.yaml: account: {free[0]})")
+        notes.append(line)
+    return notes
 
 
 def rotate_runners(runners: list, store) -> list:
@@ -2944,6 +2979,21 @@ async def async_main(args) -> None:
     # памяти процесса, чтобы перезапуск контейнера не сбрасывал счётчик. Раньше находки
     # принудительно дублировали сводку каждым проходом — при cron */10 это отчёт каждые
     # 10 минут; теперь между сводками всегда лежит пауза в service-every часов.
+    # подсказка про лимиты/перевод открытых каналов: пишем после каждого завершённого
+    # прохода — её же показывает команда /queue (в сводку попадает по таймеру, реже)
+    notes: list = []
+    if getattr(args, "once", False):
+        states = []
+        for acc in accounts:
+            own = [m for a2, _c2, m in runners if a2.name == acc.name]
+            fwd = next((m.forwarder for m in own if getattr(m, "forwarder", None) is not None), None)
+            if fwd is not None:
+                states.append({"name": acc.name,
+                               "sent_today": getattr(fwd, "sent_today", 0),
+                               "max_per_day": getattr(fwd, "max_per_day", 0)})
+        notes = limit_transfer_notes(store, sources, states)
+        store.bot_state_set("queue_hint", "\n".join(notes))
+
     if getattr(args, "once", False) and service.enabled:
         read = sum(int(m.counter.get("scanned", 0) or 0) for _a, _c, m in runners)
         found = sum(int(m.counter.get("matched", 0) or 0) for _a, _c, m in runners)
@@ -2959,7 +3009,8 @@ async def async_main(args) -> None:
             read=read, found=found, forwarded=forwarded, per_account=per_account,
             errors=store.errors_count(since_hours=24.0), db_total=store.stats(),
             gap_minutes=gap_before, expected_minutes=args.service_gap,
-            leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])])
+            leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])],
+            notes=notes or None)
         await service.send(text, key="summary")
 
     # длительность прохода пригодится для /cost: стоимость считаем от фактического расхода
