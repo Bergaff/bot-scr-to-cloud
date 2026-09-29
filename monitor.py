@@ -2365,6 +2365,12 @@ class ServiceNotify:
         """Отправить служебное сообщение. False — молча пропустили (антиспам) или не ушло."""
         if not self.enabled or not text.strip():
             return False
+        if key == "summary":
+            # Сводка прохода идёт строго по таймеру (каждые every часов), даже когда
+            # проход «громкий» (находки/пересылки/ничего не прочитано): раньше force
+            # слал её каждым проходом, и при cron */10 отчёт приходил каждые 10 минут.
+            # Аварии (key=failure) force сохраняют — это сигнал, а не отчёт.
+            force = False
         if not force and not self._due(key):
             return False
         from core_telegram import bot_send_text
@@ -2933,8 +2939,11 @@ async def async_main(args) -> None:
     for _acc, _client, monitor in runners:
         monitor.flush_stats()
 
-    # служебная сводка прохода: пустыми проходами не спамим — пишем, если что-то нашлось,
-    # либо пришло время плановой сводки (антиспам по времени в базе, а не в памяти процесса)
+    # служебная сводка прохода: по таймеру --service-every (по умолчанию каждый час) —
+    # и на «громких» проходах, и на пустых; антиспам по времени в базе (R2), а не в
+    # памяти процесса, чтобы перезапуск контейнера не сбрасывал счётчик. Раньше находки
+    # принудительно дублировали сводку каждым проходом — при cron */10 это отчёт каждые
+    # 10 минут; теперь между сводками всегда лежит пауза в service-every часов.
     if getattr(args, "once", False) and service.enabled:
         read = sum(int(m.counter.get("scanned", 0) or 0) for _a, _c, m in runners)
         found = sum(int(m.counter.get("matched", 0) or 0) for _a, _c, m in runners)
@@ -2951,7 +2960,7 @@ async def async_main(args) -> None:
             errors=store.errors_count(since_hours=24.0), db_total=store.stats(),
             gap_minutes=gap_before, expected_minutes=args.service_gap,
             leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])])
-        await service.send(text, key="summary", force=bool(found or forwarded or not read))
+        await service.send(text, key="summary")
 
     # длительность прохода пригодится для /cost: стоимость считаем от фактического расхода
     store.bot_state_set("pass:last_seconds", f"{time.time() - pass_started:.1f}")
@@ -3142,8 +3151,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "(прочитано/найдено/переслано), падения, долгие паузы. Находки сюда "
                          "НЕ идут — они уходят пересылкой аккаунта получателю из sources.yaml "
                          "(forward.to). auto — слать, если заданы TG_BOT_TOKEN и TG_NOTIFY_CHAT")
-    ap.add_argument("--service-every", type=float, default=6.0, metavar="ЧАСОВ",
-                    help="как часто слать плановую сводку, когда находок нет (по умолчанию 6)")
+    ap.add_argument("--service-every", type=float, default=1.0, metavar="ЧАСОВ",
+                    help="как часто слать сводку прохода (часов): шлётся по этому таймеру "
+                         "всегда — и с находками, и без (по умолчанию 1 — каждый час; "
+                         "раньше дефолт был 6 и сводка при находках дублировалась каждым "
+                         "проходом, то есть каждые 10 минут)")
     ap.add_argument("--service-gap", type=float, default=10.0, metavar="МИН",
                     help="ожидаемая пауза между проходами: если простой вдвое больше, радар "
                          "напишет об этом в сводке (по умолчанию 10 — как cron */10)")

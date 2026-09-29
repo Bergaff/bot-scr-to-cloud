@@ -1743,6 +1743,49 @@ async def main() -> None:
         off = monitor_module.ServiceNotify(store_svc, mode="none")
         checks.append(("--service-notify none выключает канал",
                        off.enabled is False and "none" in off.why_disabled(), off.why_disabled()))
+
+        # сводка строго по таймеру: force («находки были» / «прочитано 0») НЕ обходит
+        # паузу — иначе отчёт каждым проходом, то есть каждые 10 минут при cron */10.
+        # Аварии (failure) force сохраняют: сигнал не ждёт таймера.
+        async def _svc_timer_checks():
+            sent: list = []
+            orig_send = core_telegram.bot_send_text
+
+            async def fake_send(token, chat, text):
+                sent.append(text)
+                return None, False
+
+            core_telegram.bot_send_text = fake_send
+            try:
+                svc_t = monitor_module.ServiceNotify(store_svc, mode="auto", every_hours=1.0)
+                store_svc.bot_state_set(
+                    "service:summary",
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                await svc_t.send("сводка с находками", key="summary", force=True)
+                after_force_summary = len(sent)
+                store_svc.bot_state_set(
+                    "service:failure",
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                await svc_t.send("Проход упал: RuntimeError", key="failure", force=True)
+                after_failure = len(sent)
+                store_svc.bot_state_set(
+                    "service:summary",
+                    (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(timespec="seconds"))
+                await svc_t.send("час спустя", key="summary")
+                return after_force_summary, after_failure, list(sent)
+            finally:
+                core_telegram.bot_send_text = orig_send
+
+        forced_n, failure_n, sent_texts = await _svc_timer_checks()
+        checks.append(("сводка не чаще --service-every: force с находками ждёт таймер",
+                       forced_n == 0, f"отправлено {forced_n}"))
+        checks.append(("падение шлётся сразу, не дожидаясь таймера сводки",
+                       failure_n == 1, f"отправлено {failure_n}"))
+        checks.append(("через service-every сводка снова уходит",
+                       len(sent_texts) == 2 and sent_texts[-1] == "час спустя", sent_texts))
+        checks.append(("дефолт --service-every: 1 час — отчёт каждый час, не каждые 10 минут",
+                       monitor_module.build_parser().parse_args([]).service_every == 1.0,
+                       str(monitor_module.build_parser().parse_args([]).service_every)))
     finally:
         for key, value in saved_env.items():
             if value is None:
