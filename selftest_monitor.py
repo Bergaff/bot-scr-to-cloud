@@ -1783,8 +1783,8 @@ async def main() -> None:
                        failure_n == 1, f"отправлено {failure_n}"))
         checks.append(("через service-every сводка снова уходит",
                        len(sent_texts) == 2 and sent_texts[-1] == "час спустя", sent_texts))
-        checks.append(("дефолт --service-every: 1 час — отчёт каждый час, не каждые 10 минут",
-                       monitor_module.build_parser().parse_args([]).service_every == 1.0,
+        checks.append(("дефолт --service-every: 2 часа — отчёт каждые 2 часа, не каждые 10 минут",
+                       monitor_module.build_parser().parse_args([]).service_every == 2.0,
                        str(monitor_module.build_parser().parse_args([]).service_every)))
     finally:
         for key, value in saved_env.items():
