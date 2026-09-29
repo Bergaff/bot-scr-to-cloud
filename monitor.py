@@ -72,6 +72,13 @@ CREATE TABLE IF NOT EXISTS text_seen_global (
     first_seen TEXT NOT NULL,
     chat_key   TEXT
 );
+-- отпечаток объявления (контакт + направление + текст без цифр): автоповторы бамперов
+-- отличаются от оригинала цифрами/символами и точный дедуп их пропускает
+CREATE TABLE IF NOT EXISTS fp_seen (
+    fingerprint TEXT PRIMARY KEY,
+    first_seen  TEXT NOT NULL,
+    chat_key    TEXT
+);
 CREATE TABLE IF NOT EXISTS forwarded (
     chat_key TEXT NOT NULL,
     msg_id   INTEGER NOT NULL,
@@ -98,6 +105,7 @@ CREATE TABLE IF NOT EXISTS stats (
     cross_chat  INTEGER DEFAULT 0,
     deferred    INTEGER DEFAULT 0,
     hidden      INTEGER DEFAULT 0,
+    fp_duplicates INTEGER DEFAULT 0,
     account     TEXT,
     PRIMARY KEY (day, chat_key)
 );
@@ -132,6 +140,44 @@ CREATE TABLE IF NOT EXISTS bot_state (
 """
 
 
+# ------------------------------------------------------------------ отпечаток объявления
+
+_CONTACT_USER_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9_]{4,32})(?![\w])")
+_PHONE_RE = re.compile(r"(?<!\d)\+?\d[\d\s().\-]{7,18}\d(?!\d)")
+
+
+def extract_contact(text: str) -> str:
+    """Контакт автора из текста: @username, иначе телефон (нормализованный до цифр).
+
+    Контакт — главная идентичность объявления: посты пересылают бамперы, и автор
+    поста (sender_id) не совпадает с человеком из «контакт: @...». Если контакта
+    в тексте нет — возвращаем пусто, отпечаток возьмёт автора сообщения.
+    """
+    match = _CONTACT_USER_RE.search(text)
+    if match:
+        return "tg:" + match.group(1).lower()
+    for candidate in _PHONE_RE.findall(text):
+        digits = re.sub(r"\D", "", candidate)
+        if len(digits) >= 9:
+            return "ph:" + digits
+    return ""
+
+
+def fingerprint_of(text: str, direction: str = "", sender_id: str = "") -> str:
+    """Отпечаток объявления: контакт (из текста, иначе автор) + направление + текст без цифр.
+
+    Нормализация снимает то, чем отличаются копии автоповтора: цифры и даты, пунктуацию,
+    эмодзи, регистр, лишние пробелы (включая невидимые символы — они не буквы и не пробелы).
+    Одинаковый отпечаток в окне --fingerprint-window = копию не пересылаем.
+    """
+    import hashlib
+    identity = extract_contact(text) or (f"u:{sender_id}" if sender_id else "")
+    norm = re.sub(r"[^\w\s]+", " ", text.lower(), flags=re.UNICODE)
+    norm = re.sub(r"\d+", " ", norm)
+    norm = re.sub(r"\s+", " ", norm).strip()[:400]
+    return hashlib.sha1(f"{identity}|{direction or ''}|{norm}".encode()).hexdigest()
+
+
 # ------------------------------------------------------------------ хранилище
 
 class HitStore:
@@ -158,6 +204,8 @@ class HitStore:
             self.conn.execute("ALTER TABLE stats ADD COLUMN deferred INTEGER DEFAULT 0")
         if "hidden" not in columns:
             self.conn.execute("ALTER TABLE stats ADD COLUMN hidden INTEGER DEFAULT 0")
+        if "fp_duplicates" not in columns:
+            self.conn.execute("ALTER TABLE stats ADD COLUMN fp_duplicates INTEGER DEFAULT 0")
         fwd_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(forwarded)")}
         if "account" not in fwd_columns:
             # старая история относится к первому аккаунту: назови его main, чтобы лимит
@@ -232,6 +280,35 @@ class HitStore:
             self.conn.execute("INSERT INTO text_seen VALUES (?, ?, ?)", (chat_key, digest, stamp))
         self.conn.commit()
         return False, None
+
+    def fingerprint_is_duplicate(self, fingerprint: str, window_hours: float,
+                                 chat_key: str) -> bool:
+        """Отпечаток объявления уже встречался в окне (автоповторы и бамперы).
+
+        Как и text_is_duplicate: первая встреча записывается в базу (и возвращаем False),
+        повтор внутри окна — True. window_hours <= 0 — проверка выключена.
+        """
+        if window_hours <= 0:
+            return False
+        now = datetime.now(timezone.utc)
+        stamp = now.isoformat(timespec="seconds")
+        row = self.conn.execute(
+            "SELECT first_seen FROM fp_seen WHERE fingerprint=?", (fingerprint,)
+        ).fetchone()
+        if row:
+            try:
+                first = datetime.fromisoformat(row[0])
+            except ValueError:
+                first = now
+            if (now - first).total_seconds() < window_hours * 3600:
+                return True
+            self.conn.execute("UPDATE fp_seen SET first_seen=?, chat_key=? WHERE fingerprint=?",
+                              (stamp, chat_key, fingerprint))
+        else:
+            self.conn.execute("INSERT INTO fp_seen VALUES (?, ?, ?)",
+                              (fingerprint, stamp, chat_key))
+        self.conn.commit()
+        return False
 
     def save_hit(self, hit: dict) -> bool:
         """True — если такого совпадения ещё не было."""
@@ -1129,11 +1206,13 @@ class Monitor:
                  only_categories: tuple[str, ...] = (), forwarder=None, auto_join: bool = False,
                  heartbeat_minutes: float = 0.0, keep_hidden: bool = False,
                  account: str = "", show_account: bool = False,
-                 deadline: float | None = None, flood_wait_limit: float = 0.0):
+                 deadline: float | None = None, flood_wait_limit: float = 0.0,
+                 fingerprint_window: float = 6.0):
         self.client, self.store, self.sources = client, store, sources
         self.notify, self.paced, self.explain, self.skip_out = notifier, paced, explain, skip_out
         self.dedup_window = dedup_window
         self.dedup_scope = dedup_scope
+        self.fingerprint_window = fingerprint_window  # окно отпечатка объявления, часов (0 — выкл)
         self.only_intents = tuple(only_intents)
         self.only_directions = tuple(only_directions)
         self.max_age_hours = max_age         # 0 — без ограничения по возрасту сообщений
@@ -1154,7 +1233,7 @@ class Monitor:
         self.last_event: tuple | None = None        # (время, чат) последнего принятого сообщения
         self.counter = {"scanned": 0, "matched": 0, "saved": 0, "duplicates": 0,
                         "text_duplicates": 0, "cross_chat_duplicates": 0, "filtered": 0,
-                        "too_old": 0, "hidden": 0}
+                        "too_old": 0, "hidden": 0, "fp_duplicates": 0}
         # Бюджет прохода (time.monotonic). Схема B — это один проход на запуск: если его
         # оборвут по таймауту снаружи, не успеют записаться ни пульс, ни счётчики, ни
         # очередь пересылок. Поэтому радар сам следит за временем и не начинает новые чаты,
@@ -1332,6 +1411,20 @@ class Monitor:
                 self.counter["cross_chat_duplicates"] += 1   # тот же текст уже приходил из другого чата
                 self._bump(key, cross_chat=1)
             return None
+
+        # отпечаток: контакт + направление + текст без цифр. Точный дедуп выше пропускает
+        # копии, отличающиеся цифрами/символами (автоповтор бампера каждые 10 минут) —
+        # этот уровень их ловит, не мешая разным объявлениям того же автора
+        if self.fingerprint_window > 0:
+            fingerprint = fingerprint_of(text, match.direction or "",
+                                         str(getattr(message, "sender_id", "") or ""))
+            if self.store.fingerprint_is_duplicate(fingerprint, self.fingerprint_window, key):
+                self.counter["fp_duplicates"] += 1
+                self._bump(key, fp_duplicates=1)
+                if self.explain and self.counter["fp_duplicates"] <= 5:
+                    print(f"[i] пропущено (повтор-отпечаток в пределах "
+                          f"{self.fingerprint_window:g} ч): {text[:60]}…", file=sys.stderr)
+                return None
         self.counter["matched"] += 1
         self._bump(key, matched=1)
 
@@ -2750,6 +2843,7 @@ async def async_main(args) -> None:
         monitor = Monitor(client, store, acc_sources, notifier, paced,
                           explain=args.explain, skip_out=not args.include_own,
                           dedup_window=args.dedup_window, dedup_scope=args.dedup_scope,
+                          fingerprint_window=args.fingerprint_window,
                           max_age=args.max_age,
                           only_categories=tuple(x.strip() for x in (args.category or "").split(",") if x.strip()),
                           forwarder=forwarder, auto_join=args.auto_join,
@@ -3095,6 +3189,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="окно (часы), в котором одинаковые тексты считаются дублем; 0 — выключить")
     ap.add_argument("--dedup-scope", choices=["global", "chat"], default="global",
                     help="global — дубли ловятся между чатами (по умолчанию), chat — только внутри одного")
+    ap.add_argument("--fingerprint-window", type=float, default=6.0,
+                    help="окно (часы) отпечатка объявления: тот же контакт/автор + то же "
+                         "направление + похожий текст (без цифр) уже пересылался — копию не "
+                         "шлём (душит автоповторы бамперов); 0 — выключить")
     ap.add_argument("--category", help="категории: parcel (посылки/передачи), mixed (посылки+попутчики), ride (только люди)")
     ap.add_argument("--only-intent", help="показывать только: offer,request (через запятую)")
     ap.add_argument("--only-direction", help="показывать только направления: BY->PL,PL->BY,?->PL (через запятую)")

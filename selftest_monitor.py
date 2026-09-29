@@ -641,6 +641,67 @@ async def main() -> None:
                    duplicate is None and monitor_other.counter["cross_chat_duplicates"] == 1,
                    str(monitor_other.counter)))
 
+    # --- отпечаток объявления: контакт + направление + текст без цифр
+    base_ad = "Еду Бяла-Тересполь-Брест, через 1 часа выезд, возьму попутчиков, @TMihalina"
+    repost_ad = "Еду Бяла-Тересполь-Брест, через 3 часа выезд, возьму попутчиков, @TMihalina​"
+    checks.append(("отпечаток не зависит от цифр, регистра и невидимых символов",
+                   monitor_module.fingerprint_of(base_ad, "BY->PL", "111")
+                   == monitor_module.fingerprint_of(repost_ad, "BY->PL", "111"), ""))
+    checks.append(("другой контакт или направление — другой отпечаток",
+                   len({monitor_module.fingerprint_of(base_ad, "BY->PL", "111"),
+                        monitor_module.fingerprint_of(base_ad.replace("@TMihalina", "@LUIDA008"),
+                                                      "BY->PL", "111"),
+                        monitor_module.fingerprint_of(base_ad, "PL->BY", "111")}) == 3, ""))
+    checks.append(("контакт из текста важнее sender_id (рекламу переносят бамперы)",
+                   monitor_module.fingerprint_of(base_ad, "BY->PL", "777")
+                   == monitor_module.fingerprint_of(repost_ad, "BY->PL", "999"), ""))
+    checks.append(("без контакта в тексте отпечаток берёт автора сообщения",
+                   monitor_module.fingerprint_of("Еду завтра в Минск, есть места", "BY->PL", "777")
+                   != monitor_module.fingerprint_of("Еду завтра в Минск, есть места", "BY->PL", "888"), ""))
+    checks.append(("телефон в тексте распознаётся как контакт",
+                   monitor_module.extract_contact("возьму передачку, тел +375 44 707-68-60")
+                   == "ph:375447076860", monitor_module.extract_contact("тел +375 44 707-68-60")))
+
+    fp_store = HitStore(str(workdir / "fp.sqlite3"))
+    fp = monitor_module.fingerprint_of(base_ad, "BY->PL", "777")
+    fp_first = fp_store.fingerprint_is_duplicate(fp, 6.0, "@chat")
+    fp_again = fp_store.fingerprint_is_duplicate(fp, 6.0, "@chat")
+    checks.append(("отпечаток в базе: первая встреча — не дубль, повтор в окне — дубль",
+                   fp_first is False and fp_again is True, f"{fp_first} → {fp_again}"))
+    off_store = HitStore(str(workdir / "fp_off.sqlite3"))
+    checks.append(("--fingerprint-window 0 — проверка выключена (дубли не ловятся)",
+                   off_store.fingerprint_is_duplicate("any", 0.0, "@chat") is False
+                   and off_store.fingerprint_is_duplicate("any", 0.0, "@chat") is False, ""))
+    fp_store.conn.execute("UPDATE fp_seen SET first_seen=? WHERE fingerprint=?",
+                          ((datetime.now(timezone.utc) - timedelta(hours=7)).isoformat(timespec="seconds"), fp))
+    fp_store.conn.commit()
+    checks.append(("истёкшее окно отпечатка пропускает копию снова",
+                   fp_store.fingerprint_is_duplicate(fp, 6.0, "@chat") is False, ""))
+    defaults = build_parser().parse_args([])
+    checks.append(('"--fingerprint-window" есть в парсере и по умолчанию 6 часов',
+                   abs(float(defaults.fingerprint_window) - 6.0) < 1e-9, str(defaults.fingerprint_window)))
+
+    # сквозной тест: автоповтор бампера (цифры и автор меняются, контакт тот же) не пересылается
+    fp_monitor = Monitor(client, HitStore(str(workdir / "fp_monitor.sqlite3")), [source],
+                         silent, Paced(0), fingerprint_window=6.0)
+    fp_monitor.entities = {source.target: entity}
+    fp_monitor.meta = {source.target: source}
+    first_copy = await fp_monitor.process_message(
+        fake_message(4001, "Возьму посылку из Минска в Варшаву, еду 20.09, есть 2 места в машине"), source)
+    repost = await fp_monitor.process_message(
+        fake_message(4002, "Возьму посылку из Минска в Варшаву, еду 25.09, есть 3 места в машине"), source)
+    checks.append(("Копия с другими цифрами (тот же автор) поймана отпечатком",
+                   first_copy is not None and repost is None
+                   and fp_monitor.counter["fp_duplicates"] == 1 and fp_monitor.counter["text_duplicates"] == 0,
+                   str(fp_monitor.counter)))
+    with_contact_a = await fp_monitor.process_message(
+        fake_message(4003, "Возьму посылку в Варшаву, 28.09, есть место, контакт @TMihalina"), source)
+    with_contact_b = await fp_monitor.process_message(
+        fake_message(4004, "Возьму посылку в Варшаву, 29.09, есть место, контакт @TMihalina", sender_id=999), source)
+    checks.append(("тот же контакт при другом авторе-бампере — копия не пересылается",
+                   with_contact_a is not None and with_contact_b is None
+                   and fp_monitor.counter["fp_duplicates"] == 2, str(fp_monitor.counter)))
+
     # фильтры: только «ищу» и только нужное направление
     filtered = Monitor(client, store, [source], silent, Paced(0), only_intents=("request",),
                        dedup_scope="chat", dedup_window=0)
@@ -799,7 +860,7 @@ async def main() -> None:
     forum_source = Source(target="@forum_chat", title="Форум-чат", profile="chat", min_score=4,
                           catchup=10, topics=(501,))
     forum_monitor = Monitor(forum_client, forum_store, [forum_source], silent, Paced(0),
-                            dedup_scope="chat", dedup_window=0)
+                            dedup_scope="chat", dedup_window=0, fingerprint_window=0)
     forum_monitor.entities = {forum_source.target: forum_entity}
     forum_monitor.meta = {forum_source.target: forum_source}
     await forum_monitor.catch_up([forum_source])
@@ -817,7 +878,7 @@ async def main() -> None:
     open_source = Source(target="@forum_chat", title="Форум-чат", profile="chat", min_score=4, catchup=10)
     open_store = HitStore(":memory:")
     open_monitor = Monitor(forum_client, open_store, [open_source], silent, Paced(0),
-                           dedup_scope="chat", dedup_window=0)
+                           dedup_scope="chat", dedup_window=0, fingerprint_window=0)
     open_monitor.entities = {open_source.target: forum_entity}
     open_monitor.meta = {open_source.target: open_source}
     await open_monitor.catch_up([open_source])
