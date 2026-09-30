@@ -1632,10 +1632,17 @@ async def main() -> None:
             read=412, found=3, forwarded=3,
             per_account=[("main", 300, 2), ("second", 112, 1)],
             errors=0, db_total="27 совпадений", gap_minutes=None)
-        checks.append(("сводка: прочитано/найдено/переслано и разбивка по аккаунтам",
-                       "прочитано 412, найдено 3, переслано 3" in text
-                       and "main: прочитано 300, найдено 2" in text
-                       and "second: прочитано 112, найдено 1" in text, text.splitlines()[1]))
+        checks.append(("сводка: новых/найдено/переслано и разбивка по аккаунтам",
+                       "новых сообщений 412, найдено 3, переслано 3" in text
+                       and "main: новых 300, найдено 2" in text
+                       and "second: новых 112, найдено 1" in text, text.splitlines()[1]))
+        seen_text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+            read=30, found=2, forwarded=2, per_account=[("main", 30, 2)], errors=0,
+            db_total="10 совпадений", seen_before=740)
+        checks.append(("«новых» и «взято из чата» — разные числа: повторы видны отдельной строкой",
+                       "новых сообщений 30" in seen_text and "уже видели 740" in seen_text,
+                       seen_text.splitlines()[2]))
         checks.append(("сводка: в шапке время прохода и длительность",
                        "28.09 12:40" in text and "44 с" in text, text.splitlines()[0]))
 
@@ -1935,6 +1942,11 @@ async def main() -> None:
                    len(marker) == 8 and all(ch in "0123456789abcdef" for ch in marker), marker))
     checks.append(("метка совпадает с sha256 файла и не меняется между вызовами",
                    marker == expected and monitor_module.build_marker() == marker, expected))
+    checks.append(("в логе чата «взято» и «новых» — разные числа, а не одно «прочитано»",
+                   "взято {len(messages or [])}, новых {fresh}" in mon_src
+                   and "scanned_before" in mon_src, ""))
+    checks.append(("«старше N ч пропущено» считается за чат, а не накопительно за проход",
+                   "too_old_before" in mon_src, ""))
     checks.append(("метка печатается в конце прохода — её видно в /status и /log",
                    "код: monitor.py {build_marker()}" in mon_src, ""))
     checks.append(("меню команд регистрируется в конце прохода: иначе в Telegram их не видно",

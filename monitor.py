@@ -1431,13 +1431,18 @@ class Monitor:
                 except Exception as exc:  # noqa: BLE001
                     print(f"[!] catch-up {source.target}: {exc}", file=sys.stderr)
                     continue
+            scanned_before = self.counter["scanned"]
+            too_old_before = self.counter["too_old"]
             found = 0
             for message in sorted(messages or [], key=lambda m: m.id):   # старые -> новые
                 if await self.process_message(message, source):
                     found += 1
-            too_old = self.counter["too_old"]
+            # «взято» — сколько забрали из чата, «новых» — сколько увидели впервые:
+            # остальное уже попадалось в прошлых проходах (дедупликация по id сообщения)
+            fresh = self.counter["scanned"] - scanned_before
+            too_old = self.counter["too_old"] - too_old_before
             note = f", старше {self.max_age_hours:g} ч пропущено {too_old}" if self.max_age_hours > 0 else ""
-            print(f"[i] catch-up {source.target}: прочитано {len(messages or [])}, "
+            print(f"[i] catch-up {source.target}: взято {len(messages or [])}, новых {fresh}, "
                   f"совпадений {found}{note}", file=sys.stderr)
         if self.catchup_left:
             print(f"[i] бюджет прохода кончился: не прочитано чатов {len(self.catchup_left)} "
@@ -2292,12 +2297,14 @@ class ServiceNotify:
     def pass_summary(now: datetime, seconds: float, read: int, found: int, forwarded: int,
                      per_account: list, errors: int, db_total: str,
                      gap_minutes: float | None = None, expected_minutes: float = 0.0,
-                     leftover: list | None = None) -> str:
+                     leftover: list | None = None, seen_before: int | None = None) -> str:
         """Текст сводки прохода. Коротко: чтобы читалось с телефона за пару секунд."""
         lines = [f"Проход {now.strftime('%d.%m %H:%M')} UTC, {seconds:.0f} с",
-                 f"• прочитано {read}, найдено {found}, переслано {forwarded}"]
+                 f"• новых сообщений {read}, найдено {found}, переслано {forwarded}"]
+        if seen_before:
+            lines.append(f"• уже видели {seen_before} — повторно не смотрим")
         for name, acc_read, acc_found in per_account:
-            lines.append(f"• {name}: прочитано {acc_read}, найдено {acc_found}")
+            lines.append(f"• {name}: новых {acc_read}, найдено {acc_found}")
         lines.append(f"• ошибок за сутки: {errors}")
         lines.append(f"• в базе: {db_total}")
         if gap_minutes is not None and expected_minutes and gap_minutes > expected_minutes * 2:
@@ -2841,9 +2848,11 @@ async def async_main(args) -> None:
             per_account.append((acc.name,
                                 sum(int(m.counter.get("scanned", 0) or 0) for m in own),
                                 sum(int(m.counter.get("matched", 0) or 0) for m in own)))
+        seen_before = sum(int(m.counter.get("duplicates", 0) or 0) for _a, _c, m in runners)
         text = ServiceNotify.pass_summary(
             now=datetime.now(timezone.utc), seconds=time.time() - pass_started,
             read=read, found=found, forwarded=forwarded, per_account=per_account,
+            seen_before=seen_before,
             errors=store.errors_count(since_hours=24.0), db_total=store.stats(),
             gap_minutes=gap_before, expected_minutes=args.service_gap,
             leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])])
