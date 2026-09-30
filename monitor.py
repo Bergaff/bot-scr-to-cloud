@@ -27,13 +27,16 @@ import random
 import re
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core_telegram import (BOT_TOKEN_HINT, Paced, build_notifier, call, collect_topics, display_name,
-                           format_hit, hidden_author_reason, load_dotenv, make_client, message_link,
-                           peer_id, resolve_targets, topic_of, topic_title_of)
+from core_telegram import (BOT_TOKEN_HINT, FloodWaitTooLong, Paced, add_flood_hook,
+                           build_notifier, call,
+                           collect_topics, display_name, format_hit, hidden_author_reason,
+                           invite_hash, load_dotenv, make_client, message_link, peer_id,
+                           resolve_targets, topic_of, topic_title_of)
 from matcher import analyze
 
 HEADERS_TXT = {
@@ -98,6 +101,34 @@ CREATE TABLE IF NOT EXISTS stats (
     account     TEXT,
     PRIMARY KEY (day, chat_key)
 );
+-- «пульс» и события: по ним бот-панель считает, жив ли аккаунт (ТЗ §7.2)
+CREATE TABLE IF NOT EXISTS heartbeats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,                        -- UTC ISO
+    account TEXT,                            -- main | second | '' (не привязано)
+    kind TEXT NOT NULL,                      -- start | pulse | event | forward | error | flood | stop | day
+    chat_key TEXT,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_heartbeats_ts ON heartbeats(ts);
+-- журнал ошибок для /errors и алертов панели
+CREATE TABLE IF NOT EXISTS errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL, account TEXT, kind TEXT, text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_errors_ts ON errors(ts);
+-- срезы ресурсов: сколько радар жрёт (вердикт «A или B», ТЗ §15)
+CREATE TABLE IF NOT EXISTS metrics (
+    ts TEXT PRIMARY KEY,
+    rss_mb REAL, cpu_percent REAL, uptime_s REAL,
+    msgs_total INTEGER, msgs_last_hour INTEGER, api_calls INTEGER,
+    db_mb REAL, hits_total INTEGER, forwarded_today INTEGER,
+    accounts INTEGER, mode TEXT              -- mode: A (listener) | B (scheduled)
+);
+-- состояние бот-панели (offset getUpdates, антиспам алертов, /digest)
+CREATE TABLE IF NOT EXISTS bot_state (
+    key TEXT PRIMARY KEY, value TEXT
+);
 """
 
 
@@ -109,6 +140,13 @@ class HitStore:
     def __init__(self, path: str = "hits.sqlite3"):
         self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False)
+        # WAL + busy_timeout: базу читают одновременно радар и бот-панель (возможно, второй
+        # процесс --panel-only). Без этого панель ловила бы «database is locked» (ТЗ §7.2).
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error:                # например :memory: — WAL недоступен, работаем дальше
+            pass
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
@@ -209,9 +247,15 @@ class HitStore:
                VALUES (:chat_key,:chat_title,:chat_id,:username,:msg_id,:date,:sender_id,
                :sender_name,:text,:score,:category,:intent,:direction,:countries,:hits,:link,:found_at,
                :topic_id,:topic_name,:account)""",
-            {**hit, "countries": ",".join(hit.get("countries") or []), "hits": ",".join(hit.get("hits") or []),
-             "topic_id": hit.get("topic_id"), "topic_name": hit.get("topic_name") or "",
-             "account": hit.get("account") or ""},
+             {**hit, "countries": ",".join(hit.get("countries") or []), "hits": ",".join(hit.get("hits") or []),
+              "topic_id": hit.get("topic_id"), "topic_name": hit.get("topic_name") or "",
+              "account": hit.get("account") or ""},
+        )
+        # событие для панели: «последний раз ловил в 21:12 (@чат)» (ТЗ §7.3)
+        self.conn.execute(
+            "INSERT INTO heartbeats (ts, account, kind, chat_key, detail) VALUES (?, ?, 'event', ?, ?)",
+            (self._now_utc(), hit.get("account") or "", hit["chat_key"],
+             (hit.get("direction") or "")[:80]),
         )
         self.conn.commit()
         return True
@@ -276,6 +320,18 @@ class HitStore:
             (chat_key, msg_id, 1 if ok else 0, mode, error,
              datetime.now(timezone.utc).isoformat(timespec="seconds"), account),
         )
+        if ok and mode not in ("test", "queued", "dry-run"):
+            # пересылка состоялась — панель покажет «отправлял в 21:12» (ТЗ §7.3)
+            self.conn.execute(
+                "INSERT INTO heartbeats (ts, account, kind, chat_key, detail) "
+                "VALUES (?, ?, 'forward', ?, ?)",
+                (self._now_utc(), account or "", chat_key, f"mode={mode}"[:80]),
+            )
+        elif not ok and mode.startswith("failed"):
+            self.conn.execute(
+                "INSERT INTO errors (ts, account, kind, text) VALUES (?, ?, 'forward_failed', ?)",
+                (self._now_utc(), account or "", (error or mode)[:500]),
+            )
         self.conn.commit()
 
     def forwarded_today(self, account: str | None = None) -> int:
@@ -486,6 +542,331 @@ class HitStore:
             "SELECT category, COUNT(*) FROM hits GROUP BY category ORDER BY 2 DESC"
         ).fetchall()
         return f"{total} совпадений" + (" (" + ", ".join(f"{c}: {n}" for c, n in by_cat) + ")" if by_cat else "")
+
+    # ---------------- пульс, ошибки, состояние панели (ТЗ §7.2, §7.3)
+
+    @staticmethod
+    def _now_utc() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def log_heartbeat(self, kind: str, account: str | None = None, chat_key: str | None = None,
+                      detail: str | None = None, ts: str | None = None) -> None:
+        """Пишет событие жизни радара: start/pulse/event/forward/error/flood/stop/day.
+
+        По этим строкам бот-панель понимает, жив ли аккаунт, — БЕЗ живых проверок сессии
+        (открывать второй клиент на тот же .session нельзя: Telegram отзовёт ключ).
+        """
+        self.conn.execute(
+            "INSERT INTO heartbeats (ts, account, kind, chat_key, detail) VALUES (?, ?, ?, ?, ?)",
+            (ts or self._now_utc(), account or "", kind, chat_key or "", detail or ""),
+        )
+        self.conn.commit()
+
+    def last_heartbeat(self, kind: str | None = None, account: str | None = None) -> dict | None:
+        """Последняя запись пульса (или другого вида). None — если записей нет вовсе."""
+        query = "SELECT ts, account, kind, chat_key, detail FROM heartbeats"
+        where, params = [], []
+        if kind:
+            where.append("kind=?")
+            params.append(kind)
+        if account:
+            where.append("account=?")
+            params.append(account)
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY id DESC LIMIT 1"
+        row = self.conn.execute(query, params).fetchone()
+        if row is None:
+            return None
+        return {"ts": row[0], "account": row[1], "kind": row[2], "chat_key": row[3], "detail": row[4]}
+
+    def heartbeats_since(self, hours: float = 24.0, kind: str | None = None,
+                         account: str | None = None) -> list[dict]:
+        """Записи пульса за последние N часов (для «прочитано за час» и алертов)."""
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+        query = "SELECT ts, account, kind, chat_key, detail FROM heartbeats WHERE ts >= ?"
+        params: list = [since]
+        if kind:
+            query += " AND kind=?"
+            params.append(kind)
+        if account:
+            query += " AND account=?"
+            params.append(account)
+        query += " ORDER BY id"
+        return [{"ts": r[0], "account": r[1], "kind": r[2], "chat_key": r[3], "detail": r[4]}
+                for r in self.conn.execute(query, params).fetchall()]
+
+    def heartbeat_age_minutes(self, kind: str = "pulse", account: str | None = None,
+                              now: datetime | None = None) -> float | None:
+        """Сколько минут назад был последний пульс. None — пульса не было ни разу.
+
+        Именно по этому числу панель пишет «работает» или «молчит N мин»: молчание означает
+        «нет пульса», а не «нет находок» (тихий чат ночью — это норма, а не поломка).
+        """
+        last = self.last_heartbeat(kind=kind, account=account)
+        if not last or not last.get("ts"):
+            return None
+        try:
+            stamp = datetime.fromisoformat(last["ts"])
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        moment = now or datetime.now(timezone.utc)
+        return max(0.0, (moment - stamp).total_seconds() / 60.0)
+
+    @staticmethod
+    def parse_pulse_detail(detail: str | None) -> tuple[int, int]:
+        """Из строки пульса «прочитано 412, найдено 7» достаёт (прочитано, найдено)."""
+        if not detail:
+            return 0, 0
+        read = re.search(r"прочитано\s+(\d+)", detail)
+        found = re.search(r"найдено\s+(\d+)", detail)
+        return int(read.group(1)) if read else 0, int(found.group(1)) if found else 0
+
+    def pulse_progress(self, hours: float = 1.0, account: str | None = None) -> tuple[int, int]:
+        """(прочитано за последние N часов, найдено за то же окно) — по строкам пульса.
+
+        Пульс пишет накопительные счётчики прогона, поэтому разница двух срезов и есть
+        нагрузка за окно. Если пульса нет (радар запущен без --heartbeat) — нули.
+        """
+        rows = self.heartbeats_since(hours=max(hours, 0.01) + 24.0, kind="pulse", account=account)
+        if not rows:
+            return 0, 0
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        newest_read, newest_found = self.parse_pulse_detail(rows[-1].get("detail"))
+        base_read, base_found = newest_read, newest_found
+        for row in rows:
+            try:
+                stamp = datetime.fromisoformat(row["ts"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            if stamp >= cutoff:
+                break
+            base_read, base_found = self.parse_pulse_detail(row.get("detail"))
+        return max(0, newest_read - base_read), max(0, newest_found - base_found)
+
+    def log_error(self, kind: str, text: str = "", account: str | None = None,
+                  ts: str | None = None) -> None:
+        """Журнал ошибок: сессия, FloodWait, 401 от бота, недоступный чат, чужой chat_id."""
+        self.conn.execute(
+            "INSERT INTO errors (ts, account, kind, text) VALUES (?, ?, ?, ?)",
+            (ts or self._now_utc(), account or "", kind or "", (text or "")[:500]),
+        )
+        self.conn.commit()
+
+    def errors_recent(self, limit: int = 5, account: str | None = None,
+                      since_hours: float = 24.0) -> list[dict]:
+        """Последние ошибки (свежие первыми) — для /errors и для /accounts."""
+        query = "SELECT ts, account, kind, text FROM errors"
+        params: list = []
+        where = []
+        if since_hours and since_hours > 0:
+            where.append("ts >= ?")
+            params.append((datetime.now(timezone.utc)
+                           - timedelta(hours=since_hours)).isoformat(timespec="seconds"))
+        if account:
+            where.append("account=?")
+            params.append(account)
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        return [{"ts": r[0], "account": r[1], "kind": r[2], "text": r[3]}
+                for r in self.conn.execute(query, params).fetchall()]
+
+    def errors_count(self, since_hours: float = 24.0, account: str | None = None,
+                     kind: str | None = None) -> int:
+        """Сколько ошибок за окно (по умолчанию сутки) — для /status и алертов."""
+        query = "SELECT COUNT(*) FROM errors WHERE ts >= ?"
+        params: list = [(datetime.now(timezone.utc)
+                         - timedelta(hours=since_hours)).isoformat(timespec="seconds")]
+        if account:
+            query += " AND account=?"
+            params.append(account)
+        if kind:
+            query += " AND kind=?"
+            params.append(kind)
+        row = self.conn.execute(query, params).fetchone()
+        return int(row[0] if row else 0)
+
+    def bot_state_get(self, key: str, default: str | None = None) -> str | None:
+        """Значение из bot_state (offset getUpdates, антиспам алертов, /digest)."""
+        row = self.conn.execute("SELECT value FROM bot_state WHERE key=?", (key,)).fetchone()
+        return row[0] if row and row[0] is not None else default
+
+    def bot_state_set(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT INTO bot_state (key, value) VALUES (?, ?) "
+                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+        self.conn.commit()
+
+    def log_metric(self, row: dict) -> None:
+        """Сохраняет срез ресурсов (таблица metrics, ТЗ §7.2)."""
+        self.conn.execute(
+            """INSERT INTO metrics (ts, rss_mb, cpu_percent, uptime_s, msgs_total, msgs_last_hour,
+                                    api_calls, db_mb, hits_total, forwarded_today, accounts, mode)
+               VALUES (:ts, :rss_mb, :cpu_percent, :uptime_s, :msgs_total, :msgs_last_hour,
+                       :api_calls, :db_mb, :hits_total, :forwarded_today, :accounts, :mode)
+               ON CONFLICT(ts) DO UPDATE SET rss_mb=excluded.rss_mb, cpu_percent=excluded.cpu_percent,
+                       uptime_s=excluded.uptime_s, msgs_total=excluded.msgs_total,
+                       msgs_last_hour=excluded.msgs_last_hour, api_calls=excluded.api_calls,
+                       db_mb=excluded.db_mb, hits_total=excluded.hits_total,
+                       forwarded_today=excluded.forwarded_today, accounts=excluded.accounts,
+                       mode=excluded.mode""",
+            {key: row.get(key) for key in ("ts", "rss_mb", "cpu_percent", "uptime_s", "msgs_total",
+                                           "msgs_last_hour", "api_calls", "db_mb", "hits_total",
+                                           "forwarded_today", "accounts", "mode")},
+        )
+        self.conn.commit()
+
+    def metrics_recent(self, hours: float = 24.0) -> list[dict]:
+        """Срезы метрик за окно (для вердикта «за сутки»)."""
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+        cursor = self.conn.execute("SELECT * FROM metrics WHERE ts >= ? ORDER BY ts", (since,))
+        columns = [c[0] for c in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def retention_cleanup(self, days: int = 30) -> dict[str, int]:
+        """Ретеншн: чистит heartbeats/metrics/errors старше N дней (ТЗ §7.2).
+
+        Вызывается при старте и раз в сутки, чтобы файл базы не пух месяцами.
+        Возвращает, сколько строк удалено из каждой таблицы.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(0, int(days)))
+                  ).isoformat(timespec="seconds")
+        removed: dict[str, int] = {}
+        for table in ("heartbeats", "metrics", "errors"):
+            cursor = self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+            removed[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        self.conn.commit()
+        return removed
+
+    # ---------------- данные для бот-панели (ТЗ §14.1)
+
+    def hits_today(self) -> int:
+        """Сколько находок с местной полуночи."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM hits WHERE COALESCE(found_at, date) >= ?", (self.day_start_utc(),)
+        ).fetchone()
+        return int(row[0] if row else 0)
+
+    def hits_total(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) FROM hits").fetchone()
+        return int(row[0] if row else 0)
+
+    def hits_last(self, limit: int = 5) -> list[dict]:
+        """Последние находки (свежие первыми) — для /last."""
+        cursor = self.conn.execute(
+            "SELECT * FROM hits ORDER BY COALESCE(found_at, date) DESC, id DESC LIMIT ?", (int(limit),)
+        )
+        columns = [c[0] for c in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def hits_by_chat_today(self) -> list[tuple[str, int]]:
+        """Находки за сутки в разбивке по чатам — для /top и /sources."""
+        rows = self.conn.execute(
+            "SELECT chat_key, COUNT(*) FROM hits WHERE COALESCE(found_at, date) >= ? "
+            "GROUP BY chat_key ORDER BY COUNT(*) DESC", (self.day_start_utc(),)
+        ).fetchall()
+        return [(row[0], int(row[1])) for row in rows]
+
+    def last_hit_at_by_chat(self) -> dict[str, str]:
+        """chat_key -> время последней находки (ISO)."""
+        rows = self.conn.execute(
+            "SELECT chat_key, MAX(COALESCE(found_at, date)) FROM hits GROUP BY chat_key"
+        ).fetchall()
+        return {row[0]: (row[1] or "") for row in rows if row[0]}
+
+    def scanned_total(self) -> int:
+        """Сколько сообщений прочитано за всё время (сумма по всем чатам и дням)."""
+        row = self.conn.execute("SELECT COALESCE(SUM(scanned), 0) FROM stats").fetchone()
+        return int(row[0] if row else 0)
+
+    def hits_total(self) -> int:
+        """Сколько совпадений сохранено за всё время (для пульса в схеме B)."""
+        row = self.conn.execute("SELECT COUNT(*) FROM hits").fetchone()
+        return int(row[0] if row else 0)
+
+    def totals_for_chats(self, chat_keys: list[str]) -> tuple[int, int]:
+        """(прочитано, найдено) за всё время по указанным чатам.
+
+        Нужно для пульса в разовом проходе: счётчики процесса каждый раз обнуляются, а суммы из базы
+        переживают перезапуск (контейнер в облаке живёт один проход — ТЗ §16).
+        """
+        keys = [k for k in chat_keys if k]
+        if not keys:
+            return self.scanned_total(), self.hits_total()
+        marks = ",".join("?" * len(keys))
+        read = self.conn.execute(
+            f"SELECT COALESCE(SUM(scanned), 0) FROM stats WHERE chat_key IN ({marks})", keys
+        ).fetchone()
+        found = self.conn.execute(
+            f"SELECT COUNT(*) FROM hits WHERE chat_key IN ({marks})", keys
+        ).fetchone()
+        return int(read[0] if read else 0), int(found[0] if found else 0)
+
+    def scanned_by_chat(self) -> dict[str, int]:
+        """chat_key -> прочитано за всё время (для /sources)."""
+        rows = self.conn.execute(
+            "SELECT chat_key, COALESCE(SUM(scanned), 0), COALESCE(SUM(matched), 0) FROM stats "
+            "GROUP BY chat_key"
+        ).fetchall()
+        return {row[0]: int(row[1] or 0) for row in rows if row[0]}
+
+    def matched_by_chat(self) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT chat_key, COALESCE(SUM(matched), 0) FROM stats GROUP BY chat_key"
+        ).fetchall()
+        return {row[0]: int(row[1] or 0) for row in rows if row[0]}
+
+    def deferred_oldest(self, account: str | None = None) -> str:
+        """Когда встала самая старая позиция очереди («висит с 21:40»)."""
+        query = "SELECT MIN(at) FROM forwarded WHERE mode='queued'"
+        params: list = []
+        if account:
+            query += " AND account=?"
+            params.append(account)
+        row = self.conn.execute(query, params).fetchone()
+        return str(row[0] or "") if row else ""
+
+    def deferred_with_links(self, limit: int = 5, account: str | None = None) -> list[dict]:
+        """Позиции очереди со ссылками на сообщения — для /queue."""
+        query = ("SELECT f.chat_key, f.msg_id, f.at, h.link, h.chat_title, h.direction "
+                 "FROM forwarded f LEFT JOIN hits h ON h.chat_key=f.chat_key AND h.msg_id=f.msg_id "
+                 "WHERE f.mode='queued'")
+        params: list = []
+        if account:
+            query += " AND f.account=?"
+            params.append(account)
+        query += " ORDER BY f.at, f.chat_key, f.msg_id LIMIT ?"
+        params.append(int(limit))
+        return [{"chat_key": r[0], "msg_id": r[1], "at": r[2], "link": r[3] or "",
+                 "chat_title": r[4] or "", "direction": r[5] or ""}
+                for r in self.conn.execute(query, params).fetchall()]
+
+    def forward_failures_today(self, account: str | None = None) -> int:
+        """Ошибки отправки за сутки (не путать с очередью по лимиту)."""
+        query = ("SELECT COUNT(*) FROM forwarded WHERE ok=0 AND COALESCE(mode,'') LIKE 'failed%' "
+                 "AND at >= ?")
+        params: list = [self.day_start_utc()]
+        if account:
+            query += " AND account=?"
+            params.append(account)
+        row = self.conn.execute(query, params).fetchone()
+        return int(row[0] if row else 0)
+
+    def accounts_seen(self) -> list[str]:
+        """Имена аккаунтов, о которых база что-то знает (история + пульс)."""
+        names: list[str] = []
+        for query in ("SELECT DISTINCT account FROM stats WHERE COALESCE(account, '') != ''",
+                      "SELECT DISTINCT account FROM forwarded WHERE COALESCE(account, '') != ''",
+                      "SELECT DISTINCT account FROM heartbeats WHERE COALESCE(account, '') != ''"):
+            for row in self.conn.execute(query).fetchall():
+                if row[0] and row[0] not in names:
+                    names.append(row[0])
+        return names
 
 
 # ------------------------------------------------------------------ конфиг
@@ -747,7 +1128,8 @@ class Monitor:
                  only_directions: tuple[str, ...] = (), max_age: float = 0.0,
                  only_categories: tuple[str, ...] = (), forwarder=None, auto_join: bool = False,
                  heartbeat_minutes: float = 0.0, keep_hidden: bool = False,
-                 account: str = "", show_account: bool = False):
+                 account: str = "", show_account: bool = False,
+                 deadline: float | None = None, flood_wait_limit: float = 0.0):
         self.client, self.store, self.sources = client, store, sources
         self.notify, self.paced, self.explain, self.skip_out = notifier, paced, explain, skip_out
         self.dedup_window = dedup_window
@@ -773,6 +1155,34 @@ class Monitor:
         self.counter = {"scanned": 0, "matched": 0, "saved": 0, "duplicates": 0,
                         "text_duplicates": 0, "cross_chat_duplicates": 0, "filtered": 0,
                         "too_old": 0, "hidden": 0}
+        # Бюджет прохода (time.monotonic). Схема B — это один проход на запуск: если его
+        # оборвут по таймауту снаружи, не успеют записаться ни пульс, ни счётчики, ни
+        # очередь пересылок. Поэтому радар сам следит за временем и не начинает новые чаты,
+        # когда пора заканчивать. deadline=None — читать всё (живой режим, своя машина).
+        self.deadline = deadline
+        self.flood_wait_limit = float(flood_wait_limit or 0.0)
+        self.catchup_left: list[str] = []          # чаты, до которых не дошли в этот проход
+        self.paced.max_wait = self.flood_budget    # подсказка для call(): сколько можно спать
+
+    # --- бюджет прохода: чтобы его не обрывал таймаут
+
+    def time_left(self) -> float:
+        """Сколько секунд осталось на проход (inf, если бюджет не задан)."""
+        if self.deadline is None:
+            return float("inf")
+        return max(self.deadline - time.monotonic(), 0.0)
+
+    def flood_budget(self) -> float | None:
+        """Сколько можно спать по FloodWait: остаток бюджета, но не больше лимита.
+
+        None — ждать сколько угодно (своя машина, процесс живёт долго).
+        """
+        if self.deadline is None and self.flood_wait_limit <= 0:
+            return None
+        left = self.time_left()
+        if self.flood_wait_limit > 0:
+            return max(min(left, self.flood_wait_limit), 0.0)
+        return max(left, 0.0)
 
     # --- счётчики для файла статистики
 
@@ -837,11 +1247,7 @@ class Monitor:
     # --- служебное
 
     def chat_key(self, source: Source) -> str:
-        raw = source.target.strip()
-        if "t.me/+" in raw or "joinchat/" in raw or raw.startswith("+"):
-            invite = raw.rstrip("/").split("/")[-1].lstrip("+")
-            return f"invite:{invite}"          # например invite:CmQyl50rf-NlODFi
-        return raw.lstrip("@").rstrip("/").split("/")[-1].lower()
+        return source_chat_key(source)         # общая функция: её же использует --check-sources
 
     async def sender_name(self, sender_id: int | None) -> str | None:
         if not sender_id:
@@ -990,9 +1396,16 @@ class Monitor:
     # --- старт
 
     async def catch_up(self, sources: list[Source]) -> None:
+        """Догоняем хвосты чатов. Когда бюджет прохода на исходе — новые чаты не начинаем:
+        недочитанное пойдёт в следующий проход (чаты обходятся в случайном порядке, поэтому
+        ни один не застаивается), зато этот проход закончится сам и всё сохранит.
+        """
         for source in sources:
             entity = self.entities.get(source.target)
             if entity is None or source.catchup <= 0:
+                continue
+            if self.time_left() < 5:
+                self.catchup_left.append(source.target)
                 continue
             if source.topics:
                 # форум-чат: читаем только выбранные темы (по каждой — свой хвост)
@@ -1018,14 +1431,23 @@ class Monitor:
                 except Exception as exc:  # noqa: BLE001
                     print(f"[!] catch-up {source.target}: {exc}", file=sys.stderr)
                     continue
+            scanned_before = self.counter["scanned"]
+            too_old_before = self.counter["too_old"]
             found = 0
             for message in sorted(messages or [], key=lambda m: m.id):   # старые -> новые
                 if await self.process_message(message, source):
                     found += 1
-            too_old = self.counter["too_old"]
+            # «взято» — сколько забрали из чата, «новых» — сколько увидели впервые:
+            # остальное уже попадалось в прошлых проходах (дедупликация по id сообщения)
+            fresh = self.counter["scanned"] - scanned_before
+            too_old = self.counter["too_old"] - too_old_before
             note = f", старше {self.max_age_hours:g} ч пропущено {too_old}" if self.max_age_hours > 0 else ""
-            print(f"[i] catch-up {source.target}: прочитано {len(messages or [])}, "
+            print(f"[i] catch-up {source.target}: взято {len(messages or [])}, новых {fresh}, "
                   f"совпадений {found}{note}", file=sys.stderr)
+        if self.catchup_left:
+            print(f"[i] бюджет прохода кончился: не прочитано чатов {len(self.catchup_left)} "
+                  f"({', '.join(self.catchup_left[:5])}{'…' if len(self.catchup_left) > 5 else ''}) "
+                  f"— дойдут в следующий проход", file=sys.stderr)
 
     # --- пульс: чтобы долгая тишина не выглядела как зависание
 
@@ -1090,6 +1512,8 @@ class Monitor:
         if drained.get("sent"):
             print(f"[i] добор после полуночи: отправлено {drained['sent']}, "
                   f"осталось в очереди {self.store.deferred_count()}", file=sys.stderr)
+        self.store.log_heartbeat("day", account=self.account or None,
+                                 detail=f"лимит обнулён, в очереди {self.store.deferred_count()}")
         return drained
 
     async def _daily_loop(self) -> None:
@@ -1105,11 +1529,34 @@ class Monitor:
                 except Exception as exc:  # noqa: BLE001
                     print(f"[!] сбой при смене суток: {type(exc).__name__} {exc}", file=sys.stderr)
 
+    def log_pulse(self, read: int | None = None, found: int | None = None) -> None:
+        """Пишет пульс в базу: по нему бот-панель понимает, жив ли аккаунт (ТЗ §7.3).
+
+        Важно: живость определяется именно пульсом, а не находками — иначе тихий чат
+        ночью выглядел бы как «аккаунт сломался» (ТЗ §14.1).
+
+        Числа по умолчанию берутся из счётчиков процесса: в схеме A процесс живёт долго,
+        счётчики накопительные, и разница двух пульсов — нагрузка за окно. В разовом проходе
+        (схема B) процесс каждый раз новый, поэтому туда передают суммы из базы — иначе
+        разница пульсов всегда была бы нулевой и панель показывала бы «прочитано 0 за час».
+        """
+        try:
+            scanned = self.counter.get("scanned", 0) if read is None else int(read)
+            saved = self.counter.get("saved", 0) if found is None else int(found)
+            self.store.log_heartbeat(
+                "pulse", account=self.account or None,
+                detail=f"прочитано {scanned}, найдено {saved}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[!] пульс в базу не записан: {type(exc).__name__} {exc}", file=sys.stderr)
+
     async def _heartbeat_loop(self) -> None:
         interval = max(0.05, self.heartbeat_minutes) * 60
         while True:
             await asyncio.sleep(interval)
             print("[i] " + self.heartbeat_text(), file=sys.stderr)
+            self.flush_stats()      # счётчики — в базу: метрики и панель видят свежие цифры
+            self.log_pulse()
 
     async def run(self) -> None:
         from telethon import events
@@ -1118,6 +1565,11 @@ class Monitor:
                                          auto_join=self.auto_join)
         self.entities = resolved
         self.meta = {s.target: s for s in self.sources if s.target in resolved}
+
+        # панель видит старт аккаунта и сразу получает свежий пульс (ТЗ §7.3)
+        self.store.log_heartbeat("start", account=self.account or None,
+                                 detail=f"источников {len(resolved)} из {len(self.sources)}")
+        self.log_pulse()
 
         await self.flush_deferred()           # сначала отдаём то, что не влезло в лимит раньше
         await self.catch_up([self.meta[t] for t in resolved])
@@ -1171,6 +1623,8 @@ class Monitor:
                 if task is not None:
                     task.cancel()
             self.heartbeat_task = None
+            self.flush_stats()
+            self.store.log_heartbeat("stop", account=self.account or None, detail="остановлен")
 
     def _target_by_entity(self, chat_id: int | None) -> str:
         """Источник по id из события.
@@ -1274,7 +1728,10 @@ def doctor(verbose: bool = True) -> int:
 
     api_id, api_hash = os.getenv("TG_API_ID"), os.getenv("TG_API_HASH")
     if not api_id:
-        report("FAIL", "TG_API_ID не задан", "впиши в .env или выполни: set TG_API_ID=1234567 (cmd) / $env:TG_API_ID=\"1234567\" (PowerShell)")
+        report("FAIL", "TG_API_ID не задан", "запусти мастер: start.bat --login (спросит ключи и запишет в .env); либо впиши сам: set TG_API_ID=1234567 (cmd) / $env:TG_API_ID=\"1234567\" (PowerShell)")
+        fails.append("TG_API_ID")
+    elif any(sep in api_id for sep in ",;"):
+        report("FAIL", f"TG_API_ID содержит несколько значений: {api_id!r}", "ключи приложения общие для всех аккаунтов — значение одно (App api_id). Аккаунты перечисляются через запятую в TG_SESSION и в accounts: в sources.yaml")
         fails.append("TG_API_ID")
     elif not api_id.strip().isdigit() or len(api_id.strip()) < 5:
         report("FAIL", f"TG_API_ID выглядит обрезанным: {api_id!r}", "нужно полное число из my.telegram.org, например 1234567")
@@ -1283,7 +1740,10 @@ def doctor(verbose: bool = True) -> int:
         report("PASS", f"TG_API_ID задан ({api_id.strip()})")
 
     if not api_hash:
-        report("FAIL", "TG_API_HASH не задан", "впиши в .env или выполни: set TG_API_HASH=... (cmd) / $env:TG_API_HASH=\"...\" (PowerShell)")
+        report("FAIL", "TG_API_HASH не задан", "запусти мастер: start.bat --login (ключи берутся на my.telegram.org/auth?to=apps); либо впиши сам: set TG_API_HASH=... (cmd)")
+        fails.append("TG_API_HASH")
+    elif any(sep in api_hash for sep in ",;"):
+        report("FAIL", f"TG_API_HASH содержит несколько значений: {api_hash!r}", "ключи приложения общие для всех аккаунтов — значение одно (App api_hash, 32 символа). Через запятую перечисляются сессии в TG_SESSION, а не ключи")
         fails.append("TG_API_HASH")
     elif len(api_hash.strip()) != 32:
         report("FAIL", f"TG_API_HASH обрезан: {len(api_hash.strip())} символов вместо 32",
@@ -1338,10 +1798,16 @@ def doctor(verbose: bool = True) -> int:
         report("WARN", "сессии нет", "первый запуск спросит телефон и код из Telegram (это нормально, один раз)")
 
     if os.getenv("TG_BOT_TOKEN") and os.getenv("TG_NOTIFY_CHAT"):
-        # здесь проверяется только наличие переменных, без сети: токен может быть неверным (401).
-        # По-настоящему это проверяет --test-notify — там запрос getMe к Telegram.
-        report("PASS", "TG_BOT_TOKEN и TG_NOTIFY_CHAT заданы (это проверка наличия, не отправки)",
-               "проверить по-настоящему: start.bat --test-notify --notify bot")
+        # здесь проверяется только наличие переменных и вид chat_id, без сети: токен может быть
+        # неверным (401). По-настоящему это проверяет --test-notify — там запрос getMe к Telegram.
+        notify_chat = os.getenv("TG_NOTIFY_CHAT", "").strip()
+        if not re.fullmatch(r"-?\d+", notify_chat):
+            report("FAIL", f"TG_NOTIFY_CHAT=«{notify_chat}» — это не числовой id",
+                   "получатель уведомлений ОДИН: твой чат с ботом (вид 123456789, для группы/канала — отрицательный). Через запятую перечисляются сессии в TG_SESSION, а не получатели. Узнать id: @userinfobot, либо «Старт» своему боту и getUpdates")
+            fails.append("TG_NOTIFY_CHAT")
+        else:
+            report("PASS", f"TG_BOT_TOKEN и TG_NOTIFY_CHAT заданы ({notify_chat}) — проверка наличия и вида, не отправки",
+                   "проверить по-настоящему: start.bat --test-notify --notify bot")
     else:
         report("WARN", "уведомления ботом не настроены (необязательно)",
                "шаг 8 в START-HERE.md; сейчас можно писать в консоль: --notify console")
@@ -1445,9 +1911,584 @@ def resolve_forward_settings(args, defaults: dict) -> dict:
     }
 
 
+def message_counters(store: "HitStore", accounts: list | None = None) -> tuple[int, int]:
+    """(прочитано всего, прочитано за последний час) — для метрик и бот-панели.
+
+    «Всего» берётся из таблицы stats (переживает перезапуски), «за час» — из разницы строк
+    пульса: радар пишет в пульс, сколько прочитал с прошлого раза.
+    """
+    total = store.scanned_total()
+    hour = 0
+    for account in accounts or []:
+        name = getattr(account, "name", None) or (account.get("name")
+                                                  if isinstance(account, dict) else None)
+        if name:
+            hour += store.pulse_progress(hours=1.0, account=name)[0]
+    if not hour:
+        hour = store.pulse_progress(hours=1.0)[0]
+    if not hour:
+        rows = store.metrics_recent(hours=2)
+        if rows:
+            hour = int(rows[-1].get("msgs_last_hour") or 0)
+    return total, hour
+
+
+def build_collector(args, store: "HitStore", accounts: list, mode: str, paced: Paced):
+    """Сборщик метрик расхода (ТЗ §15.2). None — если метрики выключены."""
+    interval = float(getattr(args, "metrics_interval", 0) or 0)
+    if interval <= 0:
+        return None
+    from metrics import MetricsCollector
+
+    return MetricsCollector(
+        store, db_path=args.db, mode=mode, accounts=len(accounts) or 1,
+        interval_minutes=interval, csv_path=getattr(args, "metrics_csv", "metrics.csv"),
+        paced=paced, msgs_provider=lambda: message_counters(store, accounts),
+    )
+
+
+def print_metrics(row: dict) -> None:
+    """Короткая строка о расходе в конце прогона — чтобы было видно даже без бота."""
+    import metrics as metrics_module
+
+    memory = f"{row.get('rss_mb'):g} МБ" if row.get("rss_mb") is not None else "н/д"
+    cpu = f"{row.get('cpu_percent'):g} %" if row.get("cpu_percent") is not None else "н/д"
+    text, reason = metrics_module.verdict(rss=row.get("rss_mb"), cpu=row.get("cpu_percent"))
+    print(f"[i] расход: память {memory}, процессор {cpu}, сообщений {row.get('msgs_total')}, "
+          f"API-вызовов {row.get('api_calls')}, база {row.get('db_mb')} МБ -> metrics.csv",
+          file=sys.stderr)
+    print(f"[i] вердикт по ресурсам: {text}" + (f" ({reason})" if reason else ""), file=sys.stderr)
+
+
+async def check_sessions(args, defaults: dict, store: "HitStore", api_id: int,
+                         api_hash: str) -> int:
+    """Живая проверка сессий: connect + get_me по каждому аккаунту (ТЗ §14.3).
+
+    Допустима ТОЛЬКО когда радар не запущен: второй клиент на тот же .session — это
+    AuthKeyDuplicatedError и повторный вход. Поэтому сначала смотрим на пульс в базе.
+    Интерактивных запросов (телефон/код) здесь нет намеренно: проверяем, а не входим.
+    """
+    from bot_panel import BotPanel
+
+    busy = BotPanel.sessions_busy(store, minutes=3.0)
+    if busy:
+        print(f"[!] Отказ: аккаунт «{busy}» только что слал пульс — похоже, радар работает. "
+              f"Живая проверка откроет второй клиент на тот же .session, и Telegram отзовёт ключ "
+              f"(AuthKeyDuplicatedError). Сначала останови радар (Ctrl+C в его окне), потом "
+              f"повтори: start.bat --check-sessions", file=sys.stderr)
+        return 1
+
+    accounts = resolve_accounts(args, defaults)
+    code = 0
+    for acc in accounts:
+        session_file = Path(f"{acc.session}.session")
+        if not session_file.exists():
+            print(f"[!] {acc.name}: файла {session_file.name} нет, потребуется вход: "
+                  f"start.bat --login-qr --session {acc.session}", file=sys.stderr)
+            code = 1
+            continue
+        client = make_client(acc.session, api_id, api_hash, delay=args.delay,
+                             proxy=acc.proxy or args.proxy)
+        try:
+            await client.connect()
+            authorized = await client.is_user_authorized()
+            me = await client.get_me() if authorized else None
+            if authorized and me is not None:
+                print(f"[+] {acc.name}: сессия {session_file.name} жива — "
+                      f"{display_name(me)} (id={me.id})")
+            else:
+                print(f"[!] {acc.name}: сессия {session_file.name} не авторизована — нужен вход: "
+                      f"start.bat --login-qr --session {acc.session}", file=sys.stderr)
+                store.log_error("SessionNotAuthorized", "сессия не авторизована", account=acc.name)
+                code = 1
+        except Exception as exc:  # noqa: BLE001
+            name = type(exc).__name__
+            print(f"[!] {acc.name}: {name}: {exc}", file=sys.stderr)
+            if name == "AuthKeyDuplicatedError":
+                print(f"    Удали {session_file.name} и войди заново: "
+                      f"start.bat --login-qr --session {acc.session}", file=sys.stderr)
+            store.log_error(name, str(exc)[:300], account=acc.name)
+            code = 1
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+    if code == 0:
+        print("[+] Все сессии живы: радар можно запускать (start.bat --bot-panel)")
+    return code
+
+
+# --- диагностика источников: «вступить», «не найден», «не смотрит» ---------------
+#
+# Три разные беды выглядят одинаково — «находок нет». Проверка разводит их:
+#   * join    — аккаунт не состоит в чате: радар до чата просто не доходит, нужен вход в чат;
+#   * missing — имя набрано с опечаткой либо чат удалён;
+#   * quiet   — чат читается, но прочитано 0 сообщений: не привязан к аккаунту, выключен,
+#               отсекается профилем/порогом или в чате давно nothing не пишут.
+# Проверка живая (подключается к Telegram), но в базу не пишет и ничего не пересылает.
+
+VERDICT_LABEL = {
+    "ok": "читается", "join": "НУЖНО ВСТУПИТЬ", "missing": "НЕ НАЙДЕН",
+    "expired": "ССЫЛКА ИСТЕКЛА", "flood": "ПАУЗА ОТ TELEGRAM", "error": "ОШИБКА",
+    "empty": "ПУСТО",
+}
+
+# Подстроки в тексте ошибки Telegram. Типы исключений не используем: тексты стабильнее,
+# и разбор можно проверить тестом, не поднимая Telethon.
+# Telethon дублирует смысл и словами, и в snake_case — ловим оба вида
+_JOIN_HINTS = ("not part of", "cannot get entity", "channel_private", "channel is private",
+               "channel specified is private", "private channel", "user_not_participant",
+               "participant_id_invalid", "chat_admin_required")
+# Telethon пишет эти ошибки и словами, и в snake_case — ловим оба вида
+_MISSING_HINTS = ("username not occupied", "username_not_occupied", "username invalid", "username is invalid",
+                  "username_invalid", "username_is_invalid", "no user has", "nobody is using", "there is no")
+_FLOOD_HINTS = ("flood", "wait of", "too many requests")
+_EXPIRED_HINTS = ("expired", "истек")
+
+
+def classify_source_error(text: str, target: str = "") -> tuple[str, str]:
+    """Вердикт и совет по тексту ошибки Telegram. target нужен, чтобы отличить ссылку-приглашение."""
+    low = (text or "").lower()
+    if any(hint in low for hint in _FLOOD_HINTS):
+        return "flood", "Telegram просит подождать — лимит на запросы, повтори позже"
+    if any(hint in low for hint in _EXPIRED_HINTS):
+        return "expired", "ссылка-приглашение истекла: попроси свежую у администратора чата"
+    if any(hint in low for hint in _MISSING_HINTS):
+        return "missing", "такого имени нет: проверь написание (или чат удалён)"
+    if any(hint in low for hint in _JOIN_HINTS):
+        if invite_hash(target):
+            return "join", "аккаунт не в чате: вступи вручную или запусти радар с --auto-join"
+        return "join", ("аккаунт не состоит в чате: вступи с него вручную "
+                        "(приватный чат без ссылки-приглашения — только так)")
+    return "error", "неожиданная ошибка — смотри текст ниже"
+
+
+def source_chat_key(source: "Source") -> str:
+    """Ключ чата в базе: @username без @ в нижнем регистре; для ссылок — invite:<hash>."""
+    raw = source.target.strip()
+    if "t.me/+" in raw or "joinchat/" in raw or raw.startswith("+"):
+        invite = raw.rstrip("/").split("/")[-1].lstrip("+")
+        return f"invite:{invite}"
+    return raw.lstrip("@").rstrip("/").split("/")[-1].lower()
+
+
+def diagnose_sources_config(sources: list, accounts: list, buckets: dict,
+                            store=None) -> list[str]:
+    """Замечания по конфигу без сети: выключенное, дубли, без привязки, пропавшее из списка."""
+    notes: list[str] = []
+    disabled = [s.target for s in sources if not s.enabled]
+    if disabled:
+        notes.append(f"[i] выключено в конфиге (enabled: false) — радар их не читает: "
+                     f"{', '.join(disabled)}")
+
+    counts: dict[str, int] = {}
+    for source in sources:
+        key = source_chat_key(source)
+        counts[key] = counts.get(key, 0) + 1
+    duplicates = sorted(key for key, count in counts.items() if count > 1)
+    if duplicates:
+        notes.append(f"[!] чат указан дважды — читаться будет дважды, лимиты тоже: "
+                     f"{', '.join(duplicates)}")
+
+    if len(accounts) > 1:
+        unassigned = [s.target for s in sources if not (s.account or "").strip()]
+        if unassigned:
+            notes.append(f"[i] без account: {len(unassigned)} шт. — достаются первому аккаунту "
+                         f"«{accounts[0].name}»")
+
+    for name, bucket in buckets.items():
+        if not bucket:
+            notes.append(f"[!] аккаунту «{name}» не назначен ни один чат — он простаивает")
+
+    if store is not None:
+        keys = {source_chat_key(s) for s in sources}
+        stale = sorted(key for key in (store.scanned_by_chat() or {}) if key and key not in keys)
+        if stale:
+            notes.append(f"[i] читались раньше, но сейчас их нет в конфиге: {', '.join(stale)}")
+    return notes
+
+
+async def probe_source(client, source: "Source", paced) -> tuple[str, str]:
+    """Один источник: (вердикт, подробность). Базу не трогает, ничего не пересылает."""
+    try:
+        entity = await call(lambda: client.get_entity(source.target), paced,
+                            label=f"get_entity({source.target})")
+    except Exception as exc:                                        # noqa: BLE001
+        return classify_source_error(f"{type(exc).__name__}: {exc}", source.target)
+    try:
+        messages = await call(lambda: client.get_messages(entity, limit=1), paced,
+                              label=f"get_messages({source.target})")
+    except Exception as exc:                                        # noqa: BLE001
+        return classify_source_error(f"{type(exc).__name__}: {exc}", source.target)
+    if not messages:
+        return "empty", ("чат доступен, но сообщений не видно: пустой чат либо история закрыта "
+                         "для новых участников")
+    stamp = getattr(messages[0], "date", None)
+    return "ok", ("последнее сообщение " + stamp.strftime("%d.%m %H:%M") if stamp
+                  else "сообщения есть")
+
+
+async def check_sources(args, defaults: dict, sources: list, store, api_id: int,
+                        api_hash: str) -> int:
+    """Живая проверка источников: что читается, куда вступить, где радар «не смотрит».
+
+    Открывает по клиенту на каждый аккаунт, поэтому допустима ТОЛЬКО когда радар остановлен
+    (второй клиент на тот же .session = AuthKeyDuplicatedError). В облаке это единственный
+    клиент — там проверку запускает эндпоинт /sources-check внутри контейнера с --force.
+    """
+    from bot_panel import BotPanel
+
+    if not getattr(args, "force", False):
+        busy = BotPanel.sessions_busy(store, minutes=3.0)
+        if busy:
+            print(f"[!] Отказ: аккаунт «{busy}» только что слал пульс — похоже, радар работает. "
+                  f"Живая проверка откроет второй клиент на тот же .session, и Telegram отзовёт "
+                  f"ключ (AuthKeyDuplicatedError). Останови радар (Ctrl+C в его окне), потом "
+                  f"повтори: start.bat --check-sources", file=sys.stderr)
+            return 1
+
+    accounts = resolve_accounts(args, defaults)
+    buckets = sources_for_account(sources, accounts)
+    print("[i] проверка источников: подключаюсь к каждому аккаунту, базу не меняю")
+
+    for note in diagnose_sources_config(sources, accounts, buckets, store):
+        print(note)
+    if not sources:
+        print("[!] в конфиге нет ни одного источника — проверять нечего")
+        return 1
+
+    paced = Paced(getattr(args, "delay", 2.0))
+    scanned = store.scanned_by_chat() or {}
+    matched = store.matched_by_chat() or {}
+    last_hit = store.last_hit_at_by_chat() or {}
+    verdicts: dict[str, int] = {}
+    code = 0
+
+    for acc in accounts:
+        own = buckets.get(acc.name, [])
+        session_file = Path(f"{acc.session}.session")
+        print(f"\n── {acc.name} · {session_file.name} · чатов {len(own)} ──")
+        if not session_file.exists():
+            print(f"    [!] файла {session_file.name} нет: "
+                  f"start.bat --login-qr --session {acc.session}")
+            code = 1
+            continue
+        client = make_client(acc.session, api_id, api_hash, delay=args.delay,
+                             proxy=acc.proxy or args.proxy)
+        try:
+            await client.connect()
+            me = await client.get_me() if await client.is_user_authorized() else None
+            if me is None:
+                print(f"    [!] сессия не авторизована: "
+                      f"start.bat --login-qr --session {acc.session}")
+                code = 1
+                continue
+            print(f"    [+] {display_name(me)} (id={me.id})")
+            for source in own:
+                verdict, detail = await probe_source(client, source, paced)
+                verdicts[verdict] = verdicts.get(verdict, 0) + 1
+                key = source_chat_key(source)
+                read = int(scanned.get(key, 0))
+                found = int(matched.get(key, 0))
+                hit = last_hit.get(key, "")
+                stats = (f" · прочитано {read}, найдено {found}"
+                         + (f", последняя находка {hit[:16].replace('T', ' ')}" if hit else ""))
+                label = VERDICT_LABEL.get(verdict, verdict)
+                print(f"    {source.target[:42]:42} {label:16} {detail}{stats if verdict == 'ok' else ''}")
+                if verdict == "ok" and read == 0:
+                    verdicts["quiet"] = verdicts.get("quiet", 0) + 1
+                    print(f"    {'':42} └─ сюда радар не смотрел: чат новый, либо не тот аккаунт, "
+                          f"либо отсекается профилем «{source.profile}» с порогом {source.min_score}")
+                elif verdict != "ok":
+                    code = 1
+        except Exception as exc:                                    # noqa: BLE001
+            print(f"    [!] {type(exc).__name__}: {exc}", file=sys.stderr)
+            store.log_error(type(exc).__name__, str(exc)[:300], account=acc.name)
+            code = 1
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:                                       # noqa: BLE001
+                pass
+
+    if verdicts:
+        parts = [f"{VERDICT_LABEL.get(v, v).lower()} — {n}" for v, n in sorted(verdicts.items())]
+        print("\nИТОГ: " + ", ".join(parts))
+    todo = verdicts.get("join", 0) + verdicts.get("missing", 0) + verdicts.get("expired", 0)
+    if todo:
+        print(f"[i] нужно вступить или исправить: {todo} из {sum(verdicts.values())} источников")
+    if verdicts.get("quiet"):
+        print(f"[i] читаются, но по ним 0 прочитанных сообщений: {verdicts['quiet']} — "
+              f"проверь account: у источника и порог min_score")
+    return code
+
+
+class ServiceNotify:
+    """Служебные сообщения ботом в TG_NOTIFY_CHAT: как радар поработал, что упало.
+
+    Находки сюда НЕ приходят: они уходят пересылкой самого аккаунта получателю из
+    sources.yaml (forward.to — обычно @parcel_transfer_bot). Здесь — другое: сводка
+    прохода (прочитано/найдено/переслано), ошибки, падение прохода, подозрительно
+    долгая пауза между проходами. Иначе «работает ли радар» видно только по логам.
+
+    Антиспам: время последней отправки лежит в bot_state внутри базы, а база — в R2.
+    Контейнер в облаке живёт один проход, поэтому счётчик обязан переживать перезапуск,
+    иначе сводка приходила бы каждые 10 минут.
+    """
+
+    def __init__(self, store, mode: str = "auto", every_hours: float = 6.0):
+        self.store = store
+        self.every = max(float(every_hours or 0), 0.1)
+        self.token = (os.getenv("TG_BOT_TOKEN") or "").strip()
+        self.chat = (os.getenv("TG_NOTIFY_CHAT") or "").strip()
+        if mode == "auto":
+            self.enabled = bool(self.token and self.chat)
+        else:
+            self.enabled = (mode == "bot") and bool(self.token and self.chat)
+        self.sent: int = 0
+        self.last_error: str = ""
+
+    def why_disabled(self) -> str:
+        if self.enabled:
+            return ""
+        if not self.token and not self.chat:
+            return "не заданы TG_BOT_TOKEN и TG_NOTIFY_CHAT"
+        if not self.token:
+            return "не задан TG_BOT_TOKEN"
+        if not self.chat:
+            return "не задан TG_NOTIFY_CHAT"
+        return "служебные сообщения выключены (--service-notify none)"
+
+    def _due(self, key: str) -> bool:
+        """Пора ли слать: с прошлого раза прошло больше every часов (или не было ни разу)."""
+        raw = self.store.bot_state_get(f"service:{key}")
+        if not raw:
+            return True
+        try:
+            last = datetime.fromisoformat(raw)
+        except ValueError:
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() >= self.every * 3600.0
+
+    async def send(self, text: str, key: str = "summary", force: bool = False) -> bool:
+        """Отправить служебное сообщение. False — молча пропустили (антиспам) или не ушло."""
+        if not self.enabled or not text.strip():
+            return False
+        if not force and not self._due(key):
+            return False
+        from core_telegram import bot_send_text
+
+        error, fatal = await bot_send_text(self.token, self.chat, text)
+        if error:
+            self.last_error = error
+            print(f"[!] служебное сообщение не ушло: {error}", file=sys.stderr)
+            if fatal:
+                self.enabled = False      # 401/403: не повторяем до конца прогона
+            return False
+        self.store.bot_state_set(
+            f"service:{key}", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        self.sent += 1
+        return True
+
+    @staticmethod
+    def pass_summary(now: datetime, seconds: float, read: int, found: int, forwarded: int,
+                     per_account: list, errors: int, db_total: str,
+                     gap_minutes: float | None = None, expected_minutes: float = 0.0,
+                     leftover: list | None = None, seen_before: int | None = None) -> str:
+        """Текст сводки прохода. Коротко: чтобы читалось с телефона за пару секунд."""
+        lines = [f"Проход {now.strftime('%d.%m %H:%M')} UTC, {seconds:.0f} с",
+                 f"• новых сообщений {read}, найдено {found}, переслано {forwarded}"]
+        if seen_before:
+            lines.append(f"• уже видели {seen_before} — повторно не смотрим")
+        for name, acc_read, acc_found in per_account:
+            lines.append(f"• {name}: новых {acc_read}, найдено {acc_found}")
+        lines.append(f"• ошибок за сутки: {errors}")
+        lines.append(f"• в базе: {db_total}")
+        if gap_minutes is not None and expected_minutes and gap_minutes > expected_minutes * 2:
+            lines.append(f"• предыдущий проход был {gap_minutes:.0f} мин назад "
+                         f"(обычно {expected_minutes:.0f}) — радар простаивал")
+        if leftover:
+            lines.append(f"• не успел прочитать {len(leftover)} чатов: время прохода вышло — "
+                         f"дойдут в следующий раз (порядок чатов случайный)")
+        return "\n".join(lines)
+
+    @staticmethod
+    def failure_text(exc: BaseException) -> str:
+        return f"Проход упал: {type(exc).__name__}: {exc}"[:400]
+
+
+def rotate_runners(runners: list, store) -> list:
+    """Порядок аккаунтов на этот проход: первым идёт тот, кто в прошлый раз был последним.
+
+    Аккаунты читаются по очереди, а бюджет прохода обычно кончается на первом из них —
+    без ротации второй аккаунт не читался бы никогда. Порядок помним в базе (она в R2),
+    поэтому перезапуск контейнера, который в схеме B происходит каждый проход, его не
+    сбрасывает: иначе «ротация» давала бы один и тот же порядок.
+    """
+    if len(runners) < 2:
+        return runners
+    last = store.bot_state_get("pass:last_account") or ""
+    names = [acc.name for acc, _client, _monitor in runners]
+    # Начинает тот, кто в прошлый раз шёл последним: именно он не успел почитать, потому
+    # что бюджет кончился. Сдвиг на «следующий после последнего» оставил бы порядок тем же.
+    start = names.index(last) if last in names else 0
+    rotated = runners[start:] + runners[:start]
+    store.bot_state_set("pass:last_account", rotated[-1][0].name)
+    return rotated
+
+
+async def answer_pending_commands(store, accounts, stats_file: str = "stats.txt",
+                                  transport=None) -> int:
+    """Раз в проход забираем команды хозяина из Telegram и отвечаем на них.
+
+    В схеме B отдельной панели нет — контейнер живёт ровно один проход, — поэтому
+    команды разбираются в конце прохода: отвечаем на всё, что накопилось с прошлого раза.
+    Задержка — до интервала cron (10 мин), зато без отдельного процесса, без второго
+    клиента на ту же сессию и без лишних денег: это 2-3 вызова Bot API за проход.
+
+    Обработчики команд уже написаны в bot_panel (16 штук: /status, /last, /sources,
+    /limits, /errors, /cost…), поэтому здесь только доставка апдейтов до них.
+    """
+    from bot_panel import BotPanel
+
+    panel = BotPanel(store, accounts=accounts, mode="B", panel_only=True,
+                     stats_file=stats_file, transport=transport)
+    ok, why = panel.ready()
+    if not ok:
+        print(f"[i] команды из Telegram недоступны: {why}", file=sys.stderr)
+        return 0
+    # меню бота: без setMyCommands команды работают, но в Telegram их не видно
+    try:
+        menu_ok, menu_why = await panel.register_commands()
+        if menu_ok:
+            print("[i] меню команд бота обновлено", file=sys.stderr)
+        elif menu_why:
+            print(f"[!] меню команд не обновилось: {menu_why}", file=sys.stderr)
+    except Exception as exc:                                      # не роняем проход из-за меню
+        print(f"[!] меню команд не обновилось: {type(exc).__name__}: {exc}", file=sys.stderr)
+    if panel.offset <= 0:
+        # первый раз: сбрасываем накопившееся, чтобы не отвечать на старые команды
+        try:
+            stale = await panel.transport.get_updates(-1, timeout=1)
+            if stale:
+                panel.offset = int(stale[-1].get("update_id", 0)) + 1
+                panel._save_offset()
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"[!] старые апдейты не сбросились: {exc}", file=sys.stderr)
+    updates = await panel.transport.get_updates(panel.offset, timeout=0)
+    answers = await panel.handle_updates(updates or [])
+    return len(answers)
+
+
+def env_flag(name: str, default: bool = True) -> bool:
+    """Выключатель из переменных воркера: 1 — включено, 0 — выключено.
+
+    Переменные правятся в дашборде (Workers & Pages → бот → Settings → Variables),
+    деплой для этого не нужен: контейнер читает их при старте, поэтому после смены
+    значения его надо остановить (GET /restart). Всё, что не 0 и не 1 — пусто,
+    опечатка, «yes» — считаем как default: радар работает, пока его явно не выключили.
+    """
+    raw = (os.getenv(name) or "").strip().lower()
+    if raw in ("1", "on", "true", "yes", "да", "вкл"):
+        return True
+    if raw in ("0", "off", "false", "no", "нет", "выкл"):
+        return False
+    return default
+
+
+def tg_commands_enabled(args) -> bool:
+    """Нужно ли разбирать команды из Telegram в конце прохода.
+
+    Три уровня: флаг --tg-commands (явный), переменная воркера TG_COMMANDS (0/1)
+    и старое правило «есть токен и чат — значит включено».
+    """
+    mode = getattr(args, "tg_commands", "auto") or "auto"
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    if not env_flag("TG_COMMANDS", True):
+        return False
+    return bool(os.getenv("TG_BOT_TOKEN") and os.getenv("TG_NOTIFY_CHAT"))
+
+
+def tg_commands_reason(args) -> str:
+    """Почему команды из Telegram выключены.
+
+    Молчание выглядит как поломка: эту строку печатаем в лог, чтобы по /status
+    было видно, что радар их не отвечает по причине, а не «потому что сломался».
+    """
+    mode = getattr(args, "tg_commands", "auto") or "auto"
+    if mode == "off":
+        return "сняты флагом --tg-commands off"
+    if not env_flag("TG_COMMANDS", True):
+        return "переменная TG_COMMANDS=0 — включить: Variables → TG_COMMANDS=1 и /restart"
+    missing = [name for name in ("TG_BOT_TOKEN", "TG_NOTIFY_CHAT") if not os.getenv(name)]
+    if missing:
+        return (f"не заданы {', '.join(missing)} — нужны секреты воркера "
+                f"(npx wrangler secret put {missing[0]})")
+    return "не задан --tg-commands, а переменные найдены"
+
+
+def build_marker() -> str:
+    """Метка сборки: 8 символов sha256 по исходнику monitor.py.
+
+    DEPLOY.md: после деплоя контейнер может ещё долго крутить старый образ —
+    приложение обновлено, а живой инстанс нет. По этой метке в хвосте лога
+    (/status, /log) видно, какой код реально работает в облаке. Считается от
+    файла, поэтому править её при каждом релизе не нужно.
+    """
+    import hashlib
+    try:
+        return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:8]
+    except Exception:                                             # noqa: BLE001
+        return "?"
+
+
+def resolve_mode(args) -> str:
+    """Схема работы для отчётов панели: A — постоянный слушатель, B — проходы по расписанию.
+
+    --mode задаёт схему явно; иначе она следует из способа запуска: --once (проход из
+    планировщика) — это B, живой режим — A (ТЗ §16.1).
+    """
+    explicit = getattr(args, "mode", None)
+    if explicit:
+        return str(explicit).upper()
+    return "B" if getattr(args, "once", False) else "A"
+
+
+def build_panel(args, store: "HitStore", accounts: list, buckets: dict, sources: list[Source],
+                mode: str, heartbeat_minutes: float, paced: Paced | None = None):
+    """Бот-панель для живого режима (ТЗ §14.4, режим 1). None — если запускать нечего."""
+    from bot_panel import AccountView, BotPanel
+
+    views = [AccountView.from_config(acc, len(buckets.get(acc.name, []))) for acc in accounts]
+    panel = BotPanel(store, accounts=views, titles=titles_by_key(sources), mode=mode,
+                     heartbeat_minutes=heartbeat_minutes, alert_silent_minutes=args.alert_silent,
+                     digest=(None if args.digest is None else args.digest == "on"),
+                     stats_file=args.stats_file, stats_days=args.stats_days, db_path=args.db,
+                     api_calls_counter=paced)          # счётчик API-вызовов для /usage
+    ok, why = panel.ready()
+    if not ok:
+        print(f"[!] бот-панель не запущена: {why}", file=sys.stderr)
+        return None
+    print(f"[+] бот-панель включена: команды принимает chat_id={panel.owner_chat} "
+          f"(команды: /help, /status, /accounts, /usage)", file=sys.stderr)
+    return panel
+
+
 async def async_main(args) -> None:
     if args.doctor:
         sys.exit(doctor())
+
+    if args.panel_only:
+        # панель отдельным процессом: ни Telethon, ни ключей аккаунта не нужно (ТЗ §14.4, режим 2)
+        from bot_panel import panel_only_main
+
+        sys.exit(await panel_only_main(args))
 
     defaults, sources = load_config(args.config)
 
@@ -1484,6 +2525,25 @@ async def async_main(args) -> None:
         return
 
     store = HitStore(args.db)
+
+    # FloodWait из core_telegram.call падает в базу: панель покажет «ограничение до 22:10» (ТЗ §7.3)
+    def flood_to_db(label: str, seconds: float, wait: float) -> None:
+        until = (datetime.now(timezone.utc) + timedelta(seconds=wait)).astimezone().strftime("%H:%M")
+        try:
+            store.log_heartbeat("flood", detail=f"{label}: до {until}")
+            store.log_error("FloodWaitError", f"{label}: Telegram просит {int(seconds)} с, ждём до {until}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[!] не записал FloodWait в базу: {type(exc).__name__}", file=sys.stderr)
+
+    add_flood_hook(flood_to_db)
+
+    # ретеншн: heartbeats/metrics/errors старше 30 дней не храним, чтобы база не пухла (ТЗ §7.2)
+    removed = store.retention_cleanup(days=30)
+    if any(removed.values()):
+        print(f"[i] ретеншн: чищены записи старше 30 дней — "
+              + ", ".join(f"{table} {count}" for table, count in removed.items() if count),
+              file=sys.stderr)
+
     if args.show_stats or args.stats_only:
         report = store.stats_report(days=args.stats_days, titles_from_config=titles_by_key(sources))
         print(report)
@@ -1507,7 +2567,9 @@ async def async_main(args) -> None:
         api_id = args.api_id or (int(os.getenv("TG_API_ID")) if os.getenv("TG_API_ID") else None)
         api_hash = args.api_hash or os.getenv("TG_API_HASH")
         if not api_id or not api_hash:
-            sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). Получить: my.telegram.org")
+            sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). "
+                 "Проще всего: start.bat --login — мастер спросит ключи и запишет их в .env. "
+                 "Ключи приложения берутся на https://my.telegram.org/auth?to=apps (название любое)")
         paced = Paced(args.delay)
         accounts = resolve_accounts(args, defaults)
         buckets = sources_for_account(sources, accounts)
@@ -1596,12 +2658,21 @@ async def async_main(args) -> None:
     api_id = args.api_id or (int(os.getenv("TG_API_ID")) if os.getenv("TG_API_ID") else None)
     api_hash = args.api_hash or os.getenv("TG_API_HASH")
     if not api_id or not api_hash:
-        sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). Получить: my.telegram.org")
+        sys.exit("Нужны TG_API_ID и TG_API_HASH (или --api-id/--api-hash). "
+                 "Проще всего: start.bat --login — мастер спросит ключи и запишет их в .env. "
+                 "Ключи приложения берутся на https://my.telegram.org/auth?to=apps (название любое)")
+
+    if args.check_sessions:
+        sys.exit(await check_sessions(args, defaults, store, api_id, api_hash))
+
+    if args.check_sources:
+        sys.exit(await check_sources(args, defaults, sources, store, api_id, api_hash))
 
     paced = Paced(args.delay)
     accounts = resolve_accounts(args, defaults)
     buckets = sources_for_account(sources, accounts)
     multi = len(accounts) > 1
+    panel_mode = resolve_mode(args)
 
     if multi:
         print(f"[i] аккаунтов в работе: {len(accounts)}", file=sys.stderr)
@@ -1619,6 +2690,35 @@ async def async_main(args) -> None:
     if pending_before and args.notify != "none":
         print(f"[i] в базе {pending_before} неотправленных уведомлений (прошлые сбои). "
               f"Догнать: start.bat --resend-pending 50 --notify {args.notify}", file=sys.stderr)
+
+    heartbeat_minutes = (args.heartbeat if args.heartbeat is not None
+                         else float(defaults.get("heartbeat", 0) or 0))
+    if args.bot_panel and heartbeat_minutes <= 0:
+        heartbeat_minutes = 15.0
+        print("[i] для бот-панели включён пульс каждые 15 мин: без него панель не видит, жив ли "
+              "аккаунт. Отключить: --heartbeat 0", file=sys.stderr)
+
+    # Бюджет прохода: в облаке RADAR_TIMEOUT обрывает процесс снаружи, а оборванный проход
+    # не успевает записать ни пульс, ни очередь. Поэтому радар сам следит за временем.
+    budget = args.pass_budget
+    if budget <= 0:
+        env_timeout = float(os.getenv("RADAR_TIMEOUT") or 0)
+        if env_timeout > 0:
+            budget = env_timeout * 0.75          # четвёртая часть — на запись в R2 и выход
+    deadline = time.monotonic() + budget if budget > 0 else None
+    if args.once and budget > 0:
+        print(f"[i] бюджет прохода: {budget:.0f} с (RADAR_TIMEOUT={os.getenv('RADAR_TIMEOUT', 'нет')}), "
+              f"лимит ожидания FloodWait {min(args.flood_wait_limit or budget * 0.25, budget):.0f} с",
+              file=sys.stderr)
+
+    # выключатель радара: RADAR_ON=0 в Variables воркера — и проходы встают, без деплоя
+    if not env_flag("RADAR_ON", True):
+        print("[i] радар выключен переменной RADAR_ON=0 — проход пропущен. "
+              "Включить: Variables → RADAR_ON=1, затем GET /restart", file=sys.stderr)
+        return
+    if args.once:
+        print(f"[i] выключатели: RADAR_ON=1, TG_COMMANDS={int(tg_commands_enabled(args))} "
+              f"(правятся в Variables воркера, 0 — выкл, 1 — вкл)", file=sys.stderr)
 
     runners: list[tuple[AccountConfig, object, Monitor]] = []
     for acc in accounts:
@@ -1650,12 +2750,12 @@ async def async_main(args) -> None:
                           max_age=args.max_age,
                           only_categories=tuple(x.strip() for x in (args.category or "").split(",") if x.strip()),
                           forwarder=forwarder, auto_join=args.auto_join,
-                          heartbeat_minutes=(args.heartbeat if args.heartbeat is not None
-                                             else float(defaults.get("heartbeat", 0) or 0)),
+                          heartbeat_minutes=heartbeat_minutes,
                           keep_hidden=keep_hidden,
                           account=acc.name, show_account=multi,
                           only_intents=tuple(x.strip() for x in (args.only_intent or "").split(",") if x.strip()),
-                          only_directions=tuple(x.strip() for x in (args.only_direction or "").split(",") if x.strip()))
+                          only_directions=tuple(x.strip() for x in (args.only_direction or "").split(",") if x.strip()),
+                          deadline=deadline, flood_wait_limit=args.flood_wait_limit)
         runners.append((acc, client, monitor))
 
     if not runners:
@@ -1665,25 +2765,120 @@ async def async_main(args) -> None:
         print(f"[i] порядок обхода случайный: начинаем с {sources[0].target} "
               f"(отключить: --order config)", file=sys.stderr)
 
+    collector = build_collector(args, store, accounts, panel_mode, paced)
+
+    panel = None
+    if args.bot_panel and not args.once:
+        panel = build_panel(args, store, accounts, buckets, sources, panel_mode,
+                            heartbeat_minutes, paced)
+    elif args.bot_panel and args.once:
+        print("[i] --bot-panel с --once не запускается: проход короткий, панель нужна в живом "
+              "режиме. Для схемы B держи панель отдельным процессом: start.bat --panel-only",
+              file=sys.stderr)
+
+    if args.once and len(runners) > 1:
+        previous_last = store.bot_state_get("pass:last_account") or ""
+        runners = rotate_runners(runners, store)
+        print(f"[i] порядок аккаунтов: первым идёт «{runners[0][0].name}» — в прошлый "
+              f"проход последним был «{previous_last or 'никто'}»", file=sys.stderr)
+
+    # служебные сообщения — в TG_NOTIFY_CHAT (сводка прохода, падения). Находки идут
+    # отдельно: пересылкой аккаунта получателю из sources.yaml (forward.to).
+    service = ServiceNotify(store, mode=args.service_notify, every_hours=args.service_every)
+    if not service.enabled:
+        print(f"[i] служебные сообщения выключены: {service.why_disabled()}", file=sys.stderr)
+    gap_before = store.heartbeat_age_minutes("pulse")      # сколько радар молчал до этого прохода
+    pass_started = time.time()
+
     if args.once:
-        for acc, client, monitor in runners:
-            prefix = f"[{acc.name}] " if multi else ""
-            resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
-                                             auto_join=args.auto_join)
-            monitor.entities = resolved
-            monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
-            if multi:
-                print(f"[i] {prefix}чатов разрешено: {len(resolved)} из {len(monitor.sources)}",
-                      file=sys.stderr)
-        for acc, client, monitor in runners:
-            await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
-            await monitor.catch_up(list(monitor.meta.values()))
-        for acc, client, monitor in runners:
-            await client.disconnect()
+        try:
+            for acc, client, monitor in runners:
+                prefix = f"[{acc.name}] " if multi else ""
+                resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
+                                                 auto_join=args.auto_join)
+                monitor.entities = resolved
+                monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
+                if multi:
+                    print(f"[i] {prefix}чатов разрешено: {len(resolved)} из {len(monitor.sources)}",
+                          file=sys.stderr)
+            for acc, client, monitor in runners:
+                await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
+                await monitor.catch_up(list(monitor.meta.values()))
+            run_read = sum(int(getattr(monitor, "counter", {}).get("scanned", 0) or 0)
+                           for _a, _c, monitor in runners)
+            for acc, client, monitor in runners:
+                monitor.flush_stats()                 # счётчики — в базу до среза метрик
+            for acc, client, monitor in runners:
+                # Пульс за проход. Без него панель (--panel-only) в схеме B не видела бы, жив ли
+                # радар вообще: живость определяется пульсом, а не находками (ТЗ §7.3, §16).
+                # Числа — накопительные суммы из базы по чатам этого аккаунта: контейнер в облаке
+                # живёт один проход, а суммы переживают его перезапуск.
+                keys = [monitor.chat_key(src) for src in monitor.sources]
+                read_total, found_total = store.totals_for_chats(keys)
+                monitor.log_pulse(read=read_total, found=found_total)
+            if collector is not None:
+                # схема B: проход короткий, поэтому срез метрик один — но именно он и показывает расход.
+                collector.msgs_provider = lambda: (store.scanned_total(), run_read)
+                print_metrics(collector.write())
+            for acc, client, monitor in runners:
+                await client.disconnect()
+        except Exception as exc:                                    # noqa: BLE001
+            await service.send(ServiceNotify.failure_text(exc), key="failure", force=True)
+            store.log_error(type(exc).__name__, str(exc)[:300])
+            raise
     else:
-        await asyncio.gather(*[monitor.run() for _, _, monitor in runners])
+        tasks = [monitor.run() for _, _, monitor in runners]
+        if panel is not None:
+            tasks.append(panel.run())     # панель живёт в том же процессе, но своей задачей
+        if collector is not None:
+            tasks.append(collector.loop())   # срезы ресурсов раз в --metrics-interval минут
+        await asyncio.gather(*tasks)
     for _acc, _client, monitor in runners:
         monitor.flush_stats()
+
+    # служебная сводка прохода: пустыми проходами не спамим — пишем, если что-то нашлось,
+    # либо пришло время плановой сводки (антиспам по времени в базе, а не в памяти процесса)
+    if getattr(args, "once", False) and service.enabled:
+        read = sum(int(m.counter.get("scanned", 0) or 0) for _a, _c, m in runners)
+        found = sum(int(m.counter.get("matched", 0) or 0) for _a, _c, m in runners)
+        forwarded = sum(int(m.counter.get("forwarded", 0) or 0) for _a, _c, m in runners)
+        per_account = []
+        for acc in accounts:
+            own = [m for a2, _c2, m in runners if a2.name == acc.name]
+            per_account.append((acc.name,
+                                sum(int(m.counter.get("scanned", 0) or 0) for m in own),
+                                sum(int(m.counter.get("matched", 0) or 0) for m in own)))
+        seen_before = sum(int(m.counter.get("duplicates", 0) or 0) for _a, _c, m in runners)
+        text = ServiceNotify.pass_summary(
+            now=datetime.now(timezone.utc), seconds=time.time() - pass_started,
+            read=read, found=found, forwarded=forwarded, per_account=per_account,
+            seen_before=seen_before,
+            errors=store.errors_count(since_hours=24.0), db_total=store.stats(),
+            gap_minutes=gap_before, expected_minutes=args.service_gap,
+            leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])])
+        await service.send(text, key="summary", force=bool(found or forwarded or not read))
+
+    # длительность прохода пригодится для /cost: стоимость считаем от фактического расхода
+    store.bot_state_set("pass:last_seconds", f"{time.time() - pass_started:.1f}")
+
+    # метка сборки: по ней видно, какой код реально работает в облаке (см. DEPLOY.md)
+    print(f"[i] код: monitor.py {build_marker()}", file=sys.stderr)
+
+    # команды из Telegram: /status, /cost, /last, /sources… разбираем в конце прохода
+    if getattr(args, "once", False) and tg_commands_enabled(args):
+        try:
+            answered = await answer_pending_commands(store, accounts,
+                                                     stats_file=args.stats_file)
+            if answered:
+                print(f"[i] ответили на команд из Telegram: {answered}", file=sys.stderr)
+        except Exception as exc:                                  # не роняем проход из-за бота
+            print(f"[!] команды из Telegram не обработаны: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            store.log_error("TgCommands", f"{type(exc).__name__}: {exc}"[:300])
+    elif getattr(args, "once", False):
+        # молчание выглядит как поломка: пишем причину, а не просто ничего
+        print(f"[i] команды из Telegram выключены: {tg_commands_reason(args)}",
+              file=sys.stderr)
 
     # файл статистики: откуда и сколько сообщений идёт
     if args.stats_file:
@@ -1822,6 +3017,57 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--heartbeat", type=float, default=None, metavar="MIN",
                     help="в живом режиме печатать пульс раз в N минут (0 — выключить); "
                          "показывает, что радар жив, и сколько прочитано с прошлого пульса")
+    ap.add_argument("--bot-panel", action="store_true",
+                    help="бот-панель внутри радара: команды /status /accounts /stats /usage и алерты "
+                         "приходят в Telegram от бота (нужны TG_BOT_TOKEN и числовой TG_NOTIFY_CHAT)")
+    ap.add_argument("--panel-only", action="store_true",
+                    help="только бот-панель, без радара и без Telethon: читает базу и отвечает на "
+                         "команды (когда радар крутится на другом сервере/в контейнере)")
+    ap.add_argument("--alert-silent", type=float, default=30.0, metavar="MIN",
+                    help="через сколько минут без пульса слать алерт «аккаунт молчит» "
+                         "(по умолчанию 30; 0 — не слать)")
+    ap.add_argument("--digest", choices=["on", "off"], default=None,
+                    help="утренний дайджест в 09:00 местного времени (то же, что /digest у бота)")
+    ap.add_argument("--pass-budget", type=float, default=0.0, metavar="СЕК",
+                    help="сколько секунд отвести на проход: радар сам перестанет начинать "
+                         "новые чаты и закончит чисто, вместо того чтобы быть убитым по "
+                         "таймауту (0 — из RADAR_TIMEOUT минус четверть, нет его — без лимита)")
+    ap.add_argument("--flood-wait-limit", type=float, default=0.0, metavar="СЕК",
+                    help="не ждать FloodWait дольше этого: чат пропускается и дойдёт в "
+                         "следующий проход (0 — не больше четверти бюджета)")
+    ap.add_argument("--tg-commands", choices=("auto", "on", "off"), default="auto",
+                    help="разбирать команды из Telegram в конце прохода (/status, /cost, "
+                         "/last, /sources, /limits…). Ответ приходит со следующим проходом, "
+                         "зато без отдельной панели. auto — включено, если заданы "
+                         "TG_BOT_TOKEN и TG_NOTIFY_CHAT")
+    ap.add_argument("--service-notify", choices=("auto", "bot", "none"), default="auto",
+                    help="служебные сообщения ботом в TG_NOTIFY_CHAT: сводка прохода "
+                         "(прочитано/найдено/переслано), падения, долгие паузы. Находки сюда "
+                         "НЕ идут — они уходят пересылкой аккаунта получателю из sources.yaml "
+                         "(forward.to). auto — слать, если заданы TG_BOT_TOKEN и TG_NOTIFY_CHAT")
+    ap.add_argument("--service-every", type=float, default=6.0, metavar="ЧАСОВ",
+                    help="как часто слать плановую сводку, когда находок нет (по умолчанию 6)")
+    ap.add_argument("--service-gap", type=float, default=10.0, metavar="МИН",
+                    help="ожидаемая пауза между проходами: если простой вдвое больше, радар "
+                         "напишет об этом в сводке (по умолчанию 10 — как cron */10)")
+    ap.add_argument("--check-sessions", action="store_true",
+                    help="живая проверка сессий (get_me по каждому аккаунту) — ТОЛЬКО когда радар "
+                         "остановлен: второй клиент на тот же .session отзывает ключ")
+    ap.add_argument("--check-sources", action="store_true",
+                    help="живая проверка чатов из конфига: что читается, куда надо вступить, где "
+                         "радар «не смотрит» (0 прочитанных). Базу не меняет; ТОЛЬКО при "
+                         "остановленном радаре (в облаке: GET /sources-check)")
+    ap.add_argument("--force", action="store_true",
+                    help="для --check-sources: проверить, даже если в базе виден живой пульс "
+                         "(использует сам контейнер: он и есть единственный клиент)")
+    ap.add_argument("--metrics-interval", type=float, default=15.0, metavar="MIN",
+                    help="как часто писать срез ресурсов (память, CPU, нагрузка) в базу и раз в час "
+                         "в metrics.csv; 0 — выключить метрики (по умолчанию 15)")
+    ap.add_argument("--metrics-csv", default="metrics.csv",
+                    help="файл срезов ресурсов для Excel (по умолчанию metrics.csv рядом с проектом)")
+    ap.add_argument("--mode", choices=["A", "B"], default=None,
+                    help="схема работы для отчётов панели: A — постоянный слушатель, B — проходы по "
+                         "расписанию (по умолчанию A, а с --once — B)")
     ap.add_argument("--topics-depth", type=int, default=300, metavar="N",
                     help="сколько последних сообщений просмотреть при поиске тем (--list-topics)")
     ap.add_argument("--list-topics", action="store_true",

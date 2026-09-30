@@ -10,6 +10,15 @@
 # min_score — порог совпадения (по умолчанию 5). Меньше — больше находок и больше шума.
 # catchup   — сколько последних сообщений прочитать при старте (0 — не читать историю).
 #             Большое значение нужно только при первом запуске: дальше всё берётся по таблице seen.
+#
+# Аккаунты. Два аккаунта читают РАЗНЫЕ чаты: у каждого свой список ниже (account: main /
+# account: second). Файлы сессий: monitor_session.session и second_session.session.
+# Ключи приложения (TG_API_ID/TG_API_HASH) у них общие — это ключи приложения, а не аккаунта.
+#
+# Проверить, что всё читается и куда надо вступить:
+#   в облаке  — GET /sources-check (контейнер сам подключится к обоим аккаунтам)
+#   локально  — start.bat --check-sources, но ТОЛЬКО при остановленном облаке:
+#               второй клиент на тот же .session отзывает ключ (AuthKeyDuplicatedError).
 
 defaults:
   profile: chat
@@ -23,32 +32,18 @@ defaults:
                            # (чтобы при дневном лимите пересылок не голодали чаты в конце списка);
                            # config — строго в том порядке, как ниже
 
-# ─── Несколько аккаунтов (необязательно) ──────────────────────────────────────
-# Зачем: один аккаунт читает больше чатов и ловит больше находок, если разделить их
-# между двумя аккаунтами. Плюс у каждого аккаунта свой дневной лимит пересылок,
-# а база (и дедупликация) общая — одно и то же объявление не уйдёт дважды.
-#
-# Как включить:
-#   1) снять «#» у строк ниже и вписать свои имена файлов сессий (без .session);
-#   2) у нужных источников в конце файла поставить account: main или account: second;
-#   3) войти вторым аккаунтом один раз:  start.bat --login-qr --session second_session
-# Одному из аккаунтов можно ничего не помечать — чаты без account берёт первый (main),
-# а account: auto раскидывает чаты по аккаунтам по кругу.
-#
-# accounts:
-#   main:
-#     session: monitor_session     # файл monitor_session.session (тот, что уже есть)
-#     forward:
-#       to: "@parcel_transfer_bot"
-#       max_per_day: 120           # у каждого аккаунта свой лимит
-#   second:
-#     session: second_session      # второй аккаунт: свой .session
-#     forward:
-#       to: "@parcel_transfer_bot"
-#       max_per_day: 60
-#
-# ВАЖНО: одна и та же сессия не должна запускаться с двух мест (домашний ПК + сервер):
-# Telegram отзовёт ключ (AuthKeyDuplicatedError) и придётся входить заново.
+# Кто читает: имена отсюда совпадают с account: у источников и с именами файлов сессий.
+accounts:
+  main:
+    session: monitor_session      # monitor_session.session
+    forward:
+      to: "@parcel_transfer_bot"
+      max_per_day: 180            # лимит на этот аккаунт (общий — ниже, он же по умолчанию)
+  second:
+    session: second_session       # second_session.session
+    forward:
+      to: "@parcel_transfer_bot"
+      max_per_day: 120            # второй аккаунт моложе — лимит держим ниже
 
 # Пересылка найденных сообщений (именно forward, не копия) твоим аккаунтом.
 # Получатель — твой бот @parcel_transfer_bot: открой с этого же аккаунта чат с ботом
@@ -63,17 +58,19 @@ forward:
   # находка встаёт в очередь и уходит в следующий прогон, как только лимит обнулится.
 
 sources:
+  # ═══ Аккаунт main (monitor_session): посылки / передачи / попутчики / граница ═══
+
   # ─── Чаты объявлений: посылки / передачи / попутчики ─────────────────────────
-  # account: main        # какой аккаунт следит за чатом (см. блок «Несколько аккаунтов»
-  #                      # выше). Без этой строки чат берёт первый аккаунт; auto — по кругу.
   - target: "@travelersminsk"
     title: "Посылки 📦 Доставки 🧳 Попутчики 🙋 Водители 🚘"
+    account: main
     profile: chat
     min_score: 4
     catchup: 50
 
   - target: "@belgranica"
     title: "Граница (чат)"
+    account: main
     profile: chat
     min_score: 5
     catchup: 50
@@ -81,8 +78,10 @@ sources:
   # ─── Приватный чат по ссылке-приглашению (приоритетный источник) ────────────
   # Подписка: аккаунт должен быть в чате. Если ещё не вступил — запусти с --auto-join,
   # тогда радар подпишется по этой ссылке сам. Ключ в статистике: +CmQyl50rf-NlODFi
+  # Проверка: /sources-check покажет «НУЖНО ВСТУПИТЬ», если main в чате нет.
   - target: "https://t.me/+CmQyl50rf-NlODFi"
     title: "Приватный чат (приоритетный)"
+    account: main
     profile: chat
     min_score: 4
     catchup: 100          # источник назван важным — читаем глубокий хвост
@@ -90,42 +89,117 @@ sources:
   # ─── Остальные чаты по границе ──────────────────────────────────────────────
   - target: "@granica_online"
     title: "Граница онлайн"
+    account: main
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "@ByPoland_chat"
     title: "BY-Poland (чат)"
+    account: main
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "@granica_polska"
     title: "Граница Польша"
+    account: main
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "@granica_BY_LT_PL"
     title: "Граница BY-LT-PL"
+    account: main
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "@granica_es"
     title: "Граница BY-PL-LT (очереди)"
+    account: main
     profile: news
     min_score: 6
     catchup: 30
 
   - target: "@granica_bypl"
     title: "Граница BY-ЕС / Брест-Тересполь / Брузги-Кузница"
+    account: main
     profile: news
     min_score: 6
     catchup: 30
 
   - target: "@rossia_belarus"
     title: "Россия-Беларусь (граница)"
+    account: main
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  # ═══ Аккаунт second (second_session): зарубежные чаты ═══════════════════════
+  # Чаты объявлений и поездок — profile: chat. Порог 5 (по умолчанию): если по какому-то
+  # чату находок будет мало, /sources-check покажет «читается» и 0 прочитанных — тогда
+  # опусти min_score до 4 именно для него (как у @travelersminsk).
+
+  - target: "@turtsiab"
+    title: "Турция (чат)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@Khurgadab"
+    title: "Хургада (Египет)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@Danang_Viet"
+    title: "Дананг (Вьетнам)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@armeniarus_chat"
+    title: "Армения (чат)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@ru_chat_thailand"
+    title: "Таиланд (русский чат)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@PhuketChat_INF"
+    title: "Пхукет (инфо-чат)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@granica_39"
+    title: "Граница 39"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@phuketadver"
+    title: "Пхукет (объявления)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@wrenjapanchat"
+    title: "Япония (чат)"
+    account: second
     profile: chat
     min_score: 5
     catchup: 50
@@ -133,13 +207,17 @@ sources:
   # ─── Выключенные примеры (раскомментируй, если понадобятся) ─────────────────
   # - target: "@granica_polsha"        # новостной канал
   #   profile: news
+  #   account: main
   #   min_score: 6
   # - target: "@granicaPOST"
   #   profile: news
+  #   account: main
   #   min_score: 6
   # - target: "-1001234567890"         # приватный чат без ссылки: id от @userinfobot
   #   profile: chat
+  #   account: main
   # - target: "@чат_с_темами"          # форум: читать только выбранные темы
   #   profile: chat
+  #   account: main
   #   topics: [12345, 67890]           # id темы = первое число в ссылке на сообщение в теме
   #                                    # (список тем с id: start.bat --list-topics)

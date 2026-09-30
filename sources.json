@@ -1,12 +1,28 @@
 {
-  "_комментарий": "Копия sources.yaml: работает без pyyaml. Читается sources.yaml, если его нет — этот файл. | Несколько аккаунтов: добавь секцию \"accounts\": {\"main\": {\"session\": \"monitor_session\", \"forward\": {\"to\": \"@parcel_transfer_bot\", \"max_per_day\": 120}}, \"second\": {\"session\": \"second_session\", \"forward\": {\"to\": \"@parcel_transfer_bot\", \"max_per_day\": 60}}}, а у нужных источников укажи \"account\": \"main\" или \"second\" (без account — первый аккаунт; \"auto\" — по кругу). Подробности в sources.yaml и START-HERE.md.",
+  "_комментарий": "зеркало sources.yaml для машин без pyyaml. Правится sources.yaml — этот файл перегенерирован из него.",
   "defaults": {
     "profile": "chat",
     "min_score": 5,
     "catchup": 50,
-    "order": "random",
     "heartbeat": 0,
-    "skip_hidden": true
+    "skip_hidden": true,
+    "order": "random"
+  },
+  "accounts": {
+    "main": {
+      "session": "monitor_session",
+      "forward": {
+        "to": "@parcel_transfer_bot",
+        "max_per_day": 180
+      }
+    },
+    "second": {
+      "session": "second_session",
+      "forward": {
+        "to": "@parcel_transfer_bot",
+        "max_per_day": 120
+      }
+    }
   },
   "forward": {
     "to": "@parcel_transfer_bot",
@@ -18,6 +34,7 @@
     {
       "target": "@travelersminsk",
       "title": "Посылки 📦 Доставки 🧳 Попутчики 🙋 Водители 🚘",
+      "account": "main",
       "profile": "chat",
       "min_score": 4,
       "catchup": 50
@@ -25,6 +42,7 @@
     {
       "target": "@belgranica",
       "title": "Граница (чат)",
+      "account": "main",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50
@@ -32,6 +50,7 @@
     {
       "target": "https://t.me/+CmQyl50rf-NlODFi",
       "title": "Приватный чат (приоритетный)",
+      "account": "main",
       "profile": "chat",
       "min_score": 4,
       "catchup": 100
@@ -39,6 +58,7 @@
     {
       "target": "@granica_online",
       "title": "Граница онлайн",
+      "account": "main",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50
@@ -46,6 +66,7 @@
     {
       "target": "@ByPoland_chat",
       "title": "BY-Poland (чат)",
+      "account": "main",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50
@@ -53,6 +74,7 @@
     {
       "target": "@granica_polska",
       "title": "Граница Польша",
+      "account": "main",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50
@@ -60,6 +82,7 @@
     {
       "target": "@granica_BY_LT_PL",
       "title": "Граница BY-LT-PL",
+      "account": "main",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50
@@ -67,6 +90,7 @@
     {
       "target": "@granica_es",
       "title": "Граница BY-PL-LT (очереди)",
+      "account": "main",
       "profile": "news",
       "min_score": 6,
       "catchup": 30
@@ -74,6 +98,7 @@
     {
       "target": "@granica_bypl",
       "title": "Граница BY-ЕС / Брест-Тересполь / Брузги-Кузница",
+      "account": "main",
       "profile": "news",
       "min_score": 6,
       "catchup": 30
@@ -81,6 +106,79 @@
     {
       "target": "@rossia_belarus",
       "title": "Россия-Беларусь (граница)",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@turtsiab",
+      "title": "Турция (чат)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@Khurgadab",
+      "title": "Хургада (Египет)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@Danang_Viet",
+      "title": "Дананг (Вьетнам)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@armeniarus_chat",
+      "title": "Армения (чат)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@ru_chat_thailand",
+      "title": "Таиланд (русский чат)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@PhuketChat_INF",
+      "title": "Пхукет (инфо-чат)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@granica_39",
+      "title": "Граница 39",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@phuketadver",
+      "title": "Пхукет (объявления)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@wrenjapanchat",
+      "title": "Япония (чат)",
+      "account": "second",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50

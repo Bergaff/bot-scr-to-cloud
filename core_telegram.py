@@ -58,11 +58,16 @@ def display_name(entity, fallback: str = "аккаунт") -> str:
     return title or f"id={getattr(entity, 'id', '?')}"
 
 
+class FloodWaitTooLong(RuntimeError):
+    """Telegram просит подождать дольше, чем осталось у прохода (схема B, один проход)."""
+
+
 class Paced:
     """Гарантирует паузу между вызовами API + джиттер (ровный робот-ритм тоже палится)."""
 
     def __init__(self, base_delay: float = 2.0, jitter: float = 0.7):
         self.base, self.jitter, self._last = base_delay, jitter, 0.0
+        self.calls = 0          # сколько раз сходили в Telegram: метрика расхода (ТЗ §15.1)
 
     async def wait(self) -> None:
         gap = self.base + random.uniform(0, self.jitter)
@@ -71,10 +76,38 @@ class Paced:
         if elapsed < gap:
             await asyncio.sleep(gap - elapsed)
         self._last = loop.time()
+        self.calls += 1         # каждый вызов API проходит через тормоз, поэтому счёт здесь точен
+
+
+# Наблюдатели FloodWait: радар подключает сюда запись в базу, чтобы бот-панель показывала
+# «ограничение до 22:10» (ТЗ §14.1). Хук не обязан быть: без него всё работает как раньше.
+FLOOD_HOOKS: list = []
+
+
+def add_flood_hook(hook) -> None:
+    """Подключает наблюдателя FloodWait: hook(label, seconds, wait_seconds)."""
+    if callable(hook) and hook not in FLOOD_HOOKS:
+        FLOOD_HOOKS.append(hook)
+
+
+def notify_flood(label: str, seconds: float, wait: float) -> None:
+    """Оповещает наблюдателей о FloodWait. Сбой наблюдателя не должен ронять вызов API."""
+    for hook in list(FLOOD_HOOKS):
+        try:
+            hook(label, seconds, wait)
+        except Exception:                   # noqa: BLE001
+            pass
 
 
 async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
-    """Вызов API: при FloodWait спим ровно столько, сколько просит Telegram, плюс буфер."""
+    """Вызов API: при FloodWait спим ровно столько, сколько просит Telegram, плюс буфер.
+
+    Сколько можно ждать, подсказывает paced.max_wait — число или функция без аргументов
+    (Monitor подкладывает туда остаток бюджета прохода). В облаке проход живёт ровно
+    отведённые секунды: уснуть на 400 с из 780 — значит убить весь проход, поэтому
+    слишком долгое ожидание превращается в ошибку, чат пропускается и дойдёт в следующий
+    раз. Локально (max_wait нет) поведение прежнее.
+    """
     from telethon.errors import FloodWaitError, RPCError  # ленивый импорт
 
     for attempt in range(retries):
@@ -83,7 +116,14 @@ async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
             return await factory()
         except FloodWaitError as exc:
             wait = exc.seconds * 1.2 + 5
+            limit = getattr(paced, "max_wait", None)
+            limit = limit() if callable(limit) else limit
+            if limit is not None and wait > limit:
+                raise FloodWaitTooLong(
+                    f"{label}: Telegram просит ждать {wait:.0f} с, а в бюджете прохода "
+                    f"осталось {limit:.0f} с — чат пропущен, дойдёт в следующий проход")
             print(f"[flood] {label}: ждём {wait:.0f} с (Telegram просит {exc.seconds} с)", file=sys.stderr)
+            notify_flood(label, exc.seconds, wait)     # бот-панель увидит ограничение (ТЗ §7.3)
             await asyncio.sleep(wait)
             paced.base = min(paced.base * 1.5, 30)
         except RPCError as exc:
@@ -401,6 +441,35 @@ async def notify_telegram_bot(hit: dict, token: str, chat: str) -> tuple[str, bo
         with urllib.request.urlopen(request, timeout=20) as response:
             response.read()
     except Exception as exc:  # noqa: BLE001
+        return bot_error_text(exc)
+    return "", False
+
+
+async def bot_send_text(token: str, chat: str, text: str, *,
+                        preview: bool = False) -> tuple[str, bool]:
+    """Простое сообщение ботом в произвольный чат: сводки прохода, падения, алерты.
+
+    Отличается от notify_telegram_bot: там уведомление о КОНКРЕТНОЙ находке со ссылкой,
+    здесь — служебный текст. Именно сюда должны приходить «как радар поработал» и «проход
+    упал», а находки уходят пересылкой самого аккаунта (forward.to в sources.yaml).
+
+    Возвращает ('', False) при успехе либо (текст ошибки, фатальная ли).
+    """
+    import json as _json
+    import urllib.request
+
+    payload = _json.dumps({
+        "chat_id": chat, "text": text[:4000], "parse_mode": "HTML",
+        "disable_web_page_preview": not preview,
+    }).encode()
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage", data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            response.read()
+    except Exception as exc:                                        # noqa: BLE001
         return bot_error_text(exc)
     return "", False
 

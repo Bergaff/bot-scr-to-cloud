@@ -1,0 +1,18 @@
+# Переводы строк. Это не косметика: cmd.exe на Windows читает .bat побайтово и рвёт файл с
+# одинокими LF на бессмысленные куски. Реально поймано на Windows 10 19045: `start.bat
+# --convert-session` отвечал два десятка ошибок «'-----------' is not recognized as an
+# internal or external command» и «The system cannot find the drive specified» — файл был с LF.
+#
+# Поэтому у .bat/.cmd/.ps1 стоит -text: никакой нормализации, байты хранятся как есть и на
+# любой машине выкачиваются с CRLF. С атрибутом text/eol=crlf так не вышло бы: в git лежал бы
+# LF, а уже существующий LF-файл в рабочей копии git считает неизменённым и не перезапишет.
+*.bat -text
+*.cmd -text
+*.ps1 -text
+
+# Скрипты Linux/Mac, наоборот, должны быть с LF: с CRLF в shebang попадёт \r и bash ругнётся
+# на «python^M: bad interpreter».
+*.sh text eol=lf
+
+# Архив с исходниками, по которому сверялось восстановление кода: бинарник, не трогать.
+*.zip -text

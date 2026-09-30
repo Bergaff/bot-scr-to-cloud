@@ -11,14 +11,20 @@ from __future__ import annotations
 import asyncio
 import random
 import json
+import ast
+import os
+import re
 import shutil
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import sqlite3 as _sqlite3
 
-from core_telegram import Paced, call, format_hit, hidden_author_reason, message_link
+import core_telegram
+from core_telegram import (Paced, call, format_hit, hidden_author_reason,
+                           message_link)
 import monitor as monitor_module
 
 from matcher import analyze
@@ -1396,10 +1402,560 @@ async def main() -> None:
     checks.append(("доктор показывает аккаунты и файлы сессий",
                    "аккаунты:" in doctor_src and "файла нет, потребуется вход" in doctor_src,
                    "секция в --doctor"))
+    # несколько аккаунтов = несколько сессий, но ОДНА пара ключей приложения: частая ошибка —
+    # вписать в TG_API_ID/TG_API_HASH значения через запятую, по аккаунту на каждое
+    checks.append(("доктор отличает «несколько значений через запятую» от «обрезано»",
+                   doctor_src.count("содержит несколько значений") == 2
+                   and "общие для всех аккаунтов" in doctor_src,
+                   "ветки для TG_API_ID и TG_API_HASH"))
+    # получатель уведомлений один: список в TG_NOTIFY_CHAT означал бы молчаливую недоставку
+    checks.append(("доктор требует числовой TG_NOTIFY_CHAT, а не «что-нибудь непустое»",
+                   "это не числовой id" in doctor_src and "получатель уведомлений ОДИН" in doctor_src,
+                   "ветка проверки chat_id"))
     order_check = order_sources(split_sources, "random")
     checks.append(("случайный порядок работает и с несколькими аккаунтами",
                    sorted(x.target for x in order_check) == sorted(x.target for x in split_sources),
                    f"{len(order_check)} чатов"))
+
+    # ---------------------------------------------------------- схема B: пульс разового прохода
+    section("Схема B: пульс разового прохода")
+    once_src = Path("monitor.py").read_text(encoding="utf-8")
+    checks.append(("разовый проход (--once) пишет пульс — иначе панель в схеме B не видит живость",
+                   "monitor.log_pulse(read=read_total, found=found_total)" in once_src,
+                   "ветка --once в main()"))
+
+    b_store = HitStore(":memory:")
+    b_source = Source(target="@once_chat", title="Разовый чат", profile="chat", min_score=4, catchup=10)
+    b_other = Source(target="@other_chat", title="Чужой чат", profile="chat", min_score=4, catchup=10)
+    b_entity = FakeEntity(-1009999999999, b_source.title, username="once_chat")
+
+    async def b_pass(messages, account="main"):
+        """Один разовый проход: catch-up -> flush_stats -> пульс (ровно как в ветке --once)."""
+        client = FakeClient(b_entity, messages)
+        mon = Monitor(client, b_store, [b_source], silent, Paced(0), account=account)
+        mon.entities = {b_source.target: b_entity}
+        mon.meta = {b_source.target: b_source}
+        await mon.catch_up([b_source])
+        mon.flush_stats()
+        keys = [mon.chat_key(s) for s in mon.sources]
+        read_total, found_total = b_store.totals_for_chats(keys)
+        mon.log_pulse(read=read_total, found=found_total)
+        return mon
+
+    # база «помнит» проход двухчасовой давности: по нему панель считает окно «за час»
+    two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(timespec="seconds")
+    b_store.log_heartbeat("pulse", account="main", detail="прочитано 1, найдено 1", ts=two_hours_ago)
+
+    pass1 = await b_pass([
+        fake_message(200, "Возьму посылку из Минска в Варшаву, еду 20.09, есть 2 места в машине"),
+        fake_message(201, "нужно передать документы в Вильнюс, кто едет на этой неделе?"),
+        fake_message(202, "Подписывайтесь на канал, скидки 50%"),
+    ])
+    checks.append(("проход 1: 2 объявления из 3 сообщений",
+                   pass1.counter["matched"] == 2 and pass1.counter["scanned"] == 3,
+                   str(pass1.counter)))
+    b_pulses = b_store.heartbeats_since(hours=24.0, kind="pulse", account="main")
+    b_read, b_found = HitStore.parse_pulse_detail(b_pulses[-1]["detail"])
+    checks.append(("пульс прохода хранит накопительные суммы из базы, а не счётчики процесса",
+                   (b_read, b_found) == (3, 2) and len(b_pulses) == 2,
+                   f"detail={b_pulses[-1]['detail']}"))
+    checks.append(("суммы считаются только по чатам своего аккаунта (второй аккаунт не мешает)",
+                   b_store.totals_for_chats([pass1.chat_key(b_other)]) == (0, 0)
+                   and b_store.totals_for_chats([]) == (3, 2),
+                   f"чужой чат: {b_store.totals_for_chats([pass1.chat_key(b_other)])}"))
+    checks.append(("панель сразу видит аккаунт живым: пульс свежий",
+                   b_store.heartbeat_age_minutes("pulse", account="main") < 1.0,
+                   f"{b_store.heartbeat_age_minutes('pulse', account='main'):.2f} мин"))
+
+    # второй проход — новый контейнер: счётчики процесса с нуля, суммы в базе растут
+    pass2 = await b_pass([
+        fake_message(203, "Еду завтра из Гродно в Белосток, возьму небольшую посылку, есть место"),
+        fake_message(204, "Правительство Литвы продлило ограничения до 30 ноября"),
+    ])
+    checks.append(("проход 2: счётчики процесса снова с нуля, находка одна",
+                   pass2.counter["scanned"] == 2 and pass2.counter["matched"] == 1,
+                   str(pass2.counter)))
+    b_progress = b_store.pulse_progress(hours=1.0, account="main")
+    checks.append(("нагрузка за час считает оба прохода (4 прочитано, 2 найдено)",
+                   b_progress == (4, 2), f"pulse_progress={b_progress}"))
+
+    # контраст: если писать счётчики процесса (как было до этой правки), разница всегда ноль
+    c_store = HitStore(":memory:")
+    c_store.log_heartbeat("pulse", account="main", detail="прочитано 3, найдено 2", ts=two_hours_ago)
+    c_store.log_heartbeat("pulse", account="main", detail="прочитано 3, найдено 2")   # проход 1
+    c_store.log_heartbeat("pulse", account="main", detail="прочитано 2, найдено 1")   # проход 2
+    checks.append(("без сумм из базы схема B показывала бы «прочитано 0 за час» — регрессия закрыта",
+                   c_store.pulse_progress(hours=1.0, account="main") == (0, 0),
+                   f"pulse_progress={c_store.pulse_progress(hours=1.0, account='main')}"))
+
+
+    # ------------------------------------------------- диагностика источников
+    section("Диагностика источников (--check-sources)")
+    monitor_src = Path("monitor.py").read_text(encoding="utf-8", errors="replace")
+
+    # Классификация ошибок Telegram: текст, а не тип исключения — проверяется без Telethon.
+    cases = [
+        ("ValueError: Cannot get entity from https://t.me/+abc", "https://t.me/+abc", "join"),
+        ("ChannelPrivateError: The channel specified is private", "@closed", "join"),
+        ("UsernameNotOccupiedError: Nobody is using this username", "@opechatka", "missing"),
+        ("UsernameInvalidError: The username is invalid", "@opechatka", "missing"),
+        ("FloodWaitError: A wait of 12 seconds is required", "@chan", "flood"),
+        ("InviteHashExpiredError: invite hash expired", "https://t.me/+old", "expired"),
+        ("RuntimeError: something odd", "@chan", "error"),
+    ]
+    for text, target, want in cases:
+        verdict, advice = monitor_module.classify_source_error(text, target)
+        checks.append((f"ошибка «{text.split(':')[0]}» = {want}",
+                       verdict == want and bool(advice), f"{verdict}: {advice[:40]}"))
+
+    # ссылка-приглашение отличается от обычного чата: про неё можно сказать «--auto-join»
+    join_link = monitor_module.classify_source_error("Cannot get entity", "https://t.me/+abc")[1]
+    join_plain = monitor_module.classify_source_error("Cannot get entity", "@closed")[1]
+    checks.append(("совет для ссылки-приглашения упоминает --auto-join",
+                   "--auto-join" in join_link, join_link[:60]))
+    checks.append(("для закрытого чата без ссылки --auto-join не советуем (он не поможет)",
+                   "--auto-join" not in join_plain, join_plain[:60]))
+
+    # ключи чатов: по ним ищется статистика в базе
+    mk = lambda target, **kw: monitor_module.Source(target=target, **kw)
+    checks.append(("ключ @username = имя без @ в нижнем регистре",
+                   monitor_module.source_chat_key(mk("@TravelersMinsk")) == "travelersminsk",
+                   monitor_module.source_chat_key(mk("@TravelersMinsk"))))
+    checks.append(("ключ ссылки-приглашения = invite:<hash>",
+                   monitor_module.source_chat_key(mk("https://t.me/+CmQyl50rf-NlODFi"))
+                   == "invite:CmQyl50rf-NlODFi",
+                   monitor_module.source_chat_key(mk("https://t.me/+CmQyl50rf-NlODFi"))))
+    checks.append(("Monitor.chat_key и общая функция дают одно и то же",
+                   monitor_module.Monitor.chat_key(None, mk("@some_chat"))
+                   == monitor_module.source_chat_key(mk("@some_chat")), "ok"))
+
+    # замечания по конфигу без сети
+    srcs = [mk("@a", account="main"), mk("@b", account="second"), mk("@c", account="")]
+    accs = [monitor_module.AccountConfig(name="main", session="monitor_session", forward={}),
+            monitor_module.AccountConfig(name="second", session="second_session", forward={})]
+    buckets = monitor_module.sources_for_account(srcs, accs)
+    notes = " ".join(monitor_module.diagnose_sources_config(srcs, accs, buckets, None))
+    checks.append(("конфиг: источник без account: достаётся первому аккаунту — об этом сказано",
+                   "без account:" in notes and "main" in notes, notes[:80]))
+
+    dupes = [mk("@a", account="main"), mk("@a", account="main")]
+    notes_dup = " ".join(monitor_module.diagnose_sources_config(
+        dupes, accs, monitor_module.sources_for_account(dupes, accs), None))
+    checks.append(("конфиг: чат-дубль замечается", "дважды" in notes_dup, notes_dup[:60]))
+
+    idle = [mk("@a", account="main")]
+    notes_idle = " ".join(monitor_module.diagnose_sources_config(
+        idle, accs, monitor_module.sources_for_account(idle, accs), None))
+    checks.append(("конфиг: аккаунт без чатов — простой виден заранее",
+                   "простаивает" in notes_idle, notes_idle[:70]))
+
+    off = [mk("@a", account="main", enabled=False)]
+    notes_off = " ".join(monitor_module.diagnose_sources_config(
+        off, accs, monitor_module.sources_for_account(off, accs), None))
+    checks.append(("конфиг: выключенный источник назван", "выключено в конфиге" in notes_off,
+                   notes_off[:70]))
+
+    # «читался раньше, но пропал из конфига» — берётся из базы
+    store_diag = monitor_module.HitStore(":memory:")
+    store_diag.bump_stats("gone_chat", scanned=5, matched=1, saved=1, forwarded=0, account="main")
+    notes_db = " ".join(monitor_module.diagnose_sources_config(idle, accs,
+                                                        monitor_module.sources_for_account(idle, accs),
+                                                        store_diag))
+    checks.append(("конфиг: чат из базы, которого нет в списке, назван",
+                   "нет в конфиге" in notes_db and "gone_chat" in notes_db, notes_db[:90]))
+
+    # проверка читает конфиг, но не трогает базу: флаг есть и ведёт в свою функцию
+    checks.append(("флаг --check-sources есть в monitor.py",
+                   '"--check-sources"' in monitor_src, ""))
+    checks.append(("--check-sources диспетчеризуется в check_sources()",
+                   "await check_sources(args, defaults, sources, store, api_id, api_hash)"
+                   in monitor_src, ""))
+    checks.append(("--force отключает защиту «радар работает» (для контейнера)",
+                   'getattr(args, "force", False)' in monitor_src, ""))
+
+    # живая проверка источников на заглушке клиента: вердикты и сводка
+    class FakeSourceClient:
+        """get_entity/get_messages без сети: что отвечать — задаётся списком."""
+
+        def __init__(self, behaviour: dict, messages: int = 1):
+            self.behaviour, self.messages = behaviour, messages
+
+        async def get_entity(self, target):
+            if target in self.behaviour:
+                raise RuntimeError(self.behaviour[target])
+            return SimpleNamespace(id=1, title="fake")
+
+        async def get_messages(self, entity, limit=1):
+            if not self.messages:
+                return []
+            stamp = datetime(2026, 9, 27, 18, 41, tzinfo=timezone.utc)
+            return [SimpleNamespace(id=5, date=stamp)]
+
+    paced = monitor_module.Paced(0)
+    ok_client = FakeSourceClient({})
+    verdict, detail = await monitor_module.probe_source(ok_client, mk("@ok"), paced)
+    checks.append(("живая проверка: доступный чат = «читается» с датой последнего сообщения",
+                   verdict == "ok" and "27.09 18:41" in detail, f"{verdict}: {detail}"))
+
+    empty_client = FakeSourceClient({}, messages=0)
+    verdict, detail = await monitor_module.probe_source(empty_client, mk("@empty"), paced)
+    checks.append(("живая проверка: пустой чат = «ПУСТО», а не «читается»",
+                   verdict == "empty", f"{verdict}: {detail}"))
+
+    join_client = FakeSourceClient({"@closed": "Cannot get entity from @closed"})
+    verdict, detail = await monitor_module.probe_source(join_client, mk("@closed"), paced)
+    checks.append(("живая проверка: закрытый чат = «нужно вступить»",
+                   verdict == "join", f"{verdict}: {detail}"))
+
+    missing_client = FakeSourceClient({"@opechatka": "Nobody is using this username"})
+    verdict, detail = await monitor_module.probe_source(missing_client, mk("@opechatka"), paced)
+    checks.append(("живая проверка: опечатка в имени = «не найден»",
+                   verdict == "missing", f"{verdict}: {detail}"))
+
+
+    # ------------------------------------------- служебные сообщения (не находки)
+    section("Служебные сообщения: сводка и падения")
+
+    # Находки уходят пересылкой аккаунта получателю из sources.yaml (forward.to), а
+    # TG_NOTIFY_CHAT — канал хозяина: как прошёл проход, что упало. Разделяем.
+    store_svc = monitor_module.HitStore(":memory:")
+    saved_env = {k: os.environ.get(k) for k in ("TG_BOT_TOKEN", "TG_NOTIFY_CHAT")}
+    os.environ["TG_BOT_TOKEN"] = "1234567890:AAH-test-token-abcdefghij"
+    os.environ["TG_NOTIFY_CHAT"] = "999888777"
+    try:
+        svc = monitor_module.ServiceNotify(store_svc, mode="auto", every_hours=6.0)
+        checks.append(("ServiceNotify: auto включает бота, когда токен и chat_id заданы",
+                       svc.enabled is True and svc.why_disabled() == "", svc.why_disabled()))
+
+        text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=44.0,
+            read=412, found=3, forwarded=3,
+            per_account=[("main", 300, 2), ("second", 112, 1)],
+            errors=0, db_total="27 совпадений", gap_minutes=None)
+        checks.append(("сводка: новых/найдено/переслано и разбивка по аккаунтам",
+                       "новых сообщений 412, найдено 3, переслано 3" in text
+                       and "main: новых 300, найдено 2" in text
+                       and "second: новых 112, найдено 1" in text, text.splitlines()[1]))
+        seen_text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+            read=30, found=2, forwarded=2, per_account=[("main", 30, 2)], errors=0,
+            db_total="10 совпадений", seen_before=740)
+        checks.append(("«новых» и «взято из чата» — разные числа: повторы видны отдельной строкой",
+                       "новых сообщений 30" in seen_text and "уже видели 740" in seen_text,
+                       seen_text.splitlines()[2]))
+        checks.append(("сводка: в шапке время прохода и длительность",
+                       "28.09 12:40" in text and "44 с" in text, text.splitlines()[0]))
+
+        gap_text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+            read=0, found=0, forwarded=0, per_account=[("main", 0, 0)], errors=0,
+            db_total="0 совпадений", gap_minutes=45.0, expected_minutes=10.0)
+        checks.append(("сводка: простой вдвое больше обычного виден",
+                       "45 мин назад" in gap_text and "простаивал" in gap_text,
+                       gap_text.splitlines()[-1]))
+
+        quiet_text = monitor_module.ServiceNotify.pass_summary(
+            now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+            read=0, found=0, forwarded=0, per_account=[("main", 0, 0)], errors=0,
+            db_total="0 совпадений", gap_minutes=11.0, expected_minutes=10.0)
+        checks.append(("сводка: обычная пауза между проходами не тревожит",
+                       "простаивал" not in quiet_text, ""))
+
+        # антиспам: плановая сводка — не чаще раза в every часов. Отметка лежит в базе,
+        # поэтому перезапуск контейнера (в облаке он каждый проход) счётчик не сбрасывает.
+        store_svc.bot_state_set("service:summary",
+                                datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        checks.append(("антиспам: свежая отметка в базе держит паузу",
+                       monitor_module.ServiceNotify(store_svc)._due("summary") is False,
+                       str(store_svc.bot_state_get("service:summary"))[:40]))
+        checks.append(("антиспам: на пустой базе плановая сводка уходит",
+                       monitor_module.ServiceNotify(
+                           monitor_module.HitStore(":memory:"))._due("summary") is True, ""))
+        old_stamp = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat(timespec="seconds")
+        store_svc.bot_state_set("service:summary", old_stamp)
+        checks.append(("антиспам: через every часов сводка снова уходит",
+                       monitor_module.ServiceNotify(store_svc)._due("summary") is True, old_stamp))
+        store_svc.bot_state_set("service:summary", "не-дата")
+        checks.append(("антиспам: испорченная отметка не блокирует отправку",
+                       monitor_module.ServiceNotify(store_svc)._due("summary") is True, ""))
+
+        # выключенные каналы
+        os.environ["TG_NOTIFY_CHAT"] = ""
+        no_chat = monitor_module.ServiceNotify(store_svc, mode="auto")
+        checks.append(("без TG_NOTIFY_CHAT канал выключен и причина названа",
+                       no_chat.enabled is False and "TG_NOTIFY_CHAT" in no_chat.why_disabled(),
+                       no_chat.why_disabled()))
+        os.environ["TG_NOTIFY_CHAT"] = "999888777"
+        off = monitor_module.ServiceNotify(store_svc, mode="none")
+        checks.append(("--service-notify none выключает канал",
+                       off.enabled is False and "none" in off.why_disabled(), off.why_disabled()))
+    finally:
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    fail_text = monitor_module.ServiceNotify.failure_text(RuntimeError("контейнер не поднялся"))
+    checks.append(("падение прохода: понятный текст с типом ошибки",
+                   "Проход упал" in fail_text and "RuntimeError" in fail_text
+                   and "контейнер не поднялся" in fail_text, fail_text[:60]))
+
+    # флаги и проводка
+    parser_src = Path("monitor.py").read_text(encoding="utf-8", errors="replace")
+    checks.append(("флаг --service-notify есть, выбор auto/bot/none",
+                   '"--service-notify", choices=("auto", "bot", "none")' in parser_src, ""))
+    checks.append(("сводка отправляется после прохода, а не вместо него",
+                   "# служебная сводка прохода" in parser_src
+                   and 'await service.send(text, key="summary"' in parser_src, ""))
+    checks.append(("падение прохода уходит в TG_NOTIFY_CHAT и пишется в журнал ошибок",
+                   'key="failure", force=True' in parser_src
+                   and "store.log_error(type(exc).__name__" in parser_src, ""))
+
+
+    # ----------------------------------------------------- бюджет прохода (схема B)
+    section("Бюджет прохода: радар укладывается в отведённое время")
+
+    # В схеме B проход один: если его оборвут снаружи по таймауту, не успеют записаться
+    # ни пульс, ни счётчики, ни очередь пересылок. Поэтому радар следит за временем сам.
+    mon_src = Path("monitor.py").read_text(encoding="utf-8", errors="replace")
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+    mon = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                 core_telegram.Paced(0.0), deadline=None)
+    checks.append(("без бюджета времени читаем всё (своя машина, живой режим)",
+                   mon.time_left() == float("inf") and mon.flood_budget() is None, ""))
+
+    mon2 = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                  core_telegram.Paced(0.0), deadline=time.monotonic() + 100,
+                                  flood_wait_limit=30)
+    checks.append(("с бюджетом: остаток виден и FloodWait им ограничен",
+                   90 <= mon2.time_left() <= 100 and mon2.flood_budget() == 30.0,
+                   f"{mon2.time_left():.0f} с, лимит {mon2.flood_budget()}"))
+
+    mon3 = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                  core_telegram.Paced(0.0), deadline=time.monotonic() + 10)
+    checks.append(("без лимита FloodWait ждём не дольше остатка бюджета",
+                   0 < mon3.flood_budget() <= 10.0, f"{mon3.flood_budget():.1f}"))
+
+    # просроченный бюджет: catch_up не начинает новые чаты, а помечает их на следующий раз
+    passed = monitor_module.Monitor(_FakeClient(), monitor_module.HitStore(":memory:"), [], None,
+                                    core_telegram.Paced(0.0), deadline=time.monotonic() - 1)
+    sources_left = [monitor_module.Source(target="@a", catchup=50, topics=(), min_score=0),
+                    monitor_module.Source(target="@b", catchup=50, topics=(), min_score=0)]
+    passed.entities = {"@a": object(), "@b": object()}
+    await passed.catch_up(sources_left)
+    checks.append(("просроченный бюджет: чаты не читаются, а откладываются на следующий проход",
+                   passed.catchup_left == ["@a", "@b"], str(passed.catchup_left)))
+
+    # FloodWait дольше бюджета — не спим, а пропускаем чат
+    async def flood_factory():
+        from telethon.errors import FloodWaitError
+        raise FloodWaitError(request=None, capture=600)
+
+    paced_fast = core_telegram.Paced(0.0)
+    paced_fast.max_wait = lambda: 30.0
+    try:
+        await core_telegram.call(flood_factory, paced_fast, retries=1, label="get_entity(@a)")
+        waited = "дождался"
+    except core_telegram.FloodWaitTooLong as exc:
+        waited = str(exc)
+    checks.append(("FloodWait дольше бюджета: не спим, а пропускаем чат",
+                   "пропущен" in waited and "725" in waited, waited[:90]))
+
+    paced_slow = core_telegram.Paced(0.0)
+    paced_slow.max_wait = lambda: 1e9
+    try:
+        async def tiny_factory():
+            from telethon.errors import FloodWaitError
+            raise FloodWaitError(request=None, capture=1)
+        await core_telegram.call(tiny_factory, paced_slow, retries=1, label="tiny")
+        tiny_note = "дошло"
+    except core_telegram.FloodWaitTooLong:
+        tiny_note = "пропустили по бюджету — зря"
+    except Exception:                                   # noqa: BLE001 - исчерпал попытки
+        tiny_note = "ждал, как и раньше"
+    checks.append(("короткий FloodWait в бюджете ждём, как и раньше (обычный режим не сломан)",
+                   tiny_note == "ждал, как и раньше", tiny_note))
+
+    text_left = monitor_module.ServiceNotify.pass_summary(
+        now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=540.0,
+        read=100, found=0, forwarded=0, per_account=[("main", 100, 0)], errors=0,
+        db_total="0 совпадений", leftover=["@c", "@d"])
+    checks.append(("сводка честно говорит, сколько чатов не успел",
+                   "не успел прочитать 2 чатов" in text_left and "в следующий раз" in text_left,
+                   text_left.splitlines()[-1]))
+    checks.append(("сводка без отложенных чатов не пугает",
+                   "не успел" not in monitor_module.ServiceNotify.pass_summary(
+                       now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
+                       read=0, found=0, forwarded=0, per_account=[], errors=0,
+                       db_total="0 совпадений"), ""))
+    checks.append(("бюджет берётся из RADAR_TIMEOUT, если флагом не задан",
+                   "env_timeout = float(os.getenv(\"RADAR_TIMEOUT\")" in mon_src
+                   and "budget = env_timeout * 0.75" in mon_src, ""))
+    # Регрессия: бюджет считали ПОСЛЕ создания Monitor'ов, и проход падал через 7 секунд
+    # с UnboundLocalError: deadline. Проверяем порядок по дереву кода, а не по тексту.
+    tree = ast.parse(mon_src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "async_main")
+    assign = use = None
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and node.id == "deadline":
+            if isinstance(node.ctx, ast.Store):
+                assign = node.lineno if assign is None else min(assign, node.lineno)
+            else:
+                use = node.lineno if use is None else max(use, node.lineno)
+    checks.append(("бюджет считается до создания Monitor'ов (иначе UnboundLocalError)",
+                   assign is not None and use is not None and assign < use,
+                   f"присвоение {assign}, использование {use}"))
+
+    checks.append(("флаги --pass-budget и --flood-wait-limit описаны",
+                   '"--pass-budget"' in mon_src and '"--flood-wait-limit"' in mon_src, ""))
+    # Проход обязан быть короче интервала cron: иначе контейнер не засыпает, а Cloudflare
+    # не обновляет приложение с живым инстансом — деплой падает уже после сборки образа.
+    cfg = Path("wrangler.jsonc").read_text(encoding="utf-8", errors="replace")
+    timeout_s = float(re.search(r'"RADAR_TIMEOUT":\s*"(\d+)"', cfg).group(1))
+    cron = re.search(r'"crons":\s*\[\s*"([^"]+)"', cfg).group(1)
+    step_match = re.match(r"\*/(\d+) \* \* \* \*", cron)
+    cron_s = float(step_match.group(1)) * 60 if step_match else 0.0
+    checks.append(("проход короче интервала cron: контейнер успевает заснуть",
+                   cron_s > 0 and timeout_s < cron_s * 0.9,
+                   f"RADAR_TIMEOUT {timeout_s:.0f} с, cron каждые {cron_s:.0f} с"))
+    checks.append(("RADAR_TIMEOUT не выходит за предел Workers на cron (900 с)",
+                   timeout_s <= 900, f"{timeout_s:.0f} с"))
+
+
+    # ------------------------------------------ второй аккаунт не должен голодать
+    section("Очерёдность аккаунтов: бюджет не достаётся всегда первому")
+
+    # Проход читает аккаунты по очереди, и бюджет часто кончается на первом: без ротации
+    # второй аккаунт не читался бы никогда (в первом живом прогоне так и вышло — main
+    # прочитал 310 сообщений, second — 0).
+    rot_store = monitor_module.HitStore(":memory:")
+    pair = [(SimpleNamespace(name="main"), None, None),
+            (SimpleNamespace(name="second"), None, None)]
+    order = []
+    for _ in range(4):
+        rotated = monitor_module.rotate_runners(list(pair), rot_store)
+        order.append(rotated[0][0].name)
+    checks.append(("аккаунты чередуются: первый не забирает весь бюджет себе",
+                   order == ["main", "second", "main", "second"], str(order)))
+    checks.append(("очерёдность помнят в базе, а не в памяти (контейнер живёт один проход)",
+                   monitor_module.rotate_runners(list(pair), monitor_module.HitStore(":memory:")
+                                                 )[0][0].name == "main", ""))
+    checks.append(("один аккаунт — ротация не нужна и ничего не ломает",
+                   monitor_module.rotate_runners(pair[:1], rot_store)[0][0].name == "main", ""))
+    checks.append(("ротация вызывается перед проходом, а не только в тестах",
+                   "runners = rotate_runners(runners, store)" in mon_src, ""))
+
+
+    # ----------------------------------------- команды из Telegram без отдельной панели
+    section("Команды из Telegram: разбор в конце прохода")
+
+    class _FakeTransport:
+        def __init__(self, updates):
+            self.updates, self.sent = updates, []
+
+        async def get_updates(self, offset, timeout=0):
+            return [] if offset == -1 else [u for u in self.updates if u["update_id"] >= offset]
+
+        async def send_message(self, chat_id, text, **kwargs):
+            self.sent.append(text)
+            return True, ""
+
+        async def send_document(self, chat_id, path, caption=""):
+            return True, ""
+
+    os.environ["TG_BOT_TOKEN"] = "1234567890:AAH-test-token-abcdefghij"
+    os.environ["TG_NOTIFY_CHAT"] = "999888777"
+    try:
+        cmd_store = monitor_module.HitStore(":memory:")
+        cmd_store.bot_state_set("pass:last_seconds", "370")
+        transport = _FakeTransport([
+            {"update_id": 10, "message": {"chat": {"id": 999888777}, "text": "/cost"}},
+            {"update_id": 11, "message": {"chat": {"id": 999888777}, "text": "/status"}},
+        ])
+        answered = await monitor_module.answer_pending_commands(cmd_store, [], transport=transport)
+        checks.append(("команды из Telegram разбираются в конце прохода (панель отдельно не нужна)",
+                       answered == 2 and len(transport.sent) == 2, f"ответов {answered}"))
+        checks.append(("на /cost отвечают деньгами, на /status — состоянием радара",
+                       any("Стоимость" in text for text in transport.sent)
+                       and any("Радар" in text for text in transport.sent),
+                       transport.sent[0].splitlines()[0][:50]))
+        again = await monitor_module.answer_pending_commands(cmd_store, [], transport=transport)
+        checks.append(("одна команда — один ответ: offset помнят между проходами",
+                       again == 0, f"повторных ответов {again}"))
+        checks.append(("флаг --tg-commands есть, auto/on/off",
+                       '"--tg-commands", choices=("auto", "on", "off")' in mon_src, ""))
+        checks.append(("длительность прохода пишется в базу — /cost считает от неё",
+                       'store.bot_state_set("pass:last_seconds"' in mon_src, ""))
+        checks.append(("сбой бота не роняет проход (команды в отдельном try)",
+                       "команды из Telegram не обработаны" in mon_src, ""))
+    finally:
+        os.environ.pop("TG_BOT_TOKEN", None)
+        os.environ.pop("TG_NOTIFY_CHAT", None)
+
+    # ------------------------------------------------- выключатели
+    section("Выключатели: 0/1 в Variables воркера, без деплоя")
+    for raw, want in (("1", True), ("on", True), ("true", True),
+                      ("0", False), ("off", False), ("выкл", False)):
+        os.environ["TEST_FLAG"] = raw
+        checks.append((f"переменная «{raw}» — это {'вкл' if want else 'выкл'}",
+                       monitor_module.env_flag("TEST_FLAG", True) is want, ""))
+    os.environ["TEST_FLAG"] = "  "
+    checks.append(("пусто или опечатка — значение по умолчанию, а не выключение",
+                   monitor_module.env_flag("TEST_FLAG", True) is True
+                   and monitor_module.env_flag("TEST_FLAG", False) is False, ""))
+    os.environ.pop("TEST_FLAG", None)
+    checks.append(("переменной нет вовсе — значение по умолчанию",
+                   monitor_module.env_flag("TEST_FLAG", True) is True, ""))
+
+    os.environ["TG_BOT_TOKEN"] = "123456:TEST-TOKEN"
+    os.environ["TG_NOTIFY_CHAT"] = "42"
+    os.environ["TG_COMMANDS"] = "0"
+    checks.append(("TG_COMMANDS=0 выключает команды, даже когда токен и чат заданы",
+                   not monitor_module.tg_commands_enabled(SimpleNamespace(tg_commands="auto")),
+                   monitor_module.tg_commands_reason(SimpleNamespace(tg_commands="auto"))[:48]))
+    os.environ["TG_COMMANDS"] = "1"
+    checks.append(("TG_COMMANDS=1 команды включает",
+                   monitor_module.tg_commands_enabled(SimpleNamespace(tg_commands="auto")), ""))
+    os.environ.pop("TG_COMMANDS", None)
+    os.environ.pop("TG_BOT_TOKEN", None)
+    os.environ.pop("TG_NOTIFY_CHAT", None)
+    checks.append(("RADAR_ON=0 останавливает проход до входа в аккаунты",
+                   'env_flag("RADAR_ON", True)' in mon_src and "проход пропущен" in mon_src, ""))
+    checks.append(("состояние выключателей видно в логе прохода, а не Only в дашборде",
+                   "выключатели: RADAR_ON=1" in mon_src, ""))
+    cfg_src = Path("wrangler.jsonc").read_text(encoding="utf-8", errors="replace")
+    checks.append(("оба выключателя объявлены в vars воркера и включены",
+                   '"RADAR_ON": "1"' in cfg_src and '"TG_COMMANDS": "1"' in cfg_src, ""))
+
+    # ------------------------------------------------- метка сборки
+    section("Метка сборки: видно, какой код реально работает в облаке")
+    import hashlib
+    marker = monitor_module.build_marker()
+    expected = hashlib.sha256(Path(monitor_module.__file__).read_bytes()).hexdigest()[:8]
+    checks.append(("метка сборки — 8 символов sha256 по исходнику monitor.py",
+                   len(marker) == 8 and all(ch in "0123456789abcdef" for ch in marker), marker))
+    checks.append(("метка совпадает с sha256 файла и не меняется между вызовами",
+                   marker == expected and monitor_module.build_marker() == marker, expected))
+    checks.append(("в логе чата «взято» и «новых» — разные числа, а не одно «прочитано»",
+                   "взято {len(messages or [])}, новых {fresh}" in mon_src
+                   and "scanned_before" in mon_src, ""))
+    checks.append(("«старше N ч пропущено» считается за чат, а не накопительно за проход",
+                   "too_old_before" in mon_src, ""))
+    checks.append(("метка печатается в конце прохода — её видно в /status и /log",
+                   "код: monitor.py {build_marker()}" in mon_src, ""))
+    checks.append(("меню команд регистрируется в конце прохода: иначе в Telegram их не видно",
+                   "panel.register_commands()" in mon_src
+                   and "async def set_my_commands" in open(str(Path(monitor_module.__file__).with_name("bot_panel.py")), encoding="utf-8").read(),
+                   ""))
+    checks.append(("выключенные команды не молчат: причина видна в логе прохода",
+                   "команды из Telegram выключены: {tg_commands_reason(args)}" in mon_src
+                   and "def tg_commands_reason" in mon_src, ""))
 
     # ---------------------------------------------------------- итог
     section("Итог")
