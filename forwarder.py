@@ -22,6 +22,12 @@ from datetime import datetime, timedelta, timezone
 from core_telegram import call
 
 
+# fetch() в flush_deferred возвращает: сообщение | None (его правда нет: удалено) | FETCH_FAILED
+# (достать не вышло — сеть, флуд, чат недоступен). Во втором случае находка остаётся в очереди
+# и уйдёт в следующий прогон; раньше любая неудача чтения навсегда списывала её как «удалённую».
+FETCH_FAILED = object()
+
+
 class Forwarder:
     """Пересылает совпадения получателю (по умолчанию — в чат с ботом)."""
 
@@ -145,10 +151,12 @@ class Forwarder:
         """Отправляет то, что не влезло в лимит в прошлые сутки.
 
         fetch(chat_key, msg_id) — как достать исходное сообщение (даёт Monitor).
-        Сообщения, которые уже недоступны (чат удалён/вышел), снимаются с очереди навсегда.
+        Сообщения, которых больше нет в чате (автор удалил), снимаются с очереди навсегда
+        (mode=dead, они видны в статистике отдельной строкой). Если сообщение просто не удалось
+        прочитать (сбой сети, флуд) — оно остаётся в очереди до следующего прогона.
         Порядок: сначала самое старое. Свободен весь дневной лимит, но он общий с новыми находками.
         """
-        result = {"sent": 0, "failed": 0, "gone": 0, "leftover": 0}
+        result = {"sent": 0, "failed": 0, "gone": 0, "leftover": 0, "retry": 0}
         queue = self.store.deferred_queue(self.account or None)
         if not queue:
             return result
@@ -169,6 +177,10 @@ class Forwarder:
                 result["gone"] += 1
                 continue
             message = await fetch(chat_key, msg_id)
+            if message is FETCH_FAILED:
+                result["retry"] += 1          # останется в очереди
+                result["leftover"] += 1
+                continue
             if message is None:
                 self.store.mark_forwarded(chat_key, msg_id, ok=False, mode="dead", error="message_gone",
                                           account=self.account or None)
@@ -185,7 +197,9 @@ class Forwarder:
             else:
                 result["failed"] += 1
         print(f"[i] добор: отправлено {result['sent']}, не нашлось {result['gone']}, "
-              f"ошибок {result['failed']}, осталось в очереди ещё {result['leftover']}", file=sys.stderr)
+              f"ошибок {result['failed']}, осталось в очереди ещё {result['leftover']}"
+              + (f" (из них {result['retry']} не удалось прочитать — повторим)" if result["retry"] else ""),
+              file=sys.stderr)
         return result
 
     @staticmethod

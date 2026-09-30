@@ -1957,6 +1957,133 @@ async def main() -> None:
                    "команды из Telegram выключены: {tg_commands_reason(args)}" in mon_src
                    and "def tg_commands_reason" in mon_src, ""))
 
+    # ---------------------------------------------------------- фильтры и статистика: прозрачность
+    section("Фильтры: подстановка «?», причины отсева; статистика: судьба находок")
+    from matcher import direction_allowed
+    from forwarder import FETCH_FAILED
+
+    checks.append(("?->PL берёт всё, что едет в Польшу (BY->PL, RU->PL, ?->PL)",
+                   all(direction_allowed(d, ("?->PL",)) for d in ("BY->PL", "RU->PL", "?->PL")), ""))
+    checks.append(("?->PL не берёт другие страны и сообщения без направления",
+                   not any(direction_allowed(d, ("?->PL",)) for d in ("BY->LT", "PL->BY", "BY->?", "?")), ""))
+    checks.append(("BY->? берёт всё, что выезжает из Беларуси, точное BY->PL — только его",
+                   direction_allowed("BY->PL", ("BY->?",)) and direction_allowed("BY->?", ("BY->?",))
+                   and not direction_allowed("BY->LT", ("BY->PL",)) and direction_allowed("BY->PL", ("BY->PL",)), ""))
+    checks.append(("пустой фильтр направлений пропускает всё", direction_allowed("?", ()), ""))
+    checks.append(("несколько направлений через запятую работают как «или»",
+                   direction_allowed("PL->BY", ("BY->PL", "PL->BY")), ""))
+
+    why_store = HitStore(":memory:")
+    why_monitor = Monitor(client, why_store, [source], silent, Paced(0), only_categories=("parcel",),
+                          only_intents=("request",), only_directions=("?->PL",),
+                          dedup_scope="chat", dedup_window=0)
+    why_monitor.entities = {source.target: entity}
+    why_monitor.meta = {source.target: source}
+    ride_only = await why_monitor.process_message(fake_message(5001, "Еду Минск-Варшава, есть места, возьму попутчиков"), source)
+    offer_msg = await why_monitor.process_message(fake_message(5002, "Везу посылки из Минска в Варшаву 20.09, возьму передачу"), source)
+    wrong_way = await why_monitor.process_message(fake_message(5003, "Нужно передать посылку в Вильнюс, кто едет 25.09?"), source)
+    kept = await why_monitor.process_message(fake_message(5004, "Нужно передать посылку из Минска в Варшаву 25.09, кто едет?"), source)
+    why_monitor.flush_stats()
+    row = why_store.conn.execute("SELECT SUM(filtered), SUM(filtered_category), SUM(filtered_intent), "
+                                 "SUM(filtered_direction) FROM stats").fetchone()
+    checks.append(("фильтр пишет, ЧТО именно срезало: категория / намерение / направление",
+                   ride_only is None and offer_msg is None and wrong_way is None and kept is not None
+                   and tuple(row) == (3, 1, 1, 1), str(tuple(row))))
+    why_report = why_store.stats_report()
+    checks.append(("в отчёте есть блок «ЧТО РЕЖЕТ ФИЛЬТР» с разбивкой",
+                   "ЧТО РЕЖЕТ ФИЛЬТР" in why_report and "категория" in why_report and "направление" in why_report,
+                   ""))
+
+    # лимит больше не смешивается с «нельзя переслать»
+    lim_store = HitStore(":memory:")
+    lim_client = FwdClient(entity, [])
+    lim_fwd = Forwarder(lim_client, "@parcel_transfer_bot", lim_store, Paced(0), max_per_day=1)
+    await lim_fwd.prepare()
+    lim_monitor = Monitor(lim_client, lim_store, [source], silent, Paced(0), forwarder=lim_fwd,
+                          dedup_scope="chat", dedup_window=0)
+    lim_monitor.entities = {source.target: entity}
+    lim_monitor.meta = {source.target: source}
+    await lim_monitor.process_message(fake_message(5101, "Возьму посылку Минск-Варшава 20.09, есть места"), source)
+    await lim_monitor.process_message(fake_message(5102, "Нужно передать документы в Варшаву 21.09, кто едет?"), source)
+    lim_monitor.flush_stats()
+    lim_row = lim_store.conn.execute("SELECT SUM(forwarded), SUM(forward_skipped), SUM(deferred) FROM stats").fetchone()
+    checks.append(("лимит: 1 переслано, 1 отложено; «пропущено» (запрет пересылки) остаётся 0",
+                   tuple(lim_row) == (1, 0, 1), str(tuple(lim_row))))
+
+    # добор: сбой чтения не списывает находку, удалённое — списывает и видно в отчёте
+    dq_store = HitStore(":memory:")
+    dq_client = FwdClient(entity, [])
+    dq_fwd = Forwarder(dq_client, "@parcel_transfer_bot", dq_store, Paced(0), max_per_day=50)
+    await dq_fwd.prepare()
+
+    def dq_hit(mid):
+        hit = {"chat_key": "granica_by_lt_pl", "chat_title": "Граница BY-LT-PL", "username": "granica_BY_LT_PL",
+               "date": NOW.isoformat(), "sender_id": 1, "sender_name": "x", "chat_id": -1001999, "msg_id": mid,
+               "text": "Еду Брест-Варшава, возьму передачу", "link": f"https://t.me/granica_BY_LT_PL/{mid}",
+               "score": 9, "category": "parcel", "intent": "offer", "direction": "BY->PL",
+               "countries": ["PL"], "hits": ["передачу"],
+               "found_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        dq_store.save_hit(hit)
+        dq_store.queue_forward("granica_by_lt_pl", mid)
+        return SimpleNamespace(id=mid, text=hit["text"], date=NOW, sender_id=1, out=False)
+
+    m_ok, m_gone, m_flaky = dq_hit(6001), dq_hit(6002), dq_hit(6003)
+
+    async def dq_fetch(chat_key, msg_id):
+        return {6001: m_ok, 6002: None, 6003: FETCH_FAILED}[msg_id]
+
+    dq_result = await dq_fwd.flush_deferred(dq_fetch)
+    checks.append(("добор: удалённое списывается (gone), сбой чтения остаётся в очереди (retry)",
+                   dq_result["sent"] == 1 and dq_result["gone"] == 1 and dq_result["retry"] == 1
+                   and dq_store.deferred_queue() == [("granica_by_lt_pl", 6003)], str(dq_result)))
+
+    fate = dq_store.forward_fate()
+    checks.append(("судьба находок: переслано 1, в очереди 1, удалено 1, итого сходится",
+                   fate["total"] == 3 and fate["forwarded"] == 1 and fate["queued"] == 1
+                   and fate["dead_gone"] == 1, str(fate)))
+    dq_store.bump_stats("granica_by_lt_pl", scanned=3, matched=3, forwarded=1, deferred=2)
+    dq_report = dq_store.stats_report()
+    checks.append(("в отчёте «что стало с найденными»: удалённые и очередь названы отдельными строками",
+                   "ЧТО СТАЛО С НАЙДЕННЫМИ" in dq_report and "сообщение удалено" in dq_report
+                   and "ждёт в очереди" in dq_report and "не сходится" not in dq_report, ""))
+
+    # все виды судьбы: запрет пересылки, ошибка, текст со ссылкой — разные строки
+    mix_store = HitStore(":memory:")
+    for i, (ok, mode, error) in enumerate([(1, "forwarded", ""), (1, "copy:forward", "forwards_restricted"),
+                                          (0, "skipped", "forwards_restricted"), (0, "failed", "RPCError: x"),
+                                          (0, "queued", "daily_limit"), (None, None, None)]):
+        mid = 7000 + i
+        mix_store.save_hit({"chat_key": "c", "chat_title": "C", "chat_id": "", "username": "", "msg_id": mid,
+                            "date": NOW.isoformat(), "sender_id": "", "sender_name": "", "text": "t", "score": 1,
+                            "category": "parcel", "intent": "offer", "direction": "?", "countries": [], "hits": [],
+                            "link": "", "found_at": NOW.isoformat()})
+        if ok is not None:
+            mix_store.mark_forwarded("c", mid, ok=bool(ok), mode=mode, error=error)
+    mix_fate = mix_store.forward_fate()
+    checks.append(("судьба: запрет пересылки (текст со ссылкой / пропуск), ошибка, очередь, без записи — раздельно",
+                   (mix_fate["forwarded"], mix_fate["copied_restricted"], mix_fate["skipped"], mix_fate["failed"],
+                    mix_fate["queued"], mix_fate["no_record"]) == (1, 1, 1, 1, 1, 1), str(mix_fate)))
+
+    # подписи про период: «последние 7», а данных за 3 дня
+    cap_store = HitStore(":memory:")
+    for d in ("2026-09-28", "2026-09-29", "2026-09-30"):
+        for n in range(25):                       # 25 чатов в день: раньше LIMIT days*20 обрезал последний день
+            cap_store.bump_stats(f"chat{n}", day=d, account="main", scanned=n + 1)
+    cap_report = cap_store.stats_report(days=7)
+    checks.append(("подпись «по дням»: последние 7 — данных пока за 3 (с 28.09.2026)",
+                   "последние 7 дн. — данных пока за 3 (28.09.2026–30.09.2026)" in cap_report, ""))
+    checks.append(("«итого» подписано периодом, а не «за всё время»",
+                   "ИТОГО ПО ИСТОЧНИКАМ (с 28.09.2026, 3 дн.)" in cap_report, ""))
+    checks.append(("по дням: при >20 чатах в отчёте все 3 дня целиком (75 строк)",
+                   sum(1 for line in cap_report.splitlines() if line.startswith("2026-09-")) == 75, ""))
+    checks.append(("в отчёте есть колонка «дубли» и пояснения «КАК ЧИТАТЬ»",
+                   "дубли" in cap_report and "КАК ЧИТАТЬ" in cap_report, ""))
+    dup_store = HitStore(":memory:")
+    dup_store.bump_stats("c1", account="main", scanned=10, matched=2, text_duplicates=4, cross_chat=3)
+    dup_report = dup_store.stats_report()
+    checks.append(("дубли видны в отчёте: число и сколько из них пришло из других чатов",
+                   "дубли: 4 (из них тот же текст уже пришёл из другого чата: 3)" in dup_report, ""))
+
     # ---------------------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:

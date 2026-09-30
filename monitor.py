@@ -37,7 +37,8 @@ from core_telegram import (BOT_TOKEN_HINT, FloodWaitTooLong, Paced, add_flood_ho
                            collect_topics, display_name, format_hit, hidden_author_reason,
                            invite_hash, load_dotenv, make_client, message_link, peer_id,
                            resolve_targets, topic_of, topic_title_of)
-from matcher import analyze
+from forwarder import FETCH_FAILED
+from matcher import analyze, direction_allowed
 
 HEADERS_TXT = {
     "parcel": "ПОСЫЛКА/ПЕРЕДАЧА", "ride": "ПОПУТЧИК/ПАССАЖИР",
@@ -98,6 +99,9 @@ CREATE TABLE IF NOT EXISTS stats (
     cross_chat  INTEGER DEFAULT 0,
     deferred    INTEGER DEFAULT 0,
     hidden      INTEGER DEFAULT 0,
+    filtered_category  INTEGER DEFAULT 0,   -- из «filtered»: не прошло --category
+    filtered_intent    INTEGER DEFAULT 0,   --               не прошло --only-intent
+    filtered_direction INTEGER DEFAULT 0,   --               не прошло --only-direction
     account     TEXT,
     PRIMARY KEY (day, chat_key)
 );
@@ -158,6 +162,9 @@ class HitStore:
             self.conn.execute("ALTER TABLE stats ADD COLUMN deferred INTEGER DEFAULT 0")
         if "hidden" not in columns:
             self.conn.execute("ALTER TABLE stats ADD COLUMN hidden INTEGER DEFAULT 0")
+        for name in ("filtered_category", "filtered_intent", "filtered_direction"):
+            if name not in columns:
+                self.conn.execute(f"ALTER TABLE stats ADD COLUMN {name} INTEGER DEFAULT 0")
         fwd_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(forwarded)")}
         if "account" not in fwd_columns:
             # старая история относится к первому аккаунту: назови его main, чтобы лимит
@@ -370,9 +377,58 @@ class HitStore:
             return "+" + chat_key.split(":", 1)[1]
         return chat_key if chat_key.startswith(("@", "-")) else f"@{chat_key}"
 
+    @staticmethod
+    def _fmt_day(day: str) -> str:
+        """2026-09-28 -> 28.09.2026 (как в остальных отчётах: день.месяц.год)."""
+        try:
+            return datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m.%Y")
+        except (TypeError, ValueError):
+            return str(day)
+
+    def forward_fate(self) -> dict[str, int]:
+        """Что стало с каждой найденной записью: переслана, ждёт, недоступна, ошибка...
+
+        Считается по таблицам hits и forwarded (а не по счётчикам stats), поэтому сходится
+        с действительностью и для старых баз: каждая находка попадает ровно в одну строку.
+        """
+        fate = {"total": 0, "forwarded": 0, "copied_restricted": 0, "copied": 0, "trial": 0,
+                "queued": 0, "dead_gone": 0, "dead_missing": 0, "skipped": 0, "failed": 0,
+                "other": 0, "no_record": 0}
+        rows = self.conn.execute(
+            """SELECT f.ok, f.mode, f.error, COUNT(*)
+               FROM hits h LEFT JOIN forwarded f ON f.chat_key = h.chat_key AND f.msg_id = h.msg_id
+               GROUP BY f.ok, f.mode, f.error"""
+        ).fetchall()
+        for ok, mode, error, count in rows:
+            count = int(count or 0)
+            mode, error = mode or "", error or ""
+            fate["total"] += count
+            if ok is None:
+                bucket = "no_record"
+            elif ok == 1 and mode in ("dry-run", "test"):
+                bucket = "trial"
+            elif ok == 1 and mode.startswith("copy"):
+                bucket = "copied_restricted" if error == "forwards_restricted" else "copied"
+            elif ok == 1:
+                bucket = "forwarded"
+            elif mode == "queued":
+                bucket = "queued"
+            elif mode == "dead":
+                bucket = "dead_missing" if error == "hit_missing" else "dead_gone"
+            elif mode == "skipped":
+                bucket = "skipped"
+            elif mode.startswith("failed"):
+                bucket = "failed"
+            else:
+                bucket = "other"
+            fate[bucket] += count
+        return fate
+
     def stats_report(self, days: int = 7, titles_from_config: dict | None = None) -> str:
         """Текстовый отчёт: откуда сколько сообщений идёт, по дням и по чатам.
 
+        days — МАКСИМАЛЬНОЕ число дней в разделе «по дням»: если статистика ведётся меньше,
+        показывается сколько есть (в заголовке написано, с какого числа данные).
         titles_from_config — chat_key -> название из sources.yaml: подставляет имена чатам,
         по которым ещё не было находок (иначе такие строки были бы без названия).
         """
@@ -381,69 +437,135 @@ class HitStore:
         for key, title in (titles_from_config or {}).items():
             if title and not titles.get(key):
                 titles[key] = title
+        first_day, last_day, days_total = self.conn.execute(
+            "SELECT MIN(day), MAX(day), COUNT(DISTINCT day) FROM stats").fetchone()
+        if first_day:
+            period = f"с {self._fmt_day(first_day)}, {days_total} дн."
+            span = (f"Статистика ведётся {days_total} дн.: {self._fmt_day(first_day)} — "
+                    f"{self._fmt_day(last_day)}. «За всё время» ниже = за этот период.")
+        else:
+            period, span = "данных ещё нет", "Статистика ещё не накоплена: радар не делал ни одного прохода."
         lines = [
             "Статистика радара: откуда и сколько сообщений",
             f"Сформирована: {datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')} (местное время)",
+            span,
             "=" * 78,
         ]
 
         totals = self.conn.execute(
-            """SELECT chat_key, SUM(scanned), SUM(matched), SUM(saved), SUM(forwarded),
-                      SUM(forward_skipped), SUM(forward_failed), SUM(filtered), SUM(too_old),
-                      SUM(deferred), SUM(hidden)
+            """SELECT chat_key, SUM(scanned), SUM(matched), SUM(text_duplicates), SUM(forwarded),
+                      SUM(forward_failed), SUM(filtered), SUM(too_old), SUM(deferred), SUM(hidden),
+                      SUM(filtered_category), SUM(filtered_intent), SUM(filtered_direction),
+                      SUM(cross_chat), SUM(forward_skipped)
                FROM stats GROUP BY chat_key ORDER BY SUM(scanned) DESC"""
         ).fetchall()
-        lines += ["", "ИТОГО ПО ИСТОЧНИКАМ (за всё время)", "-" * 78,
+        lines += ["", f"ИТОГО ПО ИСТОЧНИКАМ ({period})", "-" * 78,
                   f"{'источник':20} {'название':31} {'аккаунт':8} {'прочит':>7} {'найдено':>8} "
-                  f"{'новых':>6} {'переслано':>10} {'фильтр':>7} {'старше':>7}"]
+                  f"{'дубли':>6} {'переслано':>10} {'фильтр':>7} {'старше':>7}"]
         accounts_by_chat = {row[0]: (row[1] or "") for row in self.conn.execute(
             "SELECT chat_key, MAX(account) FROM stats GROUP BY chat_key").fetchall()}
-        for (chat, scanned, matched, saved, forwarded, skipped, failed, filtered, too_old,
-             _deferred, _hidden) in totals:
+        for (chat, scanned, matched, dupes, forwarded, _failed, filtered, too_old,
+             _deferred, _hidden, *_rest) in totals:
             label = (titles.get(chat) or "")[:31]
             who = (accounts_by_chat.get(chat) or "")[:8]
             lines.append(f"{self._chat_ref(chat):20} {label:31} {who:8} {scanned or 0:>7} "
-                         f"{matched or 0:>8} {saved or 0:>6} {forwarded or 0:>10} "
+                         f"{matched or 0:>8} {dupes or 0:>6} {forwarded or 0:>10} "
                          f"{filtered or 0:>7} {too_old or 0:>7}")
-        hidden_total = sum(row[10] or 0 for row in totals)
-        deferred_total = sum(row[9] or 0 for row in totals)
-        lines.append(f"пропущено пересылок (лимит/нельзя переслать): {sum(row[5] or 0 for row in totals)}, "
-                     f"ошибок отправки: {sum(row[6] or 0 for row in totals)}")
+        hidden_total = sum(row[9] or 0 for row in totals)
+        deferred_total = sum(row[8] or 0 for row in totals)
+        failed_total = sum(row[5] or 0 for row in totals)
+        cross_total = sum(row[13] or 0 for row in totals)
+        dupes_total = sum(row[3] or 0 for row in totals)
+        if dupes_total:
+            lines.append(f"дубли: {dupes_total} (из них тот же текст уже пришёл из другого чата: {cross_total})")
         lines.append(f"отложено на добор (следующий прогон): {deferred_total}, "
-                     f"сейчас в очереди: {self.deferred_count()}")
+                     f"сейчас в очереди: {self.deferred_count()}  <- упёрлись в дневной лимит")
+        lines.append(f"ошибок отправки: {failed_total}")
         if hidden_total:
             lines.append(f"пропущено из-за скрытых авторов («hidden by user»): {hidden_total}")
 
+        # какой именно фильтр режет: по первому сработавшему (категория -> намерение -> направление)
+        filtered_rows = [row for row in totals if (row[6] or 0) > 0]
+        if filtered_rows:
+            lines += ["", "ЧТО РЕЖЕТ ФИЛЬТР (считается первый сработавший)", "-" * 78,
+                      f"{'источник':20} {'название':31} {'отсеяно':>8} {'категория':>10} "
+                      f"{'намерение':>10} {'направление':>12} {'без разбивки':>13}"]
+            sums = [0, 0, 0, 0, 0]
+            for row in filtered_rows:
+                chat, total = row[0], row[6] or 0
+                cat, intent, direction = row[10] or 0, row[11] or 0, row[12] or 0
+                rest = max(0, total - cat - intent - direction)
+                for i, value in enumerate((total, cat, intent, direction, rest)):
+                    sums[i] += value
+                lines.append(f"{self._chat_ref(chat):20} {(titles.get(chat) or '')[:31]:31} {total:>8} "
+                             f"{cat:>10} {intent:>10} {direction:>12} {rest:>13}")
+            lines.append(f"{'всего':52} {sums[0]:>8} {sums[1]:>10} {sums[2]:>10} {sums[3]:>12} {sums[4]:>13}")
+            if sums[4]:
+                lines.append("«без разбивки» — отсеяно до того, как радар стал записывать причину.")
+
+        # куда делись найденные: каждая находка попадает ровно в одну строку, итог сходится
+        fate = self.forward_fate()
+        if fate["total"] and (fate["total"] != fate["no_record"]):
+            lines += ["", "ЧТО СТАЛО С НАЙДЕННЫМИ (по базе на сейчас)", "-" * 78,
+                      f"{'найдено и сохранено':62} {fate['total']:>6}",
+                      f"{'  переслано как есть':62} {fate['forwarded']:>6}",
+                      f"{'  отправлено текстом со ссылкой (в чате запрещена пересылка)':62} "
+                      f"{fate['copied_restricted']:>6}"]
+            optional = [
+                ("copied", "  отправлено копией текста (mode: copy)"),
+                ("trial", "  пробные отправки (dry-run / test)"),
+                ("queued", "  ждёт в очереди (упёрлись в дневной лимит)"),
+                ("dead_gone", "  не нашлось в чате при доборе — сообщение удалено"),
+                ("dead_missing", "  не нашлось в базе при доборе"),
+                ("skipped", "  пропущено: пересылка запрещена в чате (fallback: skip)"),
+                ("failed", "  ошибка отправки"),
+                ("other", "  прочее"),
+                ("no_record", "  без записи о пересылке (пересылка не запускалась)"),
+            ]
+            for key, label in optional:
+                if fate[key]:
+                    lines.append(f"{label:62} {fate[key]:>6}")
+            accounted = sum(fate[k] for k in fate if k != "total")
+            if accounted != fate["total"]:       # не должно случаться: значит, в базе рассинхрон
+                lines.append(f"{'  !! не сходится':62} {fate['total'] - accounted:>6}")
+
         # сводка по аккаунтам: видно, кто сколько прочитал, нашёл и отправил
         per_account = self.conn.execute(
-            """SELECT COALESCE(account, '—') AS acc, SUM(scanned), SUM(matched), SUM(saved),
+            """SELECT COALESCE(account, '—') AS acc, SUM(scanned), SUM(matched), SUM(text_duplicates),
                       SUM(forwarded), SUM(hidden)
                FROM stats GROUP BY acc ORDER BY SUM(scanned) DESC"""
         ).fetchall()
         if len(per_account) > 1:
             lines += ["", "ПО АККАУНТАМ", "-" * 78,
-                      f"{'аккаунт':14} {'прочит':>7} {'найдено':>8} {'новых':>6} {'переслано':>10} "
+                      f"{'аккаунт':14} {'прочит':>7} {'найдено':>8} {'дубли':>6} {'переслано':>10} "
                       f"{'скрытых':>8} {'сегодня':>8}"]
-            for acc, scanned, matched, saved, forwarded, hidden in per_account:
+            for acc, scanned, matched, dupes, forwarded, hidden in per_account:
                 today = self.forwarded_today(None if acc == "—" else acc)
-                lines.append(f"{acc[:14]:14} {scanned or 0:>7} {matched or 0:>8} {saved or 0:>6} "
+                lines.append(f"{acc[:14]:14} {scanned or 0:>7} {matched or 0:>8} {dupes or 0:>6} "
                              f"{forwarded or 0:>10} {hidden or 0:>8} {today:>8}")
 
-        lines += ["", f"ПО ДНЯМ (последние {days})", "-" * 78,
-                  f"{'дата':12} {'источник':20} {'название':32} {'прочит':>7} {'найдено':>8} {'переслано':>10}"]
-        rows = self.conn.execute(
-            "SELECT day, chat_key, scanned, matched, saved, forwarded FROM stats "
-            "ORDER BY day DESC LIMIT ?", (days * 20,)
-        ).fetchall()
-        seen_days: list[str] = []
-        for day, chat, scanned, matched, saved, forwarded in rows:
-            if day not in seen_days:
-                seen_days.append(day)
-            if seen_days.index(day) >= days:
-                continue
-            label = (titles.get(chat) or "")[:31]
-            lines.append(f"{day:12} {self._chat_ref(chat):20} {label:32} "
-                         f"{scanned:>7} {matched:>8} {forwarded:>10}")
+        # по дням: days — потолок; показываем дни, которые реально есть в базе
+        day_list = [row[0] for row in self.conn.execute(
+            "SELECT DISTINCT day FROM stats ORDER BY day DESC LIMIT ?", (max(1, int(days)),))]
+        if days_total and len(day_list) < days:
+            days_caption = (f"последние {days} дн. — данных пока за {len(day_list)} "
+                            f"({self._fmt_day(first_day)}–{self._fmt_day(last_day)})")
+        else:
+            days_caption = f"последние {days} дн."
+        lines += ["", f"ПО ДНЯМ ({days_caption})", "-" * 78,
+                  f"{'дата':12} {'источник':20} {'название':32} {'прочит':>7} {'найдено':>8} "
+                  f"{'дубли':>6} {'переслано':>10} {'фильтр':>7}"]
+        if day_list:
+            marks = ",".join("?" for _ in day_list)
+            rows = self.conn.execute(
+                f"SELECT day, chat_key, scanned, matched, text_duplicates, forwarded, filtered "
+                f"FROM stats WHERE day IN ({marks}) ORDER BY day DESC, scanned DESC, chat_key",
+                day_list).fetchall()
+            for day, chat, scanned, matched, dupes, forwarded, filtered in rows:
+                label = (titles.get(chat) or "")[:31]
+                lines.append(f"{day:12} {self._chat_ref(chat):20} {label:32} "
+                             f"{scanned or 0:>7} {matched or 0:>8} {dupes or 0:>6} "
+                             f"{forwarded or 0:>10} {filtered or 0:>7}")
 
         since = self.day_start_utc()
         today = self.conn.execute(
@@ -456,6 +578,14 @@ class HitStore:
         lines += ["", f"СЕГОДНЯ (с местной полуночи): переслано {today}"
                       + (f", ошибок {failed_today}" if failed_today else "")
                       + (f", ждёт отправки {queue_now}" if queue_now else "")]
+        lines += ["", "КАК ЧИТАТЬ", "-" * 78,
+                  "прочит    — сообщений просмотрено (каждое считается один раз)",
+                  "найдено   — прошли правила, не дубль, сохранены как находки",
+                  "дубли     — такое объявление уже было (в этом или другом чате): отброшено",
+                  "переслано — ушло получателю, ВКЛЮЧАЯ добор очереди прошлых суток: за день",
+                  "            может быть больше «найдено» (вчерашнее досылается сегодня)",
+                  "фильтр    — подошли по словам, но срезаны --category/--only-intent/--only-direction",
+                  "старше    — старше окна свежести (--max-age), не уведомляли"]
         return "\n".join(lines) + "\n"
 
     def stats_csv(self, path: str) -> int:
@@ -1210,24 +1340,31 @@ class Monitor:
         return mapping
 
     async def fetch_queued(self, chat_key: str, msg_id: int):
-        """Достаёт исходное сообщение для добора из очереди (None — если его больше нет)."""
+        """Достаёт исходное сообщение для добора из очереди.
+
+        Возвращает сообщение; None — сообщения больше нет (удалено) или источник убран из
+        конфига; FETCH_FAILED — прочитать не удалось (сеть, флуд): оставляем в очереди.
+        """
         mapping = self.entity_by_key()
         entity = mapping.get(chat_key)
         if entity is None:
             target = next((s.target for s in self.sources if self.chat_key(s) == chat_key), None)
             if target is None:
-                return None
+                return None                      # источник убрали из конфига
             try:
                 entity = await call(lambda t=target: self.client.get_entity(t), self.paced,
                                     label=f"get_entity({target})")
-            except Exception:  # noqa: BLE001
-                return None
+            except Exception as exc:  # noqa: BLE001
+                print(f"[!] добор {chat_key}/{msg_id}: чат недоступен ({type(exc).__name__}), "
+                      f"повторим в следующий прогон", file=sys.stderr)
+                return FETCH_FAILED
         try:
             found = await call(lambda: self.client.get_messages(entity, ids=msg_id), self.paced,
                                label="get_messages(queued)")
         except Exception as exc:  # noqa: BLE001
-            print(f"[!] добор {chat_key}/{msg_id}: {type(exc).__name__} {exc}", file=sys.stderr)
-            return None
+            print(f"[!] добор {chat_key}/{msg_id}: {type(exc).__name__} {exc} — "
+                  f"повторим в следующий прогон", file=sys.stderr)
+            return FETCH_FAILED
         if isinstance(found, (list, tuple)):
             found = found[0] if found else None
         return found
@@ -1295,18 +1432,22 @@ class Monitor:
         match = analyze(text, min_score=source.min_score, explain=True, profile=source.profile)
         if not match.matched:
             return None
-        # фильтры: категория, намерение, направление
+        # фильтры: категория, намерение, направление. В статистике видно, КАКОЙ из них срезал
+        # сообщение (считается первый сработавший: категория -> намерение -> направление)
+        rejected = None
         if self.only_categories and match.category not in self.only_categories:
+            rejected = ("category", f"категория {match.category}, нужна {','.join(self.only_categories)}")
+        elif self.only_intents and match.intent not in self.only_intents:
+            rejected = ("intent", f"намерение {match.intent}, нужно {','.join(self.only_intents)}")
+        elif self.only_directions and not direction_allowed(match.direction, self.only_directions):
+            rejected = ("direction", f"направление {match.direction}, нужно {','.join(self.only_directions)}")
+        if rejected:
+            kind, why = rejected
             self.counter["filtered"] += 1
-            self._bump(key, filtered=1)
-            return None
-        if self.only_intents and match.intent not in self.only_intents:
-            self.counter["filtered"] += 1
-            self._bump(key, filtered=1)
-            return None
-        if self.only_directions and match.direction not in self.only_directions:
-            self.counter["filtered"] += 1
-            self._bump(key, filtered=1)
+            self._bump(key, filtered=1, **{f"filtered_{kind}": 1})
+            if self.explain and self.counter["filtered"] <= 10:
+                snippet = " ".join(text.split())[:90]
+                print(f"[i] отсеяно фильтром: {why} — «{snippet}»", file=sys.stderr)
             return None
 
         # автор скрыт («hidden by user»): написать ему нельзя — такое объявление бесполезно
@@ -1387,7 +1528,9 @@ class Monitor:
                 self.counter.get("forwarded" if status in ("forwarded", "copied") else f"forward_{status}", 0) + 1
             if status in ("forwarded", "copied"):
                 self._bump(key, forwarded=1)
-            elif status in ("limit", "skipped"):
+            elif status == "skipped":
+                # пересылка запрещена в чате и fallback=skip. Отложенное из-за дневного
+                # лимита («limit») считается отдельно — колонкой deferred (её пишет Forwarder)
                 self._bump(key, forward_skipped=1)
             elif status.startswith("failed"):
                 self._bump(key, forward_failed=1)

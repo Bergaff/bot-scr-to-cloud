@@ -160,6 +160,36 @@ def detect_geo(text: str) -> tuple[list[str], str]:
     return countries, direction
 
 
+def direction_allowed(direction: str, wanted) -> bool:
+    """Подходит ли направление сообщения под список фильтра --only-direction.
+
+    «?» в ФИЛЬТРЕ — любая страна: «?->PL» берёт всё, что едет в Польшу (BY->PL, RU->PL и
+    «откуда-то->PL»), «BY->?» — всё, что едет из Беларуси. «?» в НАПРАВЛЕНИИ сообщения — страна
+    не определена, такое сообщение подходит только под «?» в фильтре (и под точное «?->PL»).
+    Пустой фильтр пропускает всё.
+    """
+    wanted = [w.strip() for w in (wanted or ()) if w and w.strip()]
+    if not wanted:
+        return True
+
+    def split(value: str) -> tuple[str, str]:
+        if "->" in value:
+            left, right = value.split("->", 1)
+            return left.strip() or "?", right.strip() or "?"
+        return "?", "?"
+
+    origin, dest = split(direction or "?")
+    for pattern in wanted:
+        if pattern == direction:
+            return True
+        want_origin, want_dest = split(pattern)
+        if ("->" in pattern
+                and (want_origin == "?" or want_origin == origin)
+                and (want_dest == "?" or want_dest == dest)):
+            return True
+    return False
+
+
 # ------------------------------------------------------------------ матчер
 
 @dataclass
@@ -301,7 +331,7 @@ def main() -> None:
         matches = [m for m in matches if m.intent in wanted]
     if args.only_direction:
         wanted = {x.strip() for x in args.only_direction.split(",") if x.strip()}
-        matches = [m for m in matches if m.direction in wanted]
+        matches = [m for m in matches if direction_allowed(m.direction, wanted)]
     for match in matches:
         print(match.line())
     print(f"\nсовпало {len(matches)} из {len(texts)} сообщений (min-score={args.min_score})", file=sys.stderr)
