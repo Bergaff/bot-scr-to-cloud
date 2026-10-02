@@ -204,6 +204,53 @@ sources:
     min_score: 5
     catchup: 50
 
+  # ─── Добавлено 02.10.2026: ещё чаты для second ───────────────────────────────
+  # Пять приватных чатов по ссылке-приглашению: радар вступит сам (--auto-join в RADAR_ARGS),
+  # но не больше 3 вступлений за проход — остальные дойдут в следующие проходы (раз в 10 минут).
+  # Названия не заданы специально: в статистике и уведомлениях подставится настоящее имя чата.
+  # Если чат требует одобрения админа, вступление зависнет «на рассмотрении» — смотри /sources-check.
+  - target: "https://t.me/joinchat/4gwb980qKeE0OGJi"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "https://t.me/joinchat/GpArF0ipVLllNDUy"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "https://t.me/joinchat/J8goGqMqtOI4YzBi"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "https://t.me/joinchat/LIowGvUxfGUwYTcy"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "https://t.me/joinchat/P_Fc6Qu0BF05MDEy"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@thailand_sng"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@pkhuket2"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
   # ─── Выключенные примеры (раскомментируй, если понадобятся) ─────────────────
   # - target: "@granica_polsha"        # новостной канал
   #   profile: news

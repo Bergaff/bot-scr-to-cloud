@@ -182,6 +182,55 @@
       "profile": "chat",
       "min_score": 5,
       "catchup": 50
+    },
+    {
+      "target": "https://t.me/joinchat/4gwb980qKeE0OGJi",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "https://t.me/joinchat/GpArF0ipVLllNDUy",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "https://t.me/joinchat/J8goGqMqtOI4YzBi",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "https://t.me/joinchat/LIowGvUxfGUwYTcy",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "https://t.me/joinchat/P_Fc6Qu0BF05MDEy",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@thailand_sng",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@pkhuket2",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
     }
   ]
 }

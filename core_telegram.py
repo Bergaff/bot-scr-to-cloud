@@ -162,14 +162,21 @@ def invite_hash(target: str) -> str | None:
     return None
 
 
+# Сколько вступлений по приглашениям за один проход. Пачка вступлений подряд — частая причина
+# FloodWait и ограничений у молодого аккаунта; остальные вступят в следующие проходы (раз в 10 минут).
+MAX_JOINS_PER_PASS = 3
+
+
 async def resolve_targets(client, targets: list[str], paced: Paced,
-                          auto_join: bool = False) -> dict[str, object]:
+                          auto_join: bool = False,
+                          max_joins: int = MAX_JOINS_PER_PASS) -> dict[str, object]:
     """'@chat' / 'https://t.me/name' / 'https://t.me/+invite' / '-100…' -> entity.
 
     Для приватных ссылок-приглашений: если аккаунт уже в чате — разрешается сразу;
     если нет и включён auto_join — подписываемся (ImportChatInvite) и только потом читаем.
     Ошибки по одной цели не роняют остальные."""
     resolved: dict[str, object] = {}
+    joins_done = 0
     for raw in targets:
         target = raw.strip()
         if not target:
@@ -180,6 +187,12 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
             hash_ = invite_hash(target)
             not_member = "not part of" in str(exc) or "Cannot get entity" in str(exc)
             if hash_ and not_member and auto_join:
+                if max_joins and joins_done >= max_joins:
+                    print(f"[i] вступление в {target} отложено: за проход не больше {max_joins} "
+                          f"вступлений (чтобы не злить Telegram), дойдёт в следующий проход",
+                          file=sys.stderr)
+                    continue
+                joins_done += 1
                 entity = await _join_by_invite(client, target, hash_, paced)
                 if entity is None:
                     continue

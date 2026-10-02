@@ -575,6 +575,15 @@ async def main() -> None:
     checks.append(("если аккаунт уже в чате — подписка не нужна",
                    len(resolved3) == 1 and not already_client.joined, ""))
 
+    # пачка приглашений: за проход вступаем не больше лимита, остальное — в следующий раз
+    batch_client = InviteClient()
+    batch_links = [f"https://t.me/joinchat/Hash{i}" for i in range(5)]
+    batch = await resolve_targets(batch_client, batch_links, Paced(0), auto_join=True)
+    checks.append(("пачка приглашений: за проход вступаем не больше 3, остальные ждут следующего",
+                   len(batch) == 3 and len(batch_client.joined) == 3, f"подписок: {len(batch_client.joined)}"))
+    batch_all = await resolve_targets(InviteClient(already_member=True), batch_links, Paced(0), auto_join=True)
+    checks.append(("лимит вступлений не мешает чатам, где аккаунт уже состоит", len(batch_all) == 5, ""))
+
     # ссылки: публичный чат и приватный
     checks.append(("ссылка публичного чата", message_link("travelersminsk", -1001, 91532) == "https://t.me/travelersminsk/91532", ""))
     checks.append(("ссылка приватного чата (t.me/c)", message_link(None, -1001234567890, 55) == "https://t.me/c/1234567890/55", ""))
