@@ -89,6 +89,19 @@ async def main() -> None:
     checks.append((f"реклама/новости/вакансии отсеяны: {len(neg) - len(false_neg)}/{len(neg)}", not false_neg, ""))
     checks.append((f"новостной канал (profile=news): ложных {len(false_news)}/{len(news)}",
                    len(false_news) <= max(2, len(news) * 0.02), ""))
+    # реальные объявления из чатов (23.09.2026, телефоны и ники убраны): нужны при ОБОИХ порогах —
+    # 4 (@travelersminsk) и 5 (остальные чаты)
+    real_pos = [json.loads(line)["text"] for line in
+                (TESTS / "real_pos.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    for threshold in (4, 5):
+        real_missed = [t for t in real_pos if not analyze(t, min_score=threshold).matched]
+        checks.append((f"реальные объявления из чатов найдены (порог {threshold}): "
+                       f"{len(real_pos) - len(real_missed)}/{len(real_pos)}", not real_missed, ""))
+        for text in real_missed:
+            print(f"   пропущено (порог {threshold}): {text[:80]!r}")
+        neg_missed = [t for t in neg if analyze(t, min_score=threshold).matched]
+        checks.append((f"шум и вопросы не проходят при пороге {threshold}: {len(neg) - len(neg_missed)}/{len(neg)}",
+                       not neg_missed, ""))
     for text in missed_pos:
         print(f"   пропущено: {text[:80]}")
     for text in false_neg:
