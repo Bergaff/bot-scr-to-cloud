@@ -98,7 +98,7 @@ python3 monitor.py --check-sessions                          # живая про
 В личке бота: `/status` (режим, аптайм, находки и пересылки сегодня, очередь, ошибки),
 `/accounts` (**жив ли каждый аккаунт**: «работает» или «молчит 34 мин»), `/stats 7`, `/report`,
 `/queue`, `/last 10`, `/usage` (память, CPU, размер базы и вердикт «A подходит / рекомендую B»),
-`/errors`, `/sources`, `/top`, `/limits`, `/mode`, `/ping`, `/why <id>`, `/export`, `/digest on|off`.
+`/errors`, `/sources`, `/top`, `/limits`, `/mode`, `/ping`, `/why <id>`, `/export`, `/digest on|off`, `/version` (какая версия обновления работает в облаке).
 Полный список — `/help` и раздел 8 в `COMMANDS.md`.
 
 Живость считается по **пульсу** (`--heartbeat` пишет строку в базу раз в N минут), а не по

@@ -3006,6 +3006,11 @@ async def async_main(args) -> None:
 
     # метка сборки: по ней видно, какой код реально работает в облаке (см. DEPLOY.md)
     print(f"[i] код: monitor.py {build_marker()}", file=sys.stderr)
+    try:
+        import release as release_module
+        print(f"[i] {release_module.short_line()}", file=sys.stderr)
+    except Exception:                                             # noqa: BLE001
+        pass
 
     # команды из Telegram: /status, /cost, /last, /sources… разбираем в конце прохода
     if getattr(args, "once", False) and tg_commands_enabled(args):

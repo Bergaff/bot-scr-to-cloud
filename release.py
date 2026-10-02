@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""
+Версия установленного обновления — чтобы после деплоя видеть, что в облаке работает новый код.
+
+Что показывается (бот: /version, строка в /status, хвост лога прохода):
+  * RELEASE  — номер релиза, который правится ВРУЧНУЮ вместе с CHANGELOG (одна строка на релиз);
+  * код      — 8 символов sha256 по всем рабочим файлам радара: считается сам, поэтому меняется
+               даже если про RELEASE забыли — деплой всё равно будет виден;
+  * конфиг   — то же по sources.yaml, который РЕАЛЬНО читает проход (из репозитория или из R2);
+  * коммит   — если сборка передала его в переменную окружения (RADAR_COMMIT и аналоги).
+
+Как проверить деплой: до выкладки запомни «код», после выкладки и одного прохода (до 10 минут)
+пришли /version — если «код» и RELEASE изменились, новый образ работает.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+
+RELEASE = "2026.10.02-3"
+
+# Новое — сверху. Одна строка на релиз: что изменилось для пользователя.
+CHANGELOG = [
+    ("2026.10.02-3", "команда /version; +7 чатов для second; не больше 3 вступлений за проход"),
+    ("2026.10.02-2", "матчер: пакет/конверт/оказия, «кто-то летит», «еду + маршрут + посылки»"),
+    ("2026.10.02-1", "статистика: судьба находок, причины отсева фильтра, дубли; фильтр ?->PL"),
+]
+
+# Файлы, от которых зависит поведение радара в контейнере.
+CODE_FILES = (
+    "monitor.py", "matcher.py", "forwarder.py", "core_telegram.py", "bot_panel.py", "metrics.py",
+    "release.py", "deploy/cloud_entry.py", "deploy/r2_state.py",
+)
+CONFIG_FILE = "sources.yaml"
+COMMIT_ENV = ("RADAR_COMMIT", "WORKERS_CI_COMMIT_SHA", "GIT_COMMIT", "SOURCE_COMMIT")
+
+ROOT = Path(__file__).resolve().parent
+
+
+def _digest(paths: list[Path]) -> str:
+    """8 символов sha256 по именам и содержимому файлов; «?» — если ни один не прочитался."""
+    digest = hashlib.sha256()
+    found = False
+    for path in paths:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        found = True
+        digest.update(path.name.encode("utf-8"))
+        digest.update(data)
+    return digest.hexdigest()[:8] if found else "?"
+
+
+def code_hash(root: Path | None = None) -> str:
+    base = Path(root) if root else ROOT
+    return _digest([base / name for name in CODE_FILES])
+
+
+def config_hash(root: Path | None = None) -> str:
+    base = Path(root) if root else ROOT
+    cwd_copy = Path.cwd() / CONFIG_FILE            # проход запускается из рабочей папки
+    path = cwd_copy if cwd_copy.exists() else base / CONFIG_FILE
+    return _digest([path])
+
+
+def commit(env: dict | None = None) -> str:
+    env = os.environ if env is None else env
+    for name in COMMIT_ENV:
+        value = (env.get(name) or "").strip()
+        if value:
+            return value[:8]
+    return ""
+
+
+def describe(root: Path | None = None) -> dict:
+    return {"release": RELEASE, "code": code_hash(root), "config": config_hash(root),
+            "commit": commit(), "changelog": list(CHANGELOG)}
+
+
+def short_line(root: Path | None = None) -> str:
+    """Одна строка для /status и лога: «релиз 2026.10.02-3 · код a1b2c3d4»."""
+    info = describe(root)
+    return f"релиз {info['release']} · код {info['code']}" + (f" · коммит {info['commit']}" if info["commit"] else "")
+
+
+if __name__ == "__main__":
+    print(short_line())

@@ -788,6 +788,30 @@ async def main() -> None:
     checks.append(("/cost есть в справке бота, иначе её не найти",
                    any(line[0] == "cost" for line in HELP_LINES), ""))
 
+    section("15b. /version: видно, что деплой дошёл")
+    import release as release_module
+    ver_panel = BotPanel(HitStore(":memory:"), transport=object())
+    ver = ver_panel.dispatch("/version").text
+    info = release_module.describe()
+    checks.append(("/version показывает релиз, код и конфиг", info["release"] in ver
+                   and f"Код: {info['code']}" in ver and "Конфиг sources.yaml" in ver, ver.splitlines()[0]))
+    checks.append(("/version есть в справке и в меню бота", any(line[0] == "version" for line in HELP_LINES), ""))
+    checks.append(("/status тоже несёт версию (последняя строка)",
+                   release_module.short_line() in ver_panel.dispatch("/status").text, ""))
+    checks.append(("первая строка CHANGELOG совпадает с RELEASE (не забыли записать, что нового)",
+                   release_module.CHANGELOG[0][0] == release_module.RELEASE, release_module.RELEASE))
+    fake_root = WORKDIR / "ver_root"
+    (fake_root / "deploy").mkdir(parents=True, exist_ok=True)
+    (fake_root / "monitor.py").write_text("print(1)\n", encoding="utf-8")
+    before = release_module.code_hash(fake_root)
+    (fake_root / "monitor.py").write_text("print(2)\n", encoding="utf-8")
+    after = release_module.code_hash(fake_root)
+    checks.append(("хеш кода меняется при любой правке рабочего файла — деплой виден без ручной версии",
+                   before != after and len(before) == 8 and before != "?", f"{before} -> {after}"))
+    checks.append(("коммит берётся из окружения, если сборка его передала",
+                   release_module.commit({"RADAR_COMMIT": "0123456789abcdef"}) == "01234567"
+                   and release_module.commit({}) == "", ""))
+
     section("16. Меню бота: команды видны в Telegram, а не только в голове")
 
     class MenuTransport(FakeTransport):

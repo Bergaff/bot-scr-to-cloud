@@ -39,6 +39,7 @@ from pathlib import Path
 
 from core_telegram import BOT_TOKEN_HINT
 import metrics as metrics_module
+import release as release_module
 
 API_URL = "https://api.telegram.org"
 MESSAGE_LIMIT = 4000            # реальный лимит Bot API 4096 — берём с запасом на пометки
@@ -67,6 +68,7 @@ HELP_LINES = [
     ("limits", "лимиты пересылок и сколько осталось по аккаунтам"),
     ("why <id|ссылка>", "почему сообщение взяли или не взяли"),
     ("cost", "стоимость работы в облаке: расход и сколько это в деньгах"),
+    ("version", "версия обновления: релиз, код и конфиг — видно, что деплой дошёл"),
 ]
 
 COMMANDS = {line[0].split()[0] for line in HELP_LINES}
@@ -879,7 +881,29 @@ class BotPanel:
             updated = self.store.last_heartbeat()
             age = minutes_ago(updated.get("ts")) if updated else None
             lines.append(f"Данные из базы (обновлено {ago_text(age)})")
-        lines.append(f"Обновлено: {datetime.now().astimezone().strftime('%H:%M')}")
+        lines.append(f"Обновлено: {datetime.now().astimezone().strftime('%H:%M')} · {release_module.short_line()}")
+        return "\n".join(lines)
+
+    def cmd_version(self) -> str:
+        """Какая версия реально работает: после деплоя «код» и релиз должны смениться."""
+        info = release_module.describe()
+        lines = [f"🧩 Версия радара: релиз {info['release']}",
+                 f"Код: {info['code']} (хеш рабочих файлов — меняется при любом обновлении)",
+                 f"Конфиг sources.yaml: {info['config']}"
+                 + (f" · чатов {sum(v.chats for v in self.known_accounts()) or len(self.titles)}"
+                    if (self.accounts or self.titles) else "")]
+        if info["commit"]:
+            lines.append(f"Коммит: {info['commit']}")
+        start = self.store.last_heartbeat(kind="start")
+        if start and start.get("ts"):
+            age = minutes_ago(start["ts"])
+            lines.append(f"Последний запуск радара: {local_time(start['ts'])} ({ago_text(age)})")
+        lines.append("")
+        lines.append("Что нового:")
+        lines += [f"  {name} — {text}" for name, text in info["changelog"][:3]]
+        lines.append("")
+        lines.append("Как проверить деплой: запомни «Код» сейчас, после выкладки и одного прохода "
+                     "(до 10 минут) отправь /version ещё раз — код и релиз должны смениться.")
         return "\n".join(lines)
 
     def cmd_accounts(self) -> str:
