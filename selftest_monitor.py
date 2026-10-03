@@ -255,6 +255,85 @@ async def main() -> None:
     checks.append(("добранное попало в статистику по своему чату",
                    "granica_by_lt_pl" in mstore.stats_report(), ""))
 
+    # ---------- большая очередь не съедает проход: время на добор ограничено, чтение — пачкой
+    bq_store = HitStore(":memory:")
+    bq_entity = FakeEntity(-1001999888777, "Граница BY-LT-PL", "granica_BY_LT_PL")
+    bq_msgs = {}
+
+    class BatchClient:
+        def __init__(self):
+            self.forwarded, self.get_calls = [], []
+        async def get_entity(self, target):
+            return FakeEntity(500500, "parcel_transfer_bot", "parcel_transfer_bot") \
+                if "@parcel" in str(target) else bq_entity
+        async def get_messages(self, ent, ids=None, limit=None, **kwargs):
+            self.get_calls.append(ids)
+            if isinstance(ids, list):
+                return [bq_msgs.get(i) for i in ids]
+            return bq_msgs.get(ids)
+        async def forward_messages(self, target, messages=None):
+            self.forwarded.append(messages[0].id)
+
+    for mid in range(7001, 7007):
+        bq_msgs[mid] = SimpleNamespace(id=mid, text="Еду Брест-Варшава, возьму передачу", date=NOW,
+                                       sender_id=1, out=False, chat_id=-1001999888777,
+                                       chat_title="Граница BY-LT-PL")
+        bq_store.save_hit(dict(mon_hit, msg_id=mid, link=f"https://t.me/granica_BY_LT_PL/{mid}"))
+        bq_store.queue_forward("granica_by_lt_pl", mid)
+    del bq_msgs[7006]                       # это сообщение автор удалил
+
+    bq_client = BatchClient()
+    bq_fwd = Forwarder(bq_client, "@parcel_transfer_bot", bq_store, Paced(0), max_per_day=100)
+    await bq_fwd.prepare()
+    bq_src = Source(target="@granica_BY_LT_PL", title="Граница BY-LT-PL", profile="chat", min_score=5, catchup=20)
+    bq_mon = Monitor(bq_client, bq_store, [bq_src], lambda hit: None, Paced(0), forwarder=bq_fwd)
+    bq_mon.entities = {bq_src.target: bq_entity}
+    bq_mon.meta = {bq_src.target: bq_src}
+    bq_result = await bq_mon.flush_deferred()
+    checks.append(("добор читает очередь пачкой: 6 сообщений — один запрос в Telegram, а не шесть",
+                   len(bq_client.get_calls) == 1 and len(bq_client.get_calls[0]) == 6, str(bq_client.get_calls)))
+    checks.append(("добор пачкой: пять ушло, удалённое списано, очередь пуста",
+                   bq_result.get("sent") == 5 and bq_result.get("gone") == 1
+                   and bq_store.deferred_count() == 0 and bq_client.forwarded == [7001, 7002, 7003, 7004, 7005],
+                   str(bq_result)))
+
+    # время вышло: добор останавливается, остаток очереди цел
+    tb_store = HitStore(":memory:")
+    for mid in range(7101, 7106):
+        bq_msgs[mid] = SimpleNamespace(id=mid, text="Еду Брест-Варшава, возьму передачу", date=NOW,
+                                       sender_id=1, out=False, chat_id=-1001999888777,
+                                       chat_title="Граница BY-LT-PL")
+        tb_store.save_hit(dict(mon_hit, msg_id=mid, link=f"https://t.me/granica_BY_LT_PL/{mid}"))
+        tb_store.queue_forward("granica_by_lt_pl", mid)
+    tb_client = BatchClient()
+    tb_fwd = Forwarder(tb_client, "@parcel_transfer_bot", tb_store, Paced(0), max_per_day=100)
+    await tb_fwd.prepare()
+    stops = iter([False, False, True, True, True, True, True])
+    tb_result = await tb_fwd.flush_deferred(
+        lambda k, m: asyncio.sleep(0, result=bq_msgs.get(m)), should_stop=lambda: next(stops))
+    checks.append(("добор вышел по времени: отправлено 2, остальные 3 ждут следующего прохода",
+                   tb_result["sent"] == 2 and tb_result["leftover"] == 3 and tb_result["timeboxed"] is True
+                   and tb_store.deferred_count() == 3, str(tb_result)))
+
+    # бюджет прохода почти исчерпан (осталось меньше 30 с): добор не начинается вовсе
+    ob_store = HitStore(":memory:")
+    ob_store.save_hit(dict(mon_hit, msg_id=7201, link="https://t.me/granica_BY_LT_PL/7201"))
+    ob_store.queue_forward("granica_by_lt_pl", 7201)
+    bq_msgs[7201] = SimpleNamespace(id=7201, text="Еду Брест-Варшава, возьму передачу", date=NOW,
+                                    sender_id=1, out=False, chat_id=-1001999888777,
+                                    chat_title="Граница BY-LT-PL")
+    ob_client = BatchClient()
+    ob_fwd = Forwarder(ob_client, "@parcel_transfer_bot", ob_store, Paced(0), max_per_day=100)
+    await ob_fwd.prepare()
+    ob_mon = Monitor(ob_client, ob_store, [bq_src], lambda hit: None, Paced(0), forwarder=ob_fwd,
+                     deadline=time.monotonic() + 10)
+    ob_mon.entities = {bq_src.target: bq_entity}
+    ob_mon.meta = {bq_src.target: bq_src}
+    ob_result = await ob_mon.flush_deferred()
+    checks.append(("мало времени до конца бюджета: добор уступает место остальному проходу",
+                   ob_result.get("sent") == 0 and ob_result.get("timeboxed") is True
+                   and ob_store.deferred_count() == 1 and not ob_client.forwarded, str(ob_result)))
+
     # ---------- скрытые авторы («hidden by user»): такие не пересылаем
     from telethon.tl import types as _t
 

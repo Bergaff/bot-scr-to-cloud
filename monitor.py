@@ -40,6 +40,8 @@ from core_telegram import (BOT_TOKEN_HINT, FloodWaitTooLong, Paced, add_flood_ho
 from forwarder import FETCH_FAILED
 from matcher import analyze, direction_allowed
 
+_MISSING = object()          # «в кэше пачки ничего нет» (None в кэше значит «сообщение удалено»)
+
 HEADERS_TXT = {
     "parcel": "ПОСЫЛКА/ПЕРЕДАЧА", "ride": "ПОПУТЧИК/ПАССАЖИР",
     "mixed": "ПОСЫЛКИ+ПОПУТЧИКИ", "any": "СИГНАЛ",
@@ -1290,6 +1292,7 @@ class Monitor:
         # очередь пересылок. Поэтому радар сам следит за временем и не начинает новые чаты,
         # когда пора заканчивать. deadline=None — читать всё (живой режим, своя машина).
         self.deadline = deadline
+        self._queued_cache: dict = {}         # пачка сообщений очереди, прочитанная одним запросом
         self.flood_wait_limit = float(flood_wait_limit or 0.0)
         self.catchup_left: list[str] = []          # чаты, до которых не дошли в этот проход
         self.paced.max_wait = self.flood_budget    # подсказка для call(): сколько можно спать
@@ -1358,13 +1361,26 @@ class Monitor:
                 print(f"[!] добор {chat_key}/{msg_id}: чат недоступен ({type(exc).__name__}), "
                       f"повторим в следующий прогон", file=sys.stderr)
                 return FETCH_FAILED
+        cached = self._queued_cache.pop((chat_key, msg_id), _MISSING)
+        if cached is not _MISSING:
+            return cached
+        # Одним запросом берём сразу пачку из очереди по этому чату (до 50 id): раньше каждое
+        # сообщение стоило отдельного запроса с паузой ~2,5 с — на очереди в сотни это часы.
+        ids = [m for k, m in self.store.deferred_queue(self.forwarder.account or None)
+               if k == chat_key][:50] if self.forwarder is not None else []
+        if msg_id not in ids:
+            ids = [msg_id]
         try:
-            found = await call(lambda: self.client.get_messages(entity, ids=msg_id), self.paced,
+            found = await call(lambda: self.client.get_messages(entity, ids=ids), self.paced,
                                label="get_messages(queued)")
         except Exception as exc:  # noqa: BLE001
             print(f"[!] добор {chat_key}/{msg_id}: {type(exc).__name__} {exc} — "
                   f"повторим в следующий прогон", file=sys.stderr)
             return FETCH_FAILED
+        if isinstance(found, (list, tuple)) and len(found) == len(ids):
+            for one_id, one in zip(ids, found):
+                self._queued_cache[(chat_key, one_id)] = one
+            return self._queued_cache.pop((chat_key, msg_id), None)
         if isinstance(found, (list, tuple)):
             found = found[0] if found else None
         return found
@@ -1376,7 +1392,17 @@ class Monitor:
         before = self.store.deferred_count()
         if not before:
             return {}
-        result = await self.forwarder.flush_deferred(self.fetch_queued)
+        # На добор — не больше половины оставшегося бюджета (и не меньше 30 с на хвост): иначе
+        # очередь в сотни находок съедала весь проход, а остальные чаты и запись состояния
+        # не успевали. Остаток очереди никуда не девается — уйдёт в следующий проход.
+        stop_at = None
+        if self.deadline is not None:
+            stop_at = time.monotonic() + self.time_left() * 0.5
+        result = await self.forwarder.flush_deferred(
+            self.fetch_queued,
+            should_stop=(lambda: time.monotonic() >= stop_at or self.time_left() < 30)
+            if stop_at is not None else None)
+        self._queued_cache.clear()
         if result.get("sent"):
             self.counter["forwarded"] = self.counter.get("forwarded", 0) + result["sent"]
         return result

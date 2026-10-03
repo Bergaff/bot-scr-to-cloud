@@ -427,6 +427,14 @@ async def main() -> None:
                    "catch-up @a" in saved_log and "[!] flood" in saved_log
                    and "оборван по таймауту" in saved_log, saved_log[:80].replace("\n", " | ")))
 
+    # Самое важное при таймауте: состояние всё равно возвращается в R2. Иначе каждый проход
+    # начинается со старой базы и повторяет прежнюю работу (дубли пересылок, очередь стоит).
+    checks.append(("таймаут: база и сессия всё равно уходят в R2 (иначе каждый проход с нуля)",
+                   slow_result.get("timeout") is True
+                   and slow_result.get("saved", {}).get("db") in ("ok", "skipped")
+                   and slow_result["saved"]["sessions"]["monitor_session"] in ("ok", "skipped"),
+                   json.dumps(slow_result.get("saved"), ensure_ascii=False)[:80]))
+
     def broken_run(command, **kwargs):
         return types.SimpleNamespace(returncode=2, stdout="", stderr="[!] ошибка сессии: AUTH_KEY_UNREGISTERED\n")
 

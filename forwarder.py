@@ -147,7 +147,7 @@ class Forwarder:
 
     # ------------------------------------------------------------------ добор очереди
 
-    async def flush_deferred(self, fetch) -> dict:
+    async def flush_deferred(self, fetch, should_stop=None) -> dict:
         """Отправляет то, что не влезло в лимит в прошлые сутки.
 
         fetch(chat_key, msg_id) — как достать исходное сообщение (даёт Monitor).
@@ -155,8 +155,11 @@ class Forwarder:
         (mode=dead, они видны в статистике отдельной строкой). Если сообщение просто не удалось
         прочитать (сбой сети, флуд) — оно остаётся в очереди до следующего прогона.
         Порядок: сначала самое старое. Свободен весь дневной лимит, но он общий с новыми находками.
+        should_stop() — «пора заканчивать» (кончился отведённый на добор кусок бюджета прохода):
+        остаток очереди не теряется, а ждёт следующего прохода. Без этого большая очередь
+        (каждая отправка — две паузы по ~2,5 с) съедала весь проход, и его обрывал таймаут.
         """
-        result = {"sent": 0, "failed": 0, "gone": 0, "leftover": 0, "retry": 0}
+        result = {"sent": 0, "failed": 0, "gone": 0, "leftover": 0, "retry": 0, "timeboxed": False}
         queue = self.store.deferred_queue(self.account or None)
         if not queue:
             return result
@@ -167,6 +170,10 @@ class Forwarder:
             print("[i] добор: dry-run — ничего не отправляю, очередь не трогаю", file=sys.stderr)
             return result
         for chat_key, msg_id in queue:
+            if result["timeboxed"] or (should_stop is not None and should_stop()):
+                result["timeboxed"] = True
+                result["leftover"] += 1
+                continue
             if self._cap_reached():
                 result["leftover"] += 1
                 continue
@@ -198,7 +205,9 @@ class Forwarder:
                 result["failed"] += 1
         print(f"[i] добор: отправлено {result['sent']}, не нашлось {result['gone']}, "
               f"ошибок {result['failed']}, осталось в очереди ещё {result['leftover']}"
-              + (f" (из них {result['retry']} не удалось прочитать — повторим)" if result["retry"] else ""),
+              + (f" (из них {result['retry']} не удалось прочитать — повторим)" if result["retry"] else "")
+              + (" — время, отведённое на добор, вышло, остальное в следующем проходе"
+                 if result["timeboxed"] else ""),
               file=sys.stderr)
         return result
 
