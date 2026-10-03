@@ -2568,6 +2568,27 @@ def env_flag(name: str, default: bool = True) -> bool:
     return default
 
 
+async def handle_tg_commands(args, store, accounts, label: str = "") -> int:
+    """Разбор команд из Telegram с понятным логом; ошибка бота проход не роняет."""
+    if not getattr(args, "once", False):
+        return 0
+    if not tg_commands_enabled(args):
+        # молчание выглядит как поломка: пишем причину, а не просто ничего
+        if label != "в конце прохода":
+            print(f"[i] команды из Telegram выключены: {tg_commands_reason(args)}", file=sys.stderr)
+        return 0
+    try:
+        answered = await answer_pending_commands(store, accounts, stats_file=args.stats_file)
+        if answered:
+            print(f"[i] ответили на команд из Telegram ({label}): {answered}", file=sys.stderr)
+        return answered
+    except Exception as exc:                                  # не роняем проход из-за бота
+        print(f"[!] команды из Telegram не обработаны: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        store.log_error("TgCommands", f"{type(exc).__name__}: {exc}"[:300])
+        return 0
+
+
 def tg_commands_enabled(args) -> bool:
     """Нужно ли разбирать команды из Telegram в конце прохода.
 
@@ -2960,6 +2981,10 @@ async def async_main(args) -> None:
     pass_started = time.time()
 
     if args.once:
+        # Команды бота — ПЕРВЫМ делом, до чтения чатов. Раньше их разбирали только в самом конце
+        # прохода, и если проход обрывался (а он обрывался каждый раз), бот молчал на /status
+        # и /version часами. Теперь ответ приходит в течение одного интервала cron в любом случае.
+        await handle_tg_commands(args, store, accounts, label="в начале прохода")
         try:
             for acc, client, monitor in runners:
                 prefix = f"[{acc.name}] " if multi else ""
@@ -3038,21 +3063,9 @@ async def async_main(args) -> None:
     except Exception:                                             # noqa: BLE001
         pass
 
-    # команды из Telegram: /status, /cost, /last, /sources… разбираем в конце прохода
-    if getattr(args, "once", False) and tg_commands_enabled(args):
-        try:
-            answered = await answer_pending_commands(store, accounts,
-                                                     stats_file=args.stats_file)
-            if answered:
-                print(f"[i] ответили на команд из Telegram: {answered}", file=sys.stderr)
-        except Exception as exc:                                  # не роняем проход из-за бота
-            print(f"[!] команды из Telegram не обработаны: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
-            store.log_error("TgCommands", f"{type(exc).__name__}: {exc}"[:300])
-    elif getattr(args, "once", False):
-        # молчание выглядит как поломка: пишем причину, а не просто ничего
-        print(f"[i] команды из Telegram выключены: {tg_commands_reason(args)}",
-              file=sys.stderr)
+    # команды из Telegram: /status, /cost, /last, /sources… ещё раз в конце прохода (то, что
+    # пришло, пока он шёл); основной разбор — в начале, см. ниже
+    await handle_tg_commands(args, store, accounts, label="в конце прохода")
 
     # файл статистики: откуда и сколько сообщений идёт
     if args.stats_file:

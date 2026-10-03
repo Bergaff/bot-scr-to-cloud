@@ -2058,6 +2058,25 @@ async def main() -> None:
                    "команды из Telegram выключены: {tg_commands_reason(args)}" in mon_src
                    and "def tg_commands_reason" in mon_src, ""))
 
+    # команды бота разбираются ДО чтения чатов: оборванный проход не должен глушить бота
+    first_call = mon_src.find('handle_tg_commands(args, store, accounts, label="в начале прохода")')
+    resolve_call = mon_src.find("resolved = await resolve_targets(client, [s_.target")
+    checks.append(("команды бота разбираются в начале прохода, до resolve_targets",
+                   0 < first_call < resolve_call, f"{first_call} < {resolve_call}"))
+
+    async def boom_commands(*a, **k):
+        raise RuntimeError("bot api недоступен")
+    real_apc = monitor_module.answer_pending_commands
+    monitor_module.answer_pending_commands = boom_commands
+    hc_store = HitStore(":memory:")
+    hc_args = SimpleNamespace(once=True, tg_commands="on", stats_file="stats.txt")
+    try:
+        hc_answered = await monitor_module.handle_tg_commands(hc_args, hc_store, [], label="в начале прохода")
+    finally:
+        monitor_module.answer_pending_commands = real_apc
+    checks.append(("сбой бота при разборе команд не роняет проход, а пишется в ошибки",
+                   hc_answered == 0, str(hc_answered)))
+
     # ---------------------------------------------------------- фильтры и статистика: прозрачность
     section("Фильтры: подстановка «?», причины отсева; статистика: судьба находок")
     from matcher import direction_allowed
