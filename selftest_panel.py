@@ -812,6 +812,54 @@ async def main() -> None:
                    release_module.commit({"RADAR_COMMIT": "0123456789abcdef"}) == "01234567"
                    and release_module.commit({}) == "", ""))
 
+    section("15c. Аккаунты по Telegram-id, привязка чатов, выход из аккаунта")
+    import json as _json
+    acc_store = HitStore(":memory:")
+    acc_panel = BotPanel(acc_store, transport=object(), accounts=[
+        AccountView(name="main", session="monitor_session", max_per_day=180, chats=2),
+        AccountView(name="second", session="second_session", max_per_day=120, chats=2)])
+    put = lambda key, value: acc_store.bot_state_set(key, _json.dumps(value, ensure_ascii=False))   # noqa: E731
+    put("account:main:me", {"id": 8125160821, "name": "Иван", "username": "ivan", "ts": NOW.isoformat()})
+    put("account:main:login", {"ok": True, "ts": NOW.isoformat(), "since": NOW.isoformat()})
+    put("account:main:chats", {"ts": NOW.isoformat(), "items": [
+        {"target": "@a", "title": "Граница Польша", "id": -1001111111111, "status": "ok", "note": ""},
+        {"target": "https://t.me/+Zz", "title": "Закрытый чат", "id": None, "status": "pending",
+         "note": "заявка на вступление отправлена, ждёт одобрения админа"}]})
+    put("account:second:login", {"ok": False, "ts": NOW.isoformat(), "since": NOW.isoformat(),
+                                 "kind": "AuthKeyDuplicatedError", "text": "Файл сессии повреждён"})
+    put("account:second:chats", {"ts": NOW.isoformat(), "items": [
+        {"target": "@b", "title": "Посылки Минск", "id": -1002222222222, "status": "no_login", "note": ""}]})
+    put("account:second:session", {"status": "imported", "sha": "abcd1234", "at": NOW.isoformat(),
+                                   "checked": NOW.isoformat()})
+    accounts_text = acc_panel.dispatch("/accounts").text
+    checks.append(("/accounts показывает Telegram-id и @username аккаунта",
+                   "id 8125160821" in accounts_text and "@ivan" in accounts_text, ""))
+    checks.append(("/accounts: «вышел из аккаунта» заметен, с причиной и что делать",
+                   "ВЫШЕЛ ИЗ АККАУНТА" in accounts_text and "AuthKeyDuplicatedError" in accounts_text
+                   and "--login-qr --session second_session" in accounts_text, ""))
+    checks.append(("/accounts: видно, что сессия подгружена с Google Диска, и версию",
+                   "подгружена с Google Диска" in accounts_text and "abcd1234" in accounts_text, ""))
+    status_text = acc_panel.dispatch("/status").text
+    checks.append(("/status: красная строка про вышедший аккаунт — в самом верху",
+                   "❌ Аккаунт «second»" in status_text.splitlines()[1] and "main" not in status_text.splitlines()[1], ""))
+    chats_text = acc_panel.dispatch("/chats").text
+    checks.append(("/chats: аккаунт → чаты с Telegram-id и статусом",
+                   "-1001111111111" in chats_text and "Граница Польша" in chats_text
+                   and "ждёт одобрения админа" in chats_text and "id 8125160821" in chats_text
+                   and "читается 1 из 2" in chats_text, ""))
+    checks.append(("/chats: у вышедшего аккаунта чаты помечены «не вошёл»",
+                   "аккаунт не вошёл (AuthKeyDuplicatedError)" in chats_text and "-1002222222222" in chats_text, ""))
+    only_second = acc_panel.dispatch("/chats second").text
+    checks.append(("/chats <аккаунт> фильтрует; неизвестное имя — понятный ответ",
+                   "Посылки Минск" in only_second and "Граница Польша" not in only_second
+                   and "Нет аккаунта" in acc_panel.dispatch("/chats ghost").text, ""))
+    empty_panel = BotPanel(HitStore(":memory:"), transport=object(), accounts=[AccountView(name="main")])
+    checks.append(("без данных /chats и /accounts не падают и честно пишут «нет данных»",
+                   "нет данных" in empty_panel.dispatch("/chats").text
+                   and "👥 Аккаунты" in empty_panel.dispatch("/accounts").text, ""))
+    checks.append(("/chats есть в справке и в меню бота", any(line[0].startswith("chats") for line in HELP_LINES)
+                   and "chats" in COMMANDS, ""))
+
     section("16. Меню бота: команды видны в Telegram, а не только в голове")
 
     class MenuTransport(FakeTransport):

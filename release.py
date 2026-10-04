@@ -18,10 +18,11 @@ import hashlib
 import os
 from pathlib import Path
 
-RELEASE = "2026.10.04-1"
+RELEASE = "2026.10.05-1"
 
 # Новое — сверху. Одна строка на релиз: что изменилось для пользователя.
 CHANGELOG = [
+    ("2026.10.05-1", "сессии подгружаются с Google Диска сами; в боте Telegram-id аккаунтов, /chats и видимый выход из аккаунта"),
     ("2026.10.04-1", "сломанная сессия одного аккаунта не останавливает остальные; бот сообщает, что делать"),
     ("2026.10.03-2", "бот отвечает на команды в начале прохода, а не только в конце (раньше при обрыве молчал)"),
     ("2026.10.03-1", "проходы больше не обрываются по таймауту: очередь добирается порциями, состояние сохраняется даже при обрыве"),
@@ -33,7 +34,7 @@ CHANGELOG = [
 # Файлы, от которых зависит поведение радара в контейнере.
 CODE_FILES = (
     "monitor.py", "matcher.py", "forwarder.py", "core_telegram.py", "bot_panel.py", "metrics.py",
-    "release.py", "deploy/cloud_entry.py", "deploy/r2_state.py",
+    "release.py", "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/session_sync.py",
 )
 CONFIG_FILE = "sources.yaml"
 COMMIT_ENV = ("RADAR_COMMIT", "WORKERS_CI_COMMIT_SHA", "GIT_COMMIT", "SOURCE_COMMIT")

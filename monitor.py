@@ -1730,8 +1730,11 @@ class Monitor:
     async def run(self) -> None:
         from telethon import events
 
+        chat_report: dict = {}
         resolved = await resolve_targets(self.client, [s.target for s in self.sources], self.paced,
-                                         auto_join=self.auto_join)
+                                         auto_join=self.auto_join, report=chat_report)
+        if self.account:
+            record_account_chats(self.store, self.account, self.sources, resolved, chat_report)
         self.entities = resolved
         self.meta = {s.target: s for s in self.sources if s.target in resolved}
 
@@ -2045,6 +2048,108 @@ async def connect_client(client, account: AccountConfig, args) -> None:
             print(f"    Удали файл {account.session}.session и войди заново: "
                   f"start.bat --login-qr --session {account.session}", file=sys.stderr)
         sys.exit(1)
+
+
+# --- что бот знает про аккаунты: кто вошёл, в каких чатах состоит, откуда сессия -----------------
+# Всё лежит в bot_state внутри базы (а база — в R2), поэтому панель видит это между проходами.
+# Ключи: account:<имя>:me / :login / :chats / :session — значения JSON.
+
+CHAT_STATUS_TEXT = {"ok": "читается", "deferred": "вступление отложено", "pending": "ждёт одобрения админа",
+                    "not_member": "аккаунт не в чате", "error": "ошибка", "no_login": "аккаунт не вошёл"}
+
+
+def session_base(session: str) -> str:
+    """'sessions/second_session.session' -> 'second_session'."""
+    name = Path(str(session or "")).name
+    return name[:-len(".session")] if name.endswith(".session") else name
+
+
+def _state_json(store, key: str) -> dict:
+    try:
+        data = json.loads(store.bot_state_get(key) or "{}")
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _state_put(store, key: str, value: dict) -> None:
+    try:
+        store.bot_state_set(key, json.dumps(value, ensure_ascii=False))
+    except Exception as exc:                                  # noqa: BLE001 - справка не должна ронять проход
+        print(f"[!] не записал {key} в базу: {type(exc).__name__}", file=sys.stderr)
+
+
+def record_login(store, account_name: str, ok: bool, kind: str = "", text: str = "") -> bool:
+    """Помнит, вошёл ли аккаунт в этом проходе. True — аккаунт ВОССТАНОВИЛСЯ (до этого не входил)."""
+    key = f"account:{account_name}:login"
+    before = _state_json(store, key)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    state = {"ok": bool(ok), "ts": now}
+    if ok:
+        state["since"] = now if before.get("ok") is not True else before.get("since", now)
+    else:
+        state.update(kind=kind, text=text[:300],
+                     since=before.get("since", now) if before.get("ok") is False else now)
+    _state_put(store, key, state)
+    return bool(ok and before.get("ok") is False)
+
+
+def record_account_me(store, account_name: str, me) -> None:
+    """Telegram-аккаунт под этим именем: id, имя, @username — чтобы в боте не гадать, кто это."""
+    _state_put(store, f"account:{account_name}:me", {
+        "id": getattr(me, "id", None), "name": display_name(me),
+        "username": getattr(me, "username", None) or "",
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+
+
+def record_account_chats(store, account_name: str, sources, resolved: dict | None = None,
+                         report: dict | None = None, no_login: bool = False) -> None:
+    """Чаты аккаунта: цель из конфига, название, Telegram-id чата, статус (/chats в боте).
+
+    no_login — аккаунт не вошёл: берём конфиг, а id и названия оставляем из прошлого прохода."""
+    key = f"account:{account_name}:chats"
+    previous = {item.get("target"): item for item in _state_json(store, key).get("items", [])
+                if isinstance(item, dict)}
+    resolved = resolved or {}
+    report = report or {}
+    items = []
+    for source in sources:
+        target = source.target
+        old = previous.get(target, {})
+        entity = resolved.get(target)
+        if no_login:
+            code, note = "no_login", ""
+        else:
+            code, note = report.get(target, ("ok", "") if entity is not None else ("error", ""))
+        title = (getattr(entity, "title", None) or getattr(entity, "first_name", None)
+                 or source.title or old.get("title") or "")
+        chat_id = peer_id(entity) if entity is not None else old.get("id")
+        items.append({"target": target, "title": str(title), "id": chat_id,
+                      "status": code, "note": note})
+    _state_put(store, key, {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            "items": items})
+
+
+def import_session_sync(store, accounts, path: str = "session_sync.json") -> dict:
+    """Отчёт облачной обёртки о подгрузке сессий по ссылкам -> bot_state (для /accounts).
+
+    Возвращает {имя аккаунта: запись} только для аккаунтов, у которых ссылка задана."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    sessions = data.get("sessions") if isinstance(data, dict) else None
+    if not isinstance(sessions, dict):
+        return {}
+    out = {}
+    for acc in accounts:
+        entry = sessions.get(session_base(acc.session))
+        if not isinstance(entry, dict) or entry.get("status") == "skipped":
+            continue
+        entry = dict(entry, checked=data.get("ts", ""))
+        _state_put(store, f"account:{acc.name}:session", entry)
+        out[acc.name] = entry
+    return out
 
 
 async def print_topics_of_source(client, acc, source: "Source", entity, paced, args) -> bool:
@@ -2928,6 +3033,23 @@ async def async_main(args) -> None:
     if args.once:
         await handle_tg_commands(args, store, accounts, label="в начале прохода")
 
+    # Сессии, подгруженные облачной обёрткой по ссылке (Google Диск): запоминаем для /accounts
+    # и сообщаем в бот, когда поставлена новая версия или ссылка перестала работать.
+    synced = import_session_sync(store, accounts)
+    for acc_name, entry in synced.items():
+        if entry.get("status") == "imported":
+            await service.send(
+                f"🔄 Сессия аккаунта «{acc_name}» подгружена с Google Диска (версия "
+                f"{entry.get('sha', '?')}) и уже стоит в работе. Если вход пройдёт — следующим "
+                f"сообщением придёт подтверждение; если нет — причина в /accounts.",
+                key=f"session_imported:{acc_name}:{entry.get('sha', '')}")
+        elif entry.get("status") == "error":
+            await service.send(
+                f"⚠️ Ссылка на сессию «{acc_name}» не сработала: {entry.get('detail', 'без пояснений')}. "
+                f"Радар работает с прежней копией сессии. Проверь, что файл на Диске открыт по "
+                f"ссылке («Все, у кого есть ссылка») и это именно файл .session.",
+                key=f"session_url_error:{acc_name}")
+
     runners: list[tuple[AccountConfig, object, Monitor]] = []
     failed_accounts: list[str] = []
     for acc in accounts:
@@ -2942,6 +3064,11 @@ async def async_main(args) -> None:
         try:
             await connect_client(client, acc, args)
         except SystemExit:
+            # Бот должен ВИДЕТЬ, что аккаунт не вошёл (/accounts, /status), даже если проход
+            # дальше упадёт: пишем состояние до любых решений ниже.
+            fail_kind, fail_text = CONNECT_FAILURES.get(acc.name, ("ConnectError", "не удалось войти"))
+            record_login(store, acc.name, False, fail_kind, fail_text)
+            record_account_chats(store, acc.name, acc_sources, no_login=True)
             # В одном проходе (облако) один сломанный аккаунт не должен останавливать остальные:
             # раньше из-за одной сессии second не читал и main. Живой режим и --test-forward — как раньше.
             if not args.once or args.test_forward or len(accounts) < 2:
@@ -2951,6 +3078,11 @@ async def async_main(args) -> None:
         me = await client.get_me()
         prefix = f"[{acc.name}] " if multi else ""
         print(f"[+] {prefix}вошли как {display_name(me)} (id={me.id})", file=sys.stderr)
+        record_account_me(store, acc.name, me)
+        if record_login(store, acc.name, True):
+            await service.send(f"✅ Аккаунт «{acc.name}» снова вошёл в Telegram "
+                               f"({display_name(me)}, id {me.id}) — чтение его чатов возобновлено.",
+                               key=f"session_restored:{acc.name}", force=True)
 
         if args.test_forward:
             code = await test_forward(client, store, acc_sources, paced, args, defaults, account=acc)
@@ -2980,13 +3112,21 @@ async def async_main(args) -> None:
             kind, why = CONNECT_FAILURES.get(name, ("ConnectError", "не удалось войти"))
             sess = next((a.session for a in accounts if a.name == name), name)
             store.log_error(kind, f"аккаунт «{name}»: {why}"[:300], account=name)
+            drive = synced.get(name)
+            if drive and drive.get("status") in ("imported", "unchanged"):
+                how = (f"Сессия берётся с Google Диска (текущая версия {drive.get('sha', '?')}) и она не "
+                       f"подошла. Что делать: 1) на своей машине start.bat --login-qr --session {sess}; "
+                       f"2) замени файл {sess}.session на Диске новой версией (ссылка не меняется); "
+                       f"3) через пару минут радар сам подхватит его — останавливать ничего не нужно.")
+            else:
+                how = (f"Что делать: 1) на своей машине start.bat --login-qr --session {sess}; 2) положи "
+                       f"{sess}.session на Google Диск и задай секрет SESSION_URL_{sess.upper()} со ссылкой "
+                       f"(радар заберёт файл сам) — либо загрузи его в R2 (sessions/{sess}.session) "
+                       f"при RADAR_ON=0, затем RADAR_ON=1 и GET /restart (см. DEPLOY.md).")
             await service.send(
-                f"⚠️ Аккаунт «{name}» не вошёл в Telegram: {why}\n"
+                f"⚠️ Аккаунт «{name}» вышел из Telegram / не вошёл: {why}\n"
                 f"Радар работает без него: " + (", ".join(a.name for a, _c, _m in runners) or "никто не вошёл") + ".\n"
-                f"Что делать: 1) RADAR_ON=0 в Variables воркера; 2) на своей машине "
-                f"start.bat --login-qr --session {sess}; 3) загрузи {sess}.session в R2 "
-                f"(sessions/{sess}.session, см. DEPLOY.md); 4) RADAR_ON=1 и GET /restart. "
-                f"Одну и ту же сессию нельзя держать одновременно на компьютере и в облаке.",
+                f"{how} Одну и ту же сессию нельзя держать одновременно на компьютере и в облаке.",
                 key=f"session_broken:{name}")
         print(f"[!] Не вошли аккаунты: {', '.join(failed_accounts)} — проход идёт без них "
               f"(причина и что делать — выше и в сообщении бота)", file=sys.stderr)
@@ -3024,8 +3164,10 @@ async def async_main(args) -> None:
         try:
             for acc, client, monitor in runners:
                 prefix = f"[{acc.name}] " if multi else ""
+                chat_report: dict = {}
                 resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
-                                                 auto_join=args.auto_join)
+                                                 auto_join=args.auto_join, report=chat_report)
+                record_account_chats(store, acc.name, monitor.sources, resolved, chat_report)
                 monitor.entities = resolved
                 monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
                 if multi:

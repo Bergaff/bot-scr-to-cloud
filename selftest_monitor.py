@@ -663,6 +663,27 @@ async def main() -> None:
     batch_all = await resolve_targets(InviteClient(already_member=True), batch_links, Paced(0), auto_join=True)
     checks.append(("лимит вступлений не мешает чатам, где аккаунт уже состоит", len(batch_all) == 5, ""))
 
+    # итог по каждой цели для /chats в боте
+    rep_ok: dict = {}
+    await resolve_targets(InviteClient(already_member=True), ["https://t.me/+CmQyl50rf-NlODFi"], Paced(0),
+                          auto_join=True, report=rep_ok)
+    rep_no: dict = {}
+    await resolve_targets(InviteClient(), ["https://t.me/+CmQyl50rf-NlODFi"], Paced(0), auto_join=False, report=rep_no)
+    rep_batch: dict = {}
+    await resolve_targets(InviteClient(), batch_links, Paced(0), auto_join=True, report=rep_batch)
+
+    class PendingClient(InviteClient):
+        async def __call__(self, request):
+            raise type("InviteRequestSentError", (Exception,), {})("sent")
+    rep_pending: dict = {}
+    await resolve_targets(PendingClient(), ["https://t.me/+CmQyl50rf-NlODFi"], Paced(0), auto_join=True,
+                          report=rep_pending)
+    checks.append(("отчёт resolve_targets: читается / не в чате / отложено / заявка ждёт админа",
+                   list(rep_ok.values())[0][0] == "ok" and list(rep_no.values())[0][0] == "not_member"
+                   and sorted(v[0] for v in rep_batch.values()) == ["deferred", "deferred", "ok", "ok", "ok"]
+                   and list(rep_pending.values())[0][0] == "pending"
+                   and "одобрения" in list(rep_pending.values())[0][1], str(rep_pending)))
+
     # ссылки: публичный чат и приватный
     checks.append(("ссылка публичного чата", message_link("travelersminsk", -1001, 91532) == "https://t.me/travelersminsk/91532", ""))
     checks.append(("ссылка приватного чата (t.me/c)", message_link(None, -1001234567890, 55) == "https://t.me/c/1234567890/55", ""))
@@ -2077,7 +2098,50 @@ async def main() -> None:
     checks.append(("вход сломанной сессии: причина запоминается (для сообщения в бота)",
                    dead_exit and monitor_module.CONNECT_FAILURES.get("second", ("",))[0] == "AuthKeyDuplicatedError",
                    str(monitor_module.CONNECT_FAILURES)))
-    skip_block = mon_src[login_loop:login_loop + 2500]
+    # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска
+    snap = HitStore(":memory:")
+    first = monitor_module.record_login(snap, "second", False, "AuthKeyDuplicatedError", "ключ использован с другого IP")
+    st1 = json.loads(snap.bot_state_get("account:second:login"))
+    stamp1 = st1["since"]
+    monitor_module.record_login(snap, "second", False, "AuthKeyDuplicatedError", "ещё раз")
+    st2 = json.loads(snap.bot_state_get("account:second:login"))
+    recovered = monitor_module.record_login(snap, "second", True)
+    checks.append(("вход: ошибка запоминается, «с какого времени» не сдвигается, возврат даёт сигнал «восстановился»",
+                   first is False and st1["ok"] is False and st1["kind"] == "AuthKeyDuplicatedError"
+                   and st2["since"] == stamp1 and recovered is True
+                   and monitor_module.record_login(snap, "second", True) is False, ""))
+    monitor_module.record_account_me(snap, "main", SimpleNamespace(id=8125160821, first_name="Иван", last_name="",
+                                                                   username="ivan", phone=None))
+    me_state = json.loads(snap.bot_state_get("account:main:me"))
+    checks.append(("Telegram-id аккаунта записывается", me_state["id"] == 8125160821 and me_state["username"] == "ivan",
+                   str(me_state)))
+    srcs = [Source(target="@one", title="Один"), Source(target="https://t.me/+AbCd", title="Закрытый")]
+    monitor_module.record_account_chats(snap, "main", srcs, {"@one": FakeEntity(-1001234567890, "Чат Один", "one")},
+                                        {"@one": ("ok", ""), "https://t.me/+AbCd": ("pending", "ждёт админа")})
+    chats = json.loads(snap.bot_state_get("account:main:chats"))["items"]
+    checks.append(("чаты аккаунта: название, Telegram-id чата и статус по каждому",
+                   chats[0]["id"] == -1001234567890 and chats[0]["status"] == "ok" and chats[0]["title"] == "Чат Один"
+                   and chats[1]["status"] == "pending", str(chats)))
+    monitor_module.record_account_chats(snap, "main", srcs, no_login=True)
+    chats2 = json.loads(snap.bot_state_get("account:main:chats"))["items"]
+    checks.append(("аккаунт не вошёл: чаты остаются в списке со статусом, id прошлого прохода не теряется",
+                   chats2[0]["status"] == "no_login" and chats2[0]["id"] == -1001234567890, str(chats2[0])))
+    sync_file = workdir / "session_sync.json"
+    sync_file.write_text(json.dumps({"ts": "2026-10-05T10:00:00+00:00", "sessions": {
+        "second_session": {"status": "imported", "sha": "abcd1234", "at": "2026-10-05T10:00:00+00:00"},
+        "monitor_session": {"status": "skipped"}}}), encoding="utf-8")
+    got = monitor_module.import_session_sync(snap, [SimpleNamespace(name="main", session="monitor_session"),
+                                                    SimpleNamespace(name="second", session="second_session")],
+                                             str(sync_file))
+    checks.append(("отчёт подгрузки сессий переносится в базу только для аккаунтов со ссылкой",
+                   list(got) == ["second"] and json.loads(snap.bot_state_get("account:second:session"))["sha"] == "abcd1234"
+                   and snap.bot_state_get("account:main:session") is None, str(got)))
+    checks.append(("при входе пишутся вход, Telegram-id и восстановление; чаты — в обоих режимах",
+                   "record_login(store, acc.name, False" in mon_src and "record_account_me(store, acc.name, me)" in mon_src
+                   and "record_account_chats(store, acc.name, monitor.sources" in mon_src
+                   and "record_account_chats(self.store, self.account" in mon_src
+                   and "session_restored:" in mon_src and "session_imported:" in mon_src, ""))
+    skip_block = mon_src[login_loop:login_loop + 4500]
     checks.append(("в проходе (--once) сломанный аккаунт пропускается, остальные работают",
                    "except SystemExit" in skip_block and "failed_accounts.append(acc.name)" in skip_block
                    and "session_broken:" in mon_src, ""))

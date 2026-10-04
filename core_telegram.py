@@ -169,13 +169,20 @@ MAX_JOINS_PER_PASS = 3
 
 async def resolve_targets(client, targets: list[str], paced: Paced,
                           auto_join: bool = False,
-                          max_joins: int = MAX_JOINS_PER_PASS) -> dict[str, object]:
+                          max_joins: int = MAX_JOINS_PER_PASS,
+                          report: dict | None = None) -> dict[str, object]:
     """'@chat' / 'https://t.me/name' / 'https://t.me/+invite' / '-100…' -> entity.
 
     Для приватных ссылок-приглашений: если аккаунт уже в чате — разрешается сразу;
     если нет и включён auto_join — подписываемся (ImportChatInvite) и только потом читаем.
-    Ошибки по одной цели не роняют остальные."""
+    Ошибки по одной цели не роняют остальные.
+
+    report (необязательный словарь) получает по каждой цели итог для бота: report[цель] =
+    (код, пояснение), код: ok · deferred · pending · not_member · error. Так бот в /chats
+    показывает, к какому чату аккаунт реально привязан, а к какому — нет и почему."""
     resolved: dict[str, object] = {}
+    if report is None:
+        report = {}
     joins_done = 0
     for raw in targets:
         target = raw.strip()
@@ -191,13 +198,23 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                     print(f"[i] вступление в {target} отложено: за проход не больше {max_joins} "
                           f"вступлений (чтобы не злить Telegram), дойдёт в следующий проход",
                           file=sys.stderr)
+                    report[target] = ("deferred", "вступление отложено (не больше "
+                                                  f"{max_joins} за проход), дойдёт позже")
                     continue
                 joins_done += 1
-                entity = await _join_by_invite(client, target, hash_, paced)
+                outcome: dict = {}
+                entity = await _join_by_invite(client, target, hash_, paced, outcome)
                 if entity is None:
+                    report[target] = (outcome.get("code", "error"),
+                                      outcome.get("text", "вступить не удалось"))
                     continue
             else:
                 print(f"[!] не смог разрешить {target}: {type(exc).__name__} {exc}", file=sys.stderr)
+                if not_member:
+                    report[target] = ("not_member", "аккаунт не состоит в чате"
+                                      + (" (включи --auto-join или вступи вручную)" if hash_ else ""))
+                else:
+                    report[target] = ("error", f"не разрешился: {type(exc).__name__}")
                 if hash_ and not_member:
                     print("    Это ссылка-приглашение, а аккаунт в чате не состоит. "
                           "Вступи вручную или запусти с --auto-join.", file=sys.stderr)
@@ -205,13 +222,19 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                     print("    проверь, что аккаунт подписан на этот чат и username верный", file=sys.stderr)
                 continue
         resolved[target] = entity
+        report[target] = ("ok", "")
         title = getattr(entity, "title", None) or getattr(entity, "username", target)
         print(f"[+] {target} -> «{title}» (id={getattr(entity, 'id', '?')})", file=sys.stderr)
     return resolved
 
 
-async def _join_by_invite(client, target: str, hash_: str, paced: Paced):
-    """Подписка по ссылке-приглашению (используется только при --auto-join)."""
+async def _join_by_invite(client, target: str, hash_: str, paced: Paced,
+                          outcome: dict | None = None):
+    """Подписка по ссылке-приглашению (используется только при --auto-join).
+
+    outcome (необязательно) получает code/text — чем кончилось, для /chats в боте."""
+    if outcome is None:
+        outcome = {}
     from telethon.errors import UserAlreadyParticipantError
     from telethon.tl.functions.messages import ImportChatInviteRequest
 
@@ -223,10 +246,16 @@ async def _join_by_invite(client, target: str, hash_: str, paced: Paced):
               file=sys.stderr)
         return chat
     except UserAlreadyParticipantError:
+        outcome.update(code="error", text="аккаунт уже участник, но чат не разрешился — следующий проход")
         print(f"[i] {target}: аккаунт уже участник, но entity не разрешился — "
               "запусти ещё раз, обычно помогает со второго раза.", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001
-        print(f"[!] не удалось вступить по {target}: {type(exc).__name__} {exc}", file=sys.stderr)
+        kind = type(exc).__name__
+        if kind == "InviteRequestSentError":
+            outcome.update(code="pending", text="заявка на вступление отправлена, ждёт одобрения админа")
+        else:
+            outcome.update(code="error", text=f"вступить не удалось: {kind}")
+        print(f"[!] не удалось вступить по {target}: {kind} {exc}", file=sys.stderr)
     return None
 
 

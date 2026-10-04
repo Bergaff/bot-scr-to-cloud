@@ -54,7 +54,16 @@ export class RadarContainer extends Container {
 
 /** Что передаём в контейнер: ключи Telegram, доступ к R2 и аргументы прохода. */
 function containerEnv(env) {
+	// Ссылки на файлы сессий (Google Диск): SESSION_URL_<ИМЯ_СЕССИИ> и общий SESSION_URLS.
+	// В ссылке есть id файла, поэтому это секреты Worker'а; в логи не попадают.
+	const sessionUrls = {};
+	for (const key of Object.keys(env)) {
+		if (key === 'SESSION_URLS' || key.startsWith('SESSION_URL_')) {
+			sessionUrls[key] = String(env[key] ?? '');
+		}
+	}
 	return {
+		...sessionUrls,
 		TG_API_ID: String(env.TG_API_ID ?? ''),
 		TG_API_HASH: String(env.TG_API_HASH ?? ''),
 		TG_BOT_TOKEN: String(env.TG_BOT_TOKEN ?? ''),

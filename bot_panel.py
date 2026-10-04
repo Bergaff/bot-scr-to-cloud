@@ -52,7 +52,8 @@ SESSION_FATAL_KINDS = ("AuthKeyDuplicatedError", "PhoneNumberBannedError", "Sess
 
 HELP_LINES = [
     ("status", "общий статус: режим, аптайм, аккаунты, находки, очередь, ошибки"),
-    ("accounts", "по каждому аккаунту: жив ли, пульс, счётчик/лимит, ошибки"),
+    ("accounts", "по каждому аккаунту: Telegram-id, вошёл ли, пульс, счётчик/лимит, ошибки"),
+    ("chats [аккаунт]", "к каким чатам привязан каждый аккаунт: название, Telegram-id чата, статус"),
     ("stats [N]", "статистика за N дней (по умолчанию 7)"),
     ("report", "прислать файл stats.txt документом"),
     ("queue", "очередь отложенных пересылок: сколько и что самое старое"),
@@ -72,6 +73,10 @@ HELP_LINES = [
 ]
 
 COMMANDS = {line[0].split()[0] for line in HELP_LINES}
+
+CHAT_STATUS_FALLBACK = {"deferred": "вступление отложено", "pending": "ждёт одобрения админа",
+                        "not_member": "аккаунт не в чате", "error": "ошибка",
+                        "no_login": "аккаунт не вошёл"}
 
 
 # -----------------------------------------------------------------------------
@@ -95,6 +100,21 @@ def local_time(value: str | datetime | None) -> str:
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
     return stamp.astimezone().strftime("%H:%M")
+
+
+def local_stamp(value: str | datetime | None) -> str:
+    """UTC ISO-строка -> «04.10 12:10» местного времени (когда важна дата, а не только время)."""
+    stamp = value
+    if isinstance(stamp, str):
+        try:
+            stamp = datetime.fromisoformat(stamp)
+        except ValueError:
+            return ""
+    if not isinstance(stamp, datetime):
+        return ""
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone().strftime("%d.%m %H:%M")
 
 
 def minutes_ago(value: str | datetime | None) -> float | None:
@@ -801,6 +821,9 @@ class BotPanel:
 
         return {
             "name": name,
+            "me": self._state_json(f"account:{name}:me"),
+            "login": self._state_json(f"account:{name}:login"),
+            "session_sync": self._state_json(f"account:{name}:session"),
             "session": view.session or f"{name}_session",
             "chats": view.chats,
             "max_per_day": view.max_per_day,
@@ -817,6 +840,54 @@ class BotPanel:
             "forwarded_today": self.store.forwarded_today(name),
             "queue": self.store.deferred_count(name),
         }
+
+    def _state_json(self, key: str) -> dict:
+        """JSON-запись из bot_state (её кладёт монитор). Нет записи или мусор — пустой словарь."""
+        try:
+            data = json.loads(self.store.bot_state_get(key) or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def broken_logins(self) -> list[tuple[str, dict]]:
+        """Аккаунты, которые в последнем проходе не вошли в Telegram (выход из аккаунта и т. п.)."""
+        found = []
+        for view in self.known_accounts():
+            login = self._state_json(f"account:{view.name}:login")
+            if login.get("ok") is False:
+                found.append((view.name, login))
+        return found
+
+    def _login_lines(self, state: dict) -> list[str]:
+        """Строки про вход аккаунта: кто это в Telegram, не вышел ли, откуда сессия."""
+        lines = []
+        me = state.get("me") or {}
+        if me.get("id"):
+            who = str(me.get("name") or "").strip()
+            username = f" @{me['username']}" if me.get("username") else ""
+            lines.append(f"   Telegram: {who}{username} · id {me['id']}")
+        login = state.get("login") or {}
+        if login.get("ok") is False:
+            since = local_stamp(login.get("since") or login.get("ts"))
+            lines.append(f"   ❌ ВЫШЕЛ ИЗ АККАУНТА / не вошёл с {since}: "
+                         f"{login.get('kind') or '?'} — {str(login.get('text') or '')[:120]}")
+            lines.append("   Что делать: новый вход (start.bat --login-qr --session "
+                         f"{state['session']}) и замена файла сессии на Google Диске "
+                         "(подробно — в сообщении бота и DEPLOY.md)")
+        elif login.get("ok") is True:
+            lines.append(f"   ✅ вход в Telegram успешен ({local_stamp(login.get('ts'))})")
+        drive = state.get("session_sync") or {}
+        status = drive.get("status")
+        if status == "imported":
+            lines.append(f"   сессия подгружена с Google Диска {local_stamp(drive.get('at'))} "
+                         f"(версия {drive.get('sha', '?')})")
+        elif status == "unchanged":
+            lines.append(f"   сессия с Google Диска: версия {drive.get('sha', '?')} "
+                         f"(подгружена {local_stamp(drive.get('at'))}), новой пока нет")
+        elif status == "error":
+            lines.append(f"   ⚠️ ссылка на сессию не сработала: {drive.get('detail', 'без пояснений')} "
+                         f"(проверка {local_stamp(drive.get('checked'))})")
+        return lines
 
     def account_states(self) -> list[dict]:
         return [self.account_state(view) for view in self.known_accounts()]
@@ -863,6 +934,10 @@ class BotPanel:
         mode_text = "A (слушатель)" if self.mode == "A" else "B (проходы по расписанию)"
         uptime = self.uptime_seconds()
         lines = [f"📡 Радар · режим {mode_text} · жив {metrics_module.format_duration(uptime)}"]
+        for broken_name, login in self.broken_logins():
+            lines.append(f"❌ Аккаунт «{broken_name}» вышел из Telegram / не вошёл с "
+                         f"{local_stamp(login.get('since') or login.get('ts'))} "
+                         f"({login.get('kind') or '?'}) — подробности: /accounts")
         lines.append(f"Аккаунты: {len(states)} · чаты: {chats_total} · "
                      f"прочитано всего: {metrics_module.format_number(read_total)} "
                      f"(за час: {metrics_module.format_number(read_hour)})")
@@ -913,6 +988,7 @@ class BotPanel:
             lines.append("")
             mark = "" if state["alive"] else " ⚠️"
             lines.append(f"{index}) {state['name']} · {state['status']}{mark}")
+            lines += self._login_lines(state)
             lines.append(self._account_pulse_line(state))
             event = state["event"]
             chats_note = f"чатов {state['chats']}" if state["chats"] else "чатов н/д"
@@ -979,6 +1055,46 @@ class BotPanel:
         elif not pieces:
             pieces.append(f"ошибок за сутки {errors}")
         return "   " + " · ".join(pieces)
+
+    def cmd_chats(self, account: str = "") -> str:
+        """Какой аккаунт к каким чатам привязан: название, Telegram-id чата и статус."""
+        want = (account or "").strip().lower()
+        views = [view for view in self.known_accounts() if not want or view.name.lower() == want]
+        if not views:
+            names = ", ".join(view.name for view in self.known_accounts())
+            return f"Нет аккаунта «{account}». Есть: {names}"
+        icons = {"ok": "✅", "deferred": "⏳", "pending": "⏳", "not_member": "🚫",
+                 "error": "⚠️", "no_login": "❌"}
+        lines = ["🔗 Привязка чатов к аккаунтам (по Telegram-id)"]
+        for view in views:
+            me = self._state_json(f"account:{view.name}:me")
+            data = self._state_json(f"account:{view.name}:chats")
+            items = [item for item in data.get("items", []) if isinstance(item, dict)]
+            login = self._state_json(f"account:{view.name}:login")
+            head = f"{view.name}"
+            if me.get("id"):
+                head += f" · {me.get('name') or ''}" + (f" @{me['username']}" if me.get("username") else "")
+                head += f" · id {me['id']}"
+            ok_count = sum(1 for item in items if item.get("status") == "ok")
+            lines.append("")
+            lines.append(f"{head} · читается {ok_count} из {len(items)}")
+            if login.get("ok") is False:
+                lines.append(f"  ❌ аккаунт не вошёл ({login.get('kind') or '?'}) — чаты ниже не читаются")
+            if not items:
+                lines.append("  нет данных (проход ещё не отрабатывал или у аккаунта нет чатов)")
+                continue
+            for item in sorted(items, key=lambda x: (x.get("status") != "ok", str(x.get("title") or x.get("target")))):
+                status = str(item.get("status") or "")
+                mark = icons.get(status, "•")
+                title = str(item.get("title") or item.get("target") or "?")[:40]
+                chat_id = item.get("id")
+                row = f"  {mark} {title}" + (f" · {chat_id}" if chat_id else " · id н/д")
+                if status != "ok":
+                    row += f" — {item.get('note') or CHAT_STATUS_FALLBACK.get(status, status)}"
+                lines.append(row)
+            if data.get("ts"):
+                lines.append(f"  обновлено {local_stamp(data['ts'])}")
+        return truncate("\n".join(lines), self.message_limit, hint="/chats <аккаунт>")
 
     def cmd_stats(self, days: str = "") -> Answer:
         blocked = self._heavy_guard("stats")

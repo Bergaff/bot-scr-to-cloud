@@ -888,6 +888,142 @@ async def main() -> None:
     checks.append(("DEPLOY.md предупреждает: нельзя держать радар на ПК и в облаке одновременно",
                    "AuthKeyDuplicatedError" in deploy_doc, "ok"))
 
+    # -------------------------------------------- подгрузка сессий по ссылке (Google Диск)
+    section("Подгрузка сессий по ссылке (Google Диск)")
+    import sqlite3 as _sqlite3
+    import session_sync
+
+    def make_session_bytes(dc: int = 2, key: bytes = b"k" * 256, name: str = "tmp.session") -> bytes:
+        path = WORKDIR / name
+        path.unlink(missing_ok=True)
+        conn = _sqlite3.connect(path)
+        conn.execute("CREATE TABLE sessions (dc_id integer primary key, server_address text, "
+                     "port integer, auth_key blob, takeout_id integer)")
+        conn.execute("INSERT INTO sessions VALUES (?, '1.2.3.4', 443, ?, NULL)", (dc, key))
+        conn.commit()
+        conn.close()
+        return path.read_bytes()
+
+    WORKDIR.mkdir(parents=True, exist_ok=True)
+    good_v1 = make_session_bytes(key=b"a" * 256)
+    good_v2 = make_session_bytes(key=b"b" * 256)
+    fid = "1AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+    expect = f"https://drive.google.com/uc?export=download&id={fid}"
+    checks.append(("ссылки Диска трёх видов и голый id превращаются в прямую ссылку",
+                   all(session_sync.direct_url(x) == expect for x in (
+                       f"https://drive.google.com/file/d/{fid}/view?usp=sharing",
+                       f"https://drive.google.com/open?id={fid}",
+                       f"https://drive.google.com/uc?id={fid}&export=download", fid)), ""))
+    refused = []
+    for bad in ("", "http://drive.google.com/file/d/x/view", "https://drive.google.com/drive/folders/abc123",
+                "просто текст"):
+        try:
+            session_sync.direct_url(bad)
+        except ValueError as exc:
+            refused.append(str(exc))
+    checks.append(("пустое, http, папка и мусор отвергаются понятной ошибкой", len(refused) == 4, str(refused)[:80]))
+    checks.append(("настоящая сессия проходит проверку",
+                   session_sync.validate_session(good_v1)[0] is True, ""))
+    html_ok, html_why, _ = session_sync.validate_session(b"<!DOCTYPE html><html>Sign in</html>")
+    checks.append(("страница Google вместо файла отвергается с подсказкой про доступ",
+                   not html_ok and "доступ" in html_why, html_why[:60]))
+    checks.append(("пустой файл, не-sqlite и сессия без ключа отвергаются",
+                   not session_sync.validate_session(b"")[0]
+                   and not session_sync.validate_session(b"hello world")[0]
+                   and not session_sync.validate_session(make_session_bytes(key=b""))[0], ""))
+    env_urls = session_sync.sources_from_env(
+        {"SESSION_URL_SECOND_SESSION": "https://x/2", "SESSION_URL_OTHER": "https://x/3",
+         "SESSION_URLS": "monitor_session=https://x/1", "SESSION_URL_EMPTY": ""},
+        ("monitor_session", "second_session"))
+    checks.append(("ссылки берутся из SESSION_URL_<ИМЯ> и SESSION_URLS, чужие имена игнорируются",
+                   env_urls == {"second_session": "https://x/2", "monitor_session": "https://x/1"},
+                   str(env_urls)))
+    checks.append(("воркер передаёт SESSION_URL_* в контейнер",
+                   "SESSION_URL_" in repo_text("src", "index.js"), ""))
+
+    sync_dir = WORKDIR / "sync"
+    shutil.rmtree(sync_dir, ignore_errors=True)
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    served = {"data": good_v1, "fail": False, "urls": []}
+
+    def fake_fetch(url: str, timeout: float = 0) -> bytes:
+        served["urls"].append(url)
+        if served["fail"]:
+            raise OSError("нет сети")
+        return served["data"]
+
+    OBJECTS.pop("sessions/second_session.session", None)
+    OBJECTS.pop("state/session_sources.json", None)
+    logs: list[str] = []
+    sync_runner = cloud_entry.RadarRunner(
+        workdir=sync_dir, client=client, runner=fake_run, args="--once", sessions=("second_session",),
+        session_urls={"second_session": f"https://drive.google.com/file/d/{fid}/view"},
+        fetcher=fake_fetch, log=logs.append)
+    res1 = sync_runner.run_pass()
+    local = sync_dir / "second_session.session"
+    checks.append(("сессии нет нигде, но есть ссылка: файл скачан и проход ПОШЁЛ (без ручной загрузки в R2)",
+                   res1.get("ok") is True and local.exists() and local.read_bytes() == good_v1
+                   and res1["restored"].get("session_sync") == {"second_session": "imported"},
+                   str(res1.get("restored", {}).get("session_sync"))))
+    checks.append(("скачивание шло по прямой ссылке Диска", served["urls"][:1] == [expect], ""))
+    checks.append(("импортированная сессия сразу лежит в R2 вместе с хешем версии",
+                   OBJECTS.get("sessions/second_session.session") == good_v1
+                   and "state/session_sources.json" in OBJECTS, ""))
+    report = json.loads((sync_dir / "session_sync.json").read_text(encoding="utf-8"))
+    entry = report["sessions"]["second_session"]
+    checks.append(("для бота записан отчёт: статус и 8 символов хеша, без ссылки",
+                   entry["status"] == "imported" and len(entry["sha"]) == 8
+                   and fid not in json.dumps(report) and not any(fid in line for line in logs), str(entry)))
+
+    local.write_bytes(good_v1 + b"")                      # Telethon поменял файл в работе
+    res2 = sync_runner.run_pass()
+    rep2 = json.loads((sync_dir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    checks.append(("тот же файл на Диске: рабочая копия не перезаписывается",
+                   rep2["status"] == "unchanged" and res2.get("ok") is True, rep2["status"]))
+
+    served["data"] = good_v2                              # пользователь заменил файл на Диске
+    sync_runner.run_pass()
+    rep3 = json.loads((sync_dir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    checks.append(("файл на Диске заменили: новая версия ставится сама",
+                   rep3["status"] == "imported" and local.read_bytes() == good_v2
+                   and OBJECTS["sessions/second_session.session"] == good_v2, rep3["status"]))
+
+    served["fail"] = True
+    res4 = sync_runner.run_pass()
+    rep4 = json.loads((sync_dir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    checks.append(("Диск недоступен: проход идёт на рабочей копии, ошибка видна в отчёте",
+                   rep4["status"] == "error" and res4.get("ok") is True and local.read_bytes() == good_v2,
+                   rep4.get("detail", "")))
+    served["fail"] = False
+    served["data"] = b"<html>login</html>"
+    sync_runner.run_pass()
+    rep5 = json.loads((sync_dir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    checks.append(("вместо файла пришла страница: рабочая сессия НЕ затёрта",
+                   rep5["status"] == "error" and local.read_bytes() == good_v2, rep5.get("detail", "")[:50]))
+
+    local.unlink()                                        # сессия потерялась, Диск тот же
+    served["data"] = good_v2
+    sync_runner.run_pass()
+    checks.append(("файла сессии нет, а на Диске та же версия: восстанавливается с Диска",
+                   local.exists() and local.read_bytes() == good_v2, ""))
+
+    plain = cloud_entry.build_runner({"R2_BUCKET": "b", "TG_SESSION": "monitor_session,second_session",
+                                      "SESSION_URL_SECOND_SESSION": "https://x/2", "RADAR_WORKDIR": str(sync_dir)})
+    checks.append(("build_runner подхватывает ссылки из окружения",
+                   plain.session_urls == {"second_session": "https://x/2"}, str(list(plain.session_urls))))
+    no_urls = cloud_entry.RadarRunner(workdir=sync_dir, client=client, runner=fake_run,
+                                      sessions=("second_session",), log=quiet)
+    no_urls.run_pass()
+    checks.append(("без ссылок поведение прежнее и старый отчёт подгрузки не остаётся",
+                   not (sync_dir / "session_sync.json").exists(), ""))
+    miss_dir = WORKDIR / "miss"
+    miss_dir.mkdir(parents=True, exist_ok=True)
+    OBJECTS.pop("sessions/ghost_session.session", None)
+    ghost = cloud_entry.RadarRunner(workdir=miss_dir, client=client, runner=fake_run,
+                                    sessions=("ghost_session",), log=quiet).run_pass()
+    checks.append(("нехватка файла сессии подсказывает про Google Диск",
+                   "SESSION_URL_GHOST_SESSION" in str(ghost.get("hint", "")), str(ghost.get("hint", ""))[:50]))
+
     # -------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:

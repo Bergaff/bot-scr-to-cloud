@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from r2_state import (KEY_DB, R2Client, R2Error, checkpoint_db,  # noqa: E402
                       missing_sessions, restore_state, save_state, session_key)
+import session_sync  # noqa: E402
 
 # БЕЗ «--catchup 0»: флаг перекрывает catchup у каждого чата, а в разовом проходе
 # (--once) другого чтения нет — радар прочитал бы ноль сообщений и промолчал.
@@ -115,6 +116,7 @@ class RadarRunner:
                  args: str = DEFAULT_ARGS, python: str | None = None,
                  timeout: float = DEFAULT_TIMEOUT, sessions: tuple[str, ...] = ("monitor_session",),
                  db_name: str = "hits.sqlite3", metrics_name: str = "metrics.csv",
+                 session_urls: dict | None = None, fetcher=None,
                  runner=subprocess.run, log=print):
         self.workdir = Path(workdir).resolve()
         self.client = client
@@ -124,6 +126,8 @@ class RadarRunner:
         self.sessions = tuple(sessions or ("monitor_session",))
         self.db_name = db_name
         self.metrics_name = metrics_name
+        self.session_urls = dict(session_urls or {})
+        self._fetcher = fetcher or session_sync.fetch
         self._runner = runner
         self._log = log
         self.lock = threading.Lock()
@@ -145,6 +149,28 @@ class RadarRunner:
                           db_name=self.db_name, metrics_name=self.metrics_name,
                           log_file=str(self.log_path) if with_log and self.log_path.exists() else None,
                           log=self._log)
+
+    def sync_sessions(self) -> dict:
+        """Новые версии сессий по ссылкам (Google Диск): после R2, до проверки «файл есть».
+
+        Результат кладём рядом файлом session_sync.json: монитор перенесёт его в базу, и бот
+        покажет в /accounts, когда и какая версия сессии подгружена. Сбой Диска радар не роняет.
+        """
+        stale = self.workdir / session_sync.REPORT_NAME
+        if not self.session_urls:
+            if stale.exists():
+                stale.unlink()
+            return {}
+        try:
+            report = session_sync.sync_sessions(self.client, self.workdir, self.sessions,
+                                                self.session_urls, fetcher=self._fetcher,
+                                                log=self._log)
+        except Exception as exc:                       # noqa: BLE001
+            self._log(f"[!] подгрузка сессий по ссылкам не удалась: {type(exc).__name__}: {exc}")
+            report = {name: {"status": "error", "detail": f"{type(exc).__name__}"}
+                      for name in self.session_urls}
+        session_sync.write_report(self.workdir, report)
+        return report
 
     def missing_session_files(self) -> list[str]:
         """Каких файлов сессии нет на диске — с ними запускать радар нельзя."""
@@ -178,14 +204,19 @@ class RadarRunner:
 
     def _run_pass_locked(self, started: float) -> dict:
         restored = self.restore()
+        synced = self.sync_sessions()
+        if synced:
+            restored = dict(restored, session_sync={n: v.get("status") for n, v in synced.items()})
         missing = self.missing_session_files()
         if missing:
             names = ", ".join(missing)
             return {
                 "ok": False, "restored": restored, "seconds": round(time.time() - started, 1),
                 "error": f"нет файла сессии: {names}",
-                "hint": ("Войди в Telegram на своей машине (start.bat --login) и загрузи файл "
-                         "в R2, например:\n  npx wrangler r2 object put "
+                "hint": ("Проще всего: положи файл сессии на Google Диск (доступ «у кого есть "
+                         f"ссылка») и задай секрет SESSION_URL_{session_sync.norm_name(missing[0])} "
+                         "со ссылкой — радар заберёт его сам (DEPLOY.md). Либо войди в Telegram на "
+                         "своей машине (start.bat --login) и загрузи файл в R2, например:\n  npx wrangler r2 object put "
                          f"<бакет>/sessions/{missing[0]}.session --file {missing[0]}.session "
                          "--remote\nБез сессии радар начал бы спрашивать телефон и код, а ввода "
                          "в контейнере нет."),
@@ -674,6 +705,7 @@ def build_runner(env: dict | None = None) -> RadarRunner:
         timeout=float(env.get("RADAR_TIMEOUT") or DEFAULT_TIMEOUT), sessions=sessions,
         db_name=env.get("RADAR_DB", "hits.sqlite3"),
         metrics_name=env.get("RADAR_METRICS_CSV", "metrics.csv"),
+        session_urls=session_sync.sources_from_env(env, sessions),
     )
 
 
