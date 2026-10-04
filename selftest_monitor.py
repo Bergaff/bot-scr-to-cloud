@@ -2154,6 +2154,51 @@ async def main() -> None:
                    and "record_account_chats(store, acc.name, monitor.sources" in mon_src
                    and "record_account_chats(self.store, self.account" in mon_src
                    and "session_restored:" in mon_src and "session_imported:" in mon_src, ""))
+    # окна лимита и чистка очереди
+    from forwarder import Forwarder as FwdClass
+    win_store = HitStore(":memory:")
+    win_acc = SimpleNamespace(name="main", forward={"max_per_day": 3, "reset_hours": [0], "utc_offset": 3})
+    for i in range(3):
+        win_store.mark_forwarded("c", i, ok=True, mode="forward", account="main")
+    checks.append(("авто-окно: лимит выбран, но очереди нет — обнулять нечего",
+                   monitor_module.apply_limit_windows(win_store, [win_acc]) == [], ""))
+    win_store.queue_forward("c", 50, account="main")
+    checks.append(("авто-окно: лимит выбран и очередь ждёт — лимит обнуляется, окно снова 0",
+                   monitor_module.apply_limit_windows(win_store, [win_acc]) == ["main"]
+                   and win_store.forwarded_window("main") == 0 and win_store.forwarded_today("main") == 3, ""))
+    checks.append(("авто-окно срабатывает один раз после наступления часа",
+                   monitor_module.apply_limit_windows(win_store, [win_acc]) == [], ""))
+    half_store = HitStore(":memory:")
+    half_store.mark_forwarded("c", 1, ok=True, mode="forward", account="main")
+    half_store.queue_forward("c", 2, account="main")
+    checks.append(("авто-окно: лимит не выбран (1 из 3) — не обнуляем, лишних отправок не даём",
+                   monitor_module.apply_limit_windows(half_store, [win_acc]) == [], ""))
+    late = SimpleNamespace(name="main", forward={"max_per_day": 3, "reset_hours": [23], "utc_offset": 3})
+    early_now = datetime.now(timezone.utc).replace(hour=19, minute=0)    # 22:00 по +3: час 23 ещё не наступил
+    win_store.queue_forward("c", 60, account="main")
+    for i in range(3):
+        win_store.mark_forwarded("c", 70 + i, ok=True, mode="forward", account="main")
+    checks.append(("авто-окно не срабатывает раньше заданного часа",
+                   monitor_module.apply_limit_windows(win_store, [late], now=early_now) == [], ""))
+    fw_store = HitStore(":memory:")
+    fw_store.queue_forward("c", 1, account="main")
+    fw_store.queue_forward("c", 2, account="main")
+    fw_store.conn.execute("UPDATE forwarded SET at=? WHERE msg_id=1",
+                          ((datetime.now(timezone.utc) - timedelta(hours=30)).isoformat(timespec="seconds"),))
+    fw_store.conn.commit()
+    fw = FwdClass(None, "@bot", fw_store, None, max_per_day=0, account="main", queue_ttl_hours=24)
+    async def never_fetch(*a):
+        return None
+    fw.sent_today = 0
+    fw_res = await fw.flush_deferred(never_fetch)
+    checks.append(("добор очереди сначала убирает устаревшее (старше суток)",
+                   fw_res["expired"] == 1 and fw_res["gone"] == 1, str(fw_res)))
+    checks.append(("в конфиге: queue_ttl_hours, reset_hours и utc_offset (+3, 16:00) заданы",
+                   "queue_ttl_hours: 24" in Path("sources.yaml").read_text(encoding="utf-8")
+                   and "reset_hours: [16]" in Path("sources.yaml").read_text(encoding="utf-8"), ""))
+    checks.append(("авто-окна и чистка очереди вызываются в проходе до входа в аккаунты",
+                   0 < mon_src.find("apply_limit_windows(store, accounts)") < login_loop
+                   and "store.expire_queue(ttl, acc.name)" in mon_src, ""))
     skip_block = mon_src[login_loop:login_loop + 4500]
     checks.append(("в проходе (--once) сломанный аккаунт пропускается, остальные работают",
                    "except SystemExit" in skip_block and "failed_accounts.append(acc.name)" in skip_block

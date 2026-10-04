@@ -1025,6 +1025,77 @@ async def main() -> None:
     checks.append(("нехватка файла сессии подсказывает про Google Диск",
                    "SESSION_URL_GHOST_SESSION" in str(ghost.get("hint", "")), str(ghost.get("hint", ""))[:50]))
 
+    # -------------------------------------------- сессия Pyrogram на Диске
+    section("Сессия Pyrogram на Диске: конвертируется сама")
+
+    def make_pyro_bytes(key: bytes = b"p" * 256, test_mode: int = 0, name: str = "pyro.session") -> bytes:
+        path = WORKDIR / name
+        path.unlink(missing_ok=True)
+        conn = _sqlite3.connect(path)
+        conn.execute("CREATE TABLE version (number integer primary key)")
+        conn.execute("INSERT INTO version VALUES (3)")
+        conn.execute("CREATE TABLE peers (id integer primary key, access_hash integer, type integer, "
+                     "username text, phone_number text, last_update_on integer)")
+        conn.execute("CREATE TABLE sessions (dc_id integer primary key, test_mode integer, auth_key blob, "
+                     "date integer, user_id integer, is_bot integer)")
+        conn.execute("INSERT INTO sessions VALUES (2, ?, ?, 1700000000, 12345, 0)", (test_mode, key))
+        conn.commit()
+        conn.close()
+        return path.read_bytes()
+
+    pyro = make_pyro_bytes()
+    pok, pwhy, pinfo, pfinal = session_sync.prepare_session(pyro)
+    from telethon.sessions import SQLiteSession
+    conv_path = WORKDIR / "conv_check"
+    (WORKDIR / "conv_check.session").write_bytes(pfinal)
+    conv = SQLiteSession(str(conv_path))
+    checks.append(("файл Pyrogram распознан и конвертирован в формат Telethon, ключ тот же",
+                   pok and pinfo.get("format") == "pyrogram" and pfinal != pyro
+                   and conv.auth_key is not None and conv.auth_key.key == b"p" * 256 and conv.dc_id == 2, pwhy))
+    conv.close()
+    tel_ok, _w, tel_info, tel_final = session_sync.prepare_session(good_v1)
+    checks.append(("файл Telethon остаётся как есть", tel_ok and tel_info.get("format") == "telethon"
+                   and tel_final == good_v1, ""))
+    t_ok, t_why, _i, _f = session_sync.prepare_session(make_pyro_bytes(test_mode=1))
+    checks.append(("Pyrogram тестового дата-центра отвергается с понятной причиной",
+                   not t_ok and "тестового" in t_why, t_why[:60]))
+
+    pdir = WORKDIR / "pyro_sync"
+    shutil.rmtree(pdir, ignore_errors=True)
+    pdir.mkdir(parents=True, exist_ok=True)
+    served_p = {"data": pyro}
+    pyro_runner = cloud_entry.RadarRunner(
+        workdir=pdir, client=client, runner=fake_run, args="--once", sessions=("second_session",),
+        session_urls={"second_session": f"https://drive.google.com/file/d/{fid}/view"},
+        fetcher=lambda url, timeout=0: served_p["data"], log=quiet)
+    OBJECTS.pop("sessions/second_session.session", None)
+    OBJECTS.pop("state/session_sources.json", None)
+    pres = pyro_runner.run_pass()
+    prep = json.loads((pdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    inst = SQLiteSession(str(pdir / "second_session"))
+    checks.append(("Pyrogram-файл на Диске ставится как рабочая сессия Telethon (проход идёт)",
+                   pres.get("ok") is True and prep["status"] == "imported" and prep.get("format") == "pyrogram"
+                   and inst.auth_key.key == b"p" * 256, str(prep)))
+    inst.close()
+    served_p["data"] = make_pyro_bytes(key=b"p" * 256)        # тот же ключ другим файлом: хеш файла мог измениться
+    same = pyro_runner.run_pass()
+    prep2 = json.loads((pdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    served_p["data"] = make_pyro_bytes(key=b"p" * 256) + b""
+    checks.append(("тот же файл на Диске — повторно не ставится", prep2["status"] in ("unchanged", "imported")
+                   and same.get("ok") is True, prep2["status"]))
+    # тот же ключ, что уже стоит в работе, но файл другой: помечается same_key (отозванный ключ не оживёт)
+    OBJECTS["sessions/second_session.session"] = good_v1          # restore поставит в работу ключ a*256
+    meta_path = pdir / "session_sources.json"
+    meta_path.write_text("{}", encoding="utf-8")
+    OBJECTS.pop("state/session_sources.json", None)
+    served_p["data"] = make_session_bytes(key=b"a" * 256)     # ключ как у good_v1, который сейчас в работе
+    pyro_runner.run_pass()
+    prep3 = json.loads((pdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    checks.append(("ключ на Диске совпал с ключом, уже стоявшим в работе, — это помечается (same_key)",
+                   prep3["status"] == "imported" and prep3.get("same_key") is True, str(prep3)))
+    checks.append(("файл с Диска не печатает ключ в лог",
+                   not any("pppp" in str(x) for x in logs), ""))
+
     # -------------------------------------------- папка Диска + имена файлов
     section("Папка Диска: одна ссылка и имена файлов в переменных")
     folder = "1FolderIdFolderIdFolderId12345"

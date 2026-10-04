@@ -75,10 +75,11 @@ class FakeTransport:
         self.updates = []
         return pending
 
-    async def send_message(self, chat_id: str, text: str) -> tuple[bool, str]:
+    async def send_message(self, chat_id: str, text: str, keyboard=None) -> tuple[bool, str]:
         if self.fail_next:
             error, self.fail_next = self.fail_next, None
             return False, error
+        self.keyboards = getattr(self, "keyboards", []) + [keyboard]
         self.sent.append((self.clock(), text))
         return True, ""
 
@@ -859,6 +860,56 @@ async def main() -> None:
                    and "👥 Аккаунты" in empty_panel.dispatch("/accounts").text, ""))
     checks.append(("/chats есть в справке и в меню бота", any(line[0].startswith("chats") for line in HELP_LINES)
                    and "chats" in COMMANDS, ""))
+
+    section("15d. Очередь: чистка старше суток, /boost, окна лимита")
+    q_store = HitStore(":memory:")
+    for i in range(3):
+        q_store.mark_forwarded("chat", 100 + i, ok=True, mode="forward", account="main")
+    for i in range(4):
+        q_store.queue_forward("chat", 200 + i, account="main")
+    old_stamp = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat(timespec="seconds")
+    q_store.conn.execute("UPDATE forwarded SET at=? WHERE msg_id IN (200, 201)", (old_stamp,))
+    q_store.conn.commit()
+    checks.append(("очередь: позиции старше 24 ч убираются, свежие остаются",
+                   q_store.expire_queue(24, "main") == 2 and q_store.deferred_count("main") == 2, ""))
+    checks.append(("убранные не теряются бесследно: mode=expired, счётчик и отметка в базе",
+                   q_store.conn.execute("SELECT COUNT(*) FROM forwarded WHERE mode='expired'").fetchone()[0] == 2 and q_store.bot_state_get("queue:expired_total") == "2", ""))
+    checks.append(("expire_queue(0) ничего не трогает (чистка выключена)", q_store.expire_queue(0) == 0, ""))
+    q_panel = BotPanel(q_store, transport=object(), accounts=[AccountView(name="main", max_per_day=3),
+                                                              AccountView(name="second", max_per_day=3)])
+    queue_text = q_panel.dispatch("/queue").text
+    checks.append(("/queue говорит, что устаревшее убирается само, и подсказывает /boost",
+                   "убрано 2" in queue_text and "/boost" in queue_text, queue_text.splitlines()[-2][:60]))
+    checks.append(("до /boost лимит выбран: окно 3/3", q_store.forwarded_window("main") == 3
+                   and "3/3 · осталось 0" in q_panel.dispatch("/limits").text, ""))
+    boost = q_panel.dispatch("/boost main")
+    checks.append(("/boost обнуляет счётчик аккаунта: окно 0, а «всего сегодня» помнится",
+                   q_store.forwarded_window("main") == 0 and q_store.forwarded_today("main") == 3
+                   and "счётчик 3/3 → 0" in boost.text and boost.keyboard, boost.text.splitlines()[1]))
+    limits_after = q_panel.dispatch("/limits").text
+    checks.append(("/limits после /boost: 0/3, всего сегодня 3, обнулений 1",
+                   "main: 0/3 · осталось 3" in limits_after and "всего сегодня 3, обнулений 1" in limits_after, ""))
+    import time as _time
+    _time.sleep(1.1)                       # отправка в ту же секунду, что и обнуление, считается «до него»
+    q_store.mark_forwarded("chat", 300, ok=True, mode="forward", account="main")
+    checks.append(("после /boost новые отправки считаются с нуля", q_store.forwarded_window("main") == 1, ""))
+    q_panel.dispatch("/boost"); q_panel.dispatch("/boost")
+    checks.append(("/boost без имени — все аккаунты; с третьего раза за сутки — предупреждение про PEER_FLOOD",
+                   q_store.limit_resets_today("second") == 2 and "PEER_FLOOD" in q_panel.dispatch("/boost").text, ""))
+    checks.append(("/boost с чужим именем — понятный ответ без побочных эффектов",
+                   "Нет аккаунта" in q_panel.dispatch("/boost ghost").text, ""))
+    checks.append(("/boost и кнопки есть в справке и в меню бота",
+                   any(line[0].startswith("boost") for line in HELP_LINES) and "boost" in COMMANDS, ""))
+
+    class KeyTransport(FakeTransport):
+        pass
+    kt = KeyTransport(FakeClock())
+    key_panel = make_panel(HitStore(":memory:"), FakeClock(), kt)
+    await key_panel.handle_updates([{"update_id": 1, "message": {"chat": {"id": int(OWNER)}, "text": "/queue"}},
+                                    {"update_id": 2, "message": {"chat": {"id": int(OWNER)}, "text": "/version"}}])
+    kb = getattr(kt, "keyboards", [])
+    checks.append(("кнопки (/status /queue /limits /boost …) приходят с /queue, а с /version — нет",
+                   len(kb) == 2 and kb[0] and kb[0][1][0]["text"] == "/boost" and not kb[1], str(kb)[:80]))
 
     section("16. Меню бота: команды видны в Telegram, а не только в голове")
 

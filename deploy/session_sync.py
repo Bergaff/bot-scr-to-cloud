@@ -26,6 +26,12 @@
     SESSION_URLS               «имя=ссылка» через запятую или перевод строки
   Ссылка на конкретный файл (способ 2) главнее папки (способ 1).
 
+Формат файла. Радар работает на Telethon. Файл Pyrogram (таблица sessions с колонками
+test_mode/user_id/is_bot) конвертируется автоматически тем же конвертером, что и
+session_convert.py: переносится auth_key, повторный вход не нужен. Важно: если этот ключ уже
+отозван Telegram (AuthKeyDuplicatedError) или та же сессия ещё работает где-то ещё
+(старый бот на Pyrogram), аккаунт сломается снова — нужен ключ от НОВОГО входа.
+
 Скачанное проверяется: заголовок SQLite, таблица sessions, непустой auth_key. HTML-страница
 Google («нет доступа», «войдите в аккаунт») файлом сессии не считается и ничего не ломает.
 Ссылки в лог не пишутся: только имя сессии и 8 символов хеша.
@@ -38,6 +44,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -222,6 +229,67 @@ def validate_session(data: bytes) -> tuple[bool, str, dict]:
     return True, "ok", {"dc_id": row[0]}
 
 
+def _key_of(data: bytes) -> bytes:
+    """auth_key из байтов файла сессии (любого формата) — только для сравнения, наружу не отдаётся."""
+    handle = tempfile.NamedTemporaryFile(suffix=".session", delete=False)
+    try:
+        handle.write(data)
+        handle.close()
+        conn = sqlite3.connect(f"file:{handle.name}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT auth_key FROM sessions LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        return bytes(row[0]) if row and row[0] else b""
+    except sqlite3.Error:
+        return b""
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+
+
+def prepare_session(data: bytes) -> tuple[bool, str, dict, bytes]:
+    """Проверить скачанное и привести к формату Telethon. (да/нет, причина, сведения, байты для установки).
+
+    Сведения: dc_id, format (telethon | pyrogram). Pyrogram-файл конвертируется (ключ переносится)."""
+    ok, why, info = validate_session(data)
+    if not ok:
+        return False, why, info, data
+    parent = str(Path(__file__).resolve().parent.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    try:
+        import session_convert
+    except Exception as exc:                               # noqa: BLE001
+        return False, f"нет конвертера сессий ({type(exc).__name__})", info, data
+    workdir = tempfile.mkdtemp(prefix="sess_")
+    try:
+        source = os.path.join(workdir, "in.session")
+        Path(source).write_bytes(data)
+        try:
+            kind = session_convert.sniff_session(source)
+        except session_convert.SessionConvertError as exc:
+            return False, str(exc), info, data
+        info = dict(info, format=kind)
+        if kind == "telethon":
+            return True, "ok", info, data
+        if kind != "pyrogram":
+            return False, "неизвестный формат файла сессии (не Telethon и не Pyrogram)", info, data
+        try:
+            target = session_convert.convert(source, out=os.path.join(workdir, "out"), force=True,
+                                             print_fn=lambda *a, **k: None)
+        except session_convert.SessionConvertError as exc:
+            return False, f"сессия Pyrogram не конвертируется: {exc}".replace(source, "файл"), info, data
+        except Exception as exc:                           # noqa: BLE001
+            return False, f"сессия Pyrogram не конвертируется ({type(exc).__name__})", info, data
+        return True, "ok", info, Path(target).read_bytes()
+    finally:
+        import shutil
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def fetch(url: str, timeout: float = 25.0) -> bytes:
     """Скачать файл (не больше MAX_BYTES). Ошибки сети — исключение."""
     request = Request(url, headers={"User-Agent": "Mozilla/5.0 (radar-session-sync)"})
@@ -330,7 +398,7 @@ def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: 
             log(f"[!] сессия {name}: с ссылки не скачалось ({type(exc).__name__}), "
                 f"остаётся рабочая копия")
             continue
-        ok, why, info = validate_session(data)
+        ok, why, info, final = prepare_session(data)
         if not ok:
             report[name] = {"status": "error", "detail": why, **_known(known)}
             log(f"[!] сессия {name}: по ссылке не сессия — {why}")
@@ -340,8 +408,12 @@ def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: 
             report[name] = {"status": "unchanged", **_known(known)}
             log(f"[i] сессия {name}: на Диске та же версия {sha[:8]} — не трогаю")
             continue
-        _install(path, data)
-        meta[name] = {"sha": sha, "at": _now(), "dc_id": info.get("dc_id")}
+        new_key = _key_of(final)
+        old_key = _key_of(path.read_bytes()) if path.exists() else b""
+        same_key = bool(new_key and new_key == old_key)
+        _install(path, final)
+        meta[name] = {"sha": sha, "at": _now(), "dc_id": info.get("dc_id"),
+                      "format": info.get("format", "telethon"), "same_key": same_key}
         changed = True
         saved = "—"
         if client is not None:
@@ -350,7 +422,9 @@ def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: 
             except Exception as exc:                   # noqa: BLE001
                 saved = f"не сохранилась ({type(exc).__name__})"
         report[name] = {"status": "imported", **_known(meta[name]), "r2": saved}
-        log(f"[+] сессия {name}: поставил новую версию с Диска {sha[:8]} (R2: {saved})")
+        log(f"[+] сессия {name}: поставил новую версию с Диска {sha[:8]} "
+            f"(формат {info.get('format', 'telethon')}, R2: {saved})"
+            + (" — ключ тот же, что был в работе" if same_key else ""))
 
     if changed:
         (root / META_NAME).write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -369,6 +443,10 @@ def _known(entry: dict) -> dict:
         out["sha"] = str(entry["sha"])[:8]
     if entry.get("at"):
         out["at"] = entry["at"]
+    if entry.get("format"):
+        out["format"] = entry["format"]
+    if entry.get("same_key"):
+        out["same_key"] = True
     return out
 
 

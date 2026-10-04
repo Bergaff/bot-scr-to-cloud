@@ -343,6 +343,71 @@ class HitStore:
             )
         self.conn.commit()
 
+    # ---------------- окна лимита: «пробой» дневного лимита и авто-окна
+    # Дневной лимит считается с начала суток. «Окно» — это сутки, внутри которых лимит
+    # можно обнулить ещё раз: вручную (/boost в боте) или автоматически (forward.reset_hours).
+    # Время последнего обнуления лежит в bot_state; отправки считаются с него, а не с полуночи.
+
+    @staticmethod
+    def _reset_key(account: str | None) -> str:
+        return f"limit:reset:{account or '-'}"
+
+    def limit_reset_at(self, account: str | None = None) -> str:
+        """Когда лимит обнуляли последний раз (ISO UTC) за текущие сутки; пусто — не обнуляли."""
+        value = self.bot_state_get(self._reset_key(account)) or ""
+        return value if value >= self.day_start_utc() else ""
+
+    def limit_window_start(self, account: str | None = None) -> str:
+        """С какого момента считаются отправки для лимита: полночь или последнее обнуление."""
+        return max(self.day_start_utc(), self.limit_reset_at(account))
+
+    def forwarded_window(self, account: str | None = None) -> int:
+        """Сколько отправлено в ТЕКУЩЕМ окне лимита (после последнего обнуления)."""
+        since = self.day_start_utc()
+        reset = self.limit_reset_at(account)       # строго «после» обнуления: отправки той же секунды — старые
+        query = ("SELECT COUNT(*) FROM forwarded WHERE ok=1 AND COALESCE(mode,'') != 'test' AND at >= ? AND at > ?"
+                 + (" AND account=?" if account else ""))
+        params = (since, reset, account) if account else (since, reset)
+        row = self.conn.execute(query, params).fetchone()
+        return int(row[0] if row else 0)
+
+    def reset_limit(self, account: str | None, auto: bool = False) -> int:
+        """Обнулить лимит аккаунта: следующие отправки снова считаются с нуля. Возвращает число обнулений за сутки."""
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.bot_state_set(self._reset_key(account), now)
+        counter_key = f"limit:resets:{account or '-'}"
+        day = datetime.now().astimezone().strftime("%Y-%m-%d")
+        raw = self.bot_state_get(counter_key) or ""
+        done = int(raw.split(":")[1]) if raw.startswith(day + ":") else 0
+        self.bot_state_set(counter_key, f"{day}:{done + 1}:{'auto' if auto else 'manual'}")
+        return done + 1
+
+    def limit_resets_today(self, account: str | None = None) -> int:
+        raw = self.bot_state_get(f"limit:resets:{account or '-'}") or ""
+        day = datetime.now().astimezone().strftime("%Y-%m-%d")
+        return int(raw.split(":")[1]) if raw.startswith(day + ":") else 0
+
+    def expire_queue(self, hours: float, account: str | None = None) -> int:
+        """Убрать из очереди позиции, которые висят дольше hours часов (устарели). 0/None — не трогать.
+
+        Позиция не теряется молча: mode='expired', ok=0 — видно в статистике, а повторно в очередь
+        это сообщение не попадёт (запись о нём уже есть)."""
+        if not hours or hours <= 0:
+            return 0
+        border = (datetime.now(timezone.utc) - timedelta(hours=float(hours))).isoformat(timespec="seconds")
+        query = ("UPDATE forwarded SET mode='expired', error='queue_ttl' "
+                 "WHERE mode='queued' AND at < ?" + (" AND account=?" if account else ""))
+        cursor = self.conn.execute(query, (border, account) if account else (border,))
+        self.conn.commit()
+        count = int(cursor.rowcount or 0)
+        if count:
+            total = int(self.bot_state_get("queue:expired_total") or 0) + count
+            self.bot_state_set("queue:expired_total", str(total))
+            self.bot_state_set("queue:last_expired", json.dumps(
+                {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": count,
+                 "hours": float(hours)}))
+        return count
+
     def forwarded_today(self, account: str | None = None) -> int:
         """Сколько отправлено сегодня. account — считать только по этому аккаунту (у каждого свой лимит)."""
         since = self.day_start_utc()
@@ -394,7 +459,7 @@ class HitStore:
         с действительностью и для старых баз: каждая находка попадает ровно в одну строку.
         """
         fate = {"total": 0, "forwarded": 0, "copied_restricted": 0, "copied": 0, "trial": 0,
-                "queued": 0, "dead_gone": 0, "dead_missing": 0, "skipped": 0, "failed": 0,
+                "queued": 0, "expired": 0, "dead_gone": 0, "dead_missing": 0, "skipped": 0, "failed": 0,
                 "other": 0, "no_record": 0}
         rows = self.conn.execute(
             """SELECT f.ok, f.mode, f.error, COUNT(*)
@@ -415,6 +480,8 @@ class HitStore:
                 bucket = "forwarded"
             elif mode == "queued":
                 bucket = "queued"
+            elif mode == "expired":
+                bucket = "expired"
             elif mode == "dead":
                 bucket = "dead_missing" if error == "hit_missing" else "dead_gone"
             elif mode == "skipped":
@@ -517,6 +584,7 @@ class HitStore:
                 ("copied", "  отправлено копией текста (mode: copy)"),
                 ("trial", "  пробные отправки (dry-run / test)"),
                 ("queued", "  ждёт в очереди (упёрлись в дневной лимит)"),
+                ("expired", "  убрано из очереди: висело дольше суток, устарело"),
                 ("dead_gone", "  не нашлось в чате при доборе — сообщение удалено"),
                 ("dead_missing", "  не нашлось в базе при доборе"),
                 ("skipped", "  пропущено: пересылка запрещена в чате (fallback: skip)"),
@@ -1628,7 +1696,7 @@ class Monitor:
                  ("events", "scanned", "matched", "duplicates", "filtered", "too_old")}
         self.last_pulse = dict(self.counter)
 
-        forwarded_today = self.store.forwarded_today()
+        forwarded_today = self.store.forwarded_window(self.account or None) if self.forwarder else self.store.forwarded_today()
         queue = self.store.deferred_count()
         pending = self.store.pending_count()
         limit = getattr(self.forwarder, "max_per_day", 0) if self.forwarder else 0
@@ -1671,7 +1739,7 @@ class Monitor:
         счётчик отправок читается один раз при старте, и очередь ждала бы перезапуска.
         """
         if self.forwarder is not None:
-            self.forwarder.sent_today = self.store.forwarded_today()   # сразу после полуночи это 0
+            self.forwarder.sent_today = self.store.forwarded_window(self.account or None)   # сразу после полуночи это 0
             self.forwarder.stopped_reason = None
         queue = self.store.deferred_count()
         if self.forwarder is not None:
@@ -1995,6 +2063,44 @@ def titles_by_key(sources: list[Source]) -> dict[str, str]:
     return {Monitor.chat_key(None, source): source.title for source in sources if source.title}
 
 
+def apply_limit_windows(store, accounts, now: datetime | None = None) -> list[str]:
+    """Авто-обнуление лимита в заданные часы (forward.reset_hours, по времени forward.utc_offset).
+
+    Идея: лимит выбран с утра (до 12:00 по Москве), очередь ждёт — после 16:00 лимит обнуляется
+    ещё раз, и радар отправляет следующую порцию. Условия обнуления (все сразу):
+      * час уже наступил (сегодня, по времени utc_offset, по умолчанию +3 — Минск/Москва);
+      * в этом окне лимит действительно выбран (иначе обнулять нечего) и в очереди есть позиции;
+      * после этого часа лимит ещё не обнуляли (ни автоматически, ни вручную).
+    Возвращает имена аккаунтов, которым лимит обнулён."""
+    now = now or datetime.now(timezone.utc)
+    done: list[str] = []
+    for acc in accounts:
+        fwd = acc.forward or {}
+        hours = fwd.get("reset_hours") or []
+        if isinstance(hours, (int, float)):
+            hours = [hours]
+        limit = int(fwd.get("max_per_day", 0) or 0)
+        if not hours or not limit:
+            continue
+        tz = timezone(timedelta(hours=float(fwd.get("utc_offset", 3))))
+        local = now.astimezone(tz)
+        for hour in sorted(int(h) for h in hours):
+            border = local.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
+            if local < border:
+                continue
+            border_utc = border.astimezone(timezone.utc).isoformat(timespec="seconds")
+            if store.limit_reset_at(acc.name) >= border_utc:
+                continue
+            if store.deferred_count(acc.name) <= 0 or store.forwarded_window(acc.name) < limit:
+                continue
+            count = store.reset_limit(acc.name, auto=True)
+            done.append(acc.name)
+            print(f"[i] [{acc.name}] авто-обнуление лимита в {hour:02d}:00 (обнулений сегодня: {count}): "
+                  f"в очереди {store.deferred_count(acc.name)}, снова {limit} отправок", file=sys.stderr)
+            break
+    return done
+
+
 def build_forwarder(client, account: AccountConfig, store, paced, args):
     """Пересылка для конкретного аккаунта: свой получатель, свой лимит, свой счётчик.
 
@@ -2019,7 +2125,8 @@ def build_forwarder(client, account: AccountConfig, store, paced, args):
                      max_per_day=int(fwd.get("max_per_day", 100)),
                      fallback=fwd.get("fallback", "link"),
                      dry_run=args.forward_dry_run,
-                     account=account.name)
+                     account=account.name,
+                     queue_ttl_hours=float(fwd.get("queue_ttl_hours", 24) or 0))
 
 
 # Почему аккаунт не вошёл: {имя аккаунта: (тип ошибки, текст)}. Нужно, чтобы проход мог пропустить
@@ -3050,6 +3157,22 @@ async def async_main(args) -> None:
                 f"ссылке («Все, у кого есть ссылка») и это именно файл .session.",
                 key=f"session_url_error:{acc_name}")
 
+    # Авто-окна лимита (после ручного /boost из команд выше и до создания пересылки)
+    if args.once:
+        # Очередь старше суток устарела: объявление давно неактуально. Чистим здесь, а не только в
+        # пересылке аккаунта, — иначе очередь аккаунта, который не вошёл, висела бы вечно.
+        for acc in accounts:
+            ttl = float((acc.forward or {}).get("queue_ttl_hours", 24) or 0)
+            dropped = store.expire_queue(ttl, acc.name)
+            if dropped:
+                print(f"[i] [{acc.name}] очередь: убрано {dropped} устаревших позиций "
+                      f"(висели дольше {ttl:g} ч)", file=sys.stderr)
+        if accounts:        # старые записи без аккаунта тоже должны уходить
+            store.expire_queue(float((accounts[0].forward or {}).get("queue_ttl_hours", 24) or 0))
+        for acc_name in apply_limit_windows(store, accounts):
+            await service.send(f"🔓 Аккаунт «{acc_name}»: лимит пересылок обнулён автоматически по расписанию "
+                               f"— очередь разбирается дальше.", key=f"limit_window:{acc_name}", force=True)
+
     runners: list[tuple[AccountConfig, object, Monitor]] = []
     failed_accounts: list[str] = []
     for acc in accounts:
@@ -3114,8 +3237,12 @@ async def async_main(args) -> None:
             store.log_error(kind, f"аккаунт «{name}»: {why}"[:300], account=name)
             drive = synced.get(name)
             if drive and drive.get("status") in ("imported", "unchanged"):
+                same = (" ВНИМАНИЕ: ключ в файле на Диске — тот же, что уже отозван Telegram (или этот "
+                        "аккаунт ещё где-то запущен с той же сессией, например старый бот на Pyrogram): "
+                        "такой файл не поможет, нужен ключ от НОВОГО входа. "
+                        if drive.get("same_key") else " ")
                 how = (f"Сессия берётся с Google Диска (текущая версия {drive.get('sha', '?')}) и она не "
-                       f"подошла. Что делать: 1) на своей машине start.bat --login-qr --session {sess}; "
+                       f"подошла.{same}Что делать: 1) на своей машине start.bat --login-qr --session {sess}; "
                        f"2) замени файл {sess}.session на Диске новой версией (ссылка не меняется); "
                        f"3) через пару минут радар сам подхватит его — останавливать ничего не нужно.")
             else:

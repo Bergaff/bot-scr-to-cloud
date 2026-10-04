@@ -28,7 +28,10 @@
     "to": "@parcel_transfer_bot",
     "mode": "forward",
     "max_per_day": 180,
-    "fallback": "link"
+    "fallback": "link",
+    "queue_ttl_hours": 24,
+    "reset_hours": [16],
+    "utc_offset": 3
   },
   "sources": [
     {

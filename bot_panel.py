@@ -67,12 +67,18 @@ HELP_LINES = [
     ("export [N]", "stats.csv за N дней документом (+ находки за 24 ч)"),
     ("top", "топ чатов за сутки по находкам"),
     ("limits", "лимиты пересылок и сколько осталось по аккаунтам"),
+    ("boost [аккаунт]", "пробить лимит: обнулить счётчик пересылок, очередь пойдёт ещё на целый лимит"),
     ("why <id|ссылка>", "почему сообщение взяли или не взяли"),
     ("cost", "стоимость работы в облаке: расход и сколько это в деньгах"),
     ("version", "версия обновления: релиз, код и конфиг — видно, что деплой дошёл"),
 ]
 
 COMMANDS = {line[0].split()[0] for line in HELP_LINES}
+
+# Постоянные кнопки под полем ввода: нажатие шлёт боту текст команды (обычное сообщение).
+KEYBOARD_ROWS = [[{"text": "/status"}, {"text": "/queue"}, {"text": "/limits"}],
+                 [{"text": "/boost"}, {"text": "/accounts"}, {"text": "/chats"}]]
+KEYBOARD_COMMANDS = {"help", "start", "queue", "limits", "boost"}
 
 CHAT_STATUS_FALLBACK = {"deferred": "вступление отложено", "pending": "ждёт одобрения админа",
                         "not_member": "аккаунт не в чате", "error": "ошибка",
@@ -183,6 +189,7 @@ class Answer:
     text: str = ""
     documents: list[str] = field(default_factory=list)
     heavy: bool = False
+    keyboard: bool = False    # приложить к ответу постоянные кнопки (/status, /queue, /boost…)
     ping: bool = False        # /ping: текст дополняется замером задержки уже в async-слое
 
 
@@ -250,12 +257,13 @@ class HttpTransport:
             raise RuntimeError(str(result.get("description") or result))
         return result.get("result") or []
 
-    async def send_message(self, chat_id: str, text: str) -> tuple[bool, str]:
+    async def send_message(self, chat_id: str, text: str, keyboard: list | None = None) -> tuple[bool, str]:
+        payload = {"chat_id": chat_id, "text": text[:4096], "disable_web_page_preview": True}
+        if keyboard:                       # постоянные кнопки: нажатие просто присылает текст команды
+            payload["reply_markup"] = {"keyboard": keyboard, "resize_keyboard": True,
+                                       "is_persistent": True}
         try:
-            result = await asyncio.to_thread(
-                self._request, "sendMessage",
-                {"chat_id": chat_id, "text": text[:4096], "disable_web_page_preview": True},
-            )
+            result = await asyncio.to_thread(self._request, "sendMessage", payload)
         except Exception as exc:                                  # noqa: BLE001
             return False, _bot_error_text(exc)
         if result.get("ok"):
@@ -693,7 +701,7 @@ class BotPanel:
             return
         await self._throttle(answer)
         if answer.text:
-            ok, error = await self._send(answer.text)
+            ok, error = await self._send(answer.text, keyboard=answer.keyboard)
             if error:
                 self._log_error("bot_api", f"ответ не ушёл: {error}")
                 wait = retry_after_of(error)
@@ -714,9 +722,11 @@ class BotPanel:
             await self._sleep(wait)
         self._last_send = self._clock()
 
-    async def _send(self, text: str) -> tuple[bool, str]:
+    async def _send(self, text: str, keyboard: bool = False) -> tuple[bool, str]:
         if self.transport is None or not self.owner_chat:
             return False, "панель не подключена к боту"
+        if keyboard:
+            return await self.transport.send_message(self.owner_chat, text, keyboard=KEYBOARD_ROWS)
         return await self.transport.send_message(self.owner_chat, text)
 
     async def _send_document(self, path: str, caption: str = "") -> tuple[bool, str]:
@@ -760,7 +770,7 @@ class BotPanel:
             return Answer(f"⚠️ /{head} не сработала: {type(exc).__name__}. "
                           f"Повтори позже или посмотри /errors")
         if isinstance(result, str):
-            return Answer(result, heavy=head in HEAVY_COMMANDS)
+            return Answer(result, heavy=head in HEAVY_COMMANDS, keyboard=head in KEYBOARD_COMMANDS)
         return result
 
     def _heavy_guard(self, name: str) -> str | None:
@@ -838,6 +848,8 @@ class BotPanel:
             "errors_today": errors_today,
             "last_error": (last_error or [{}])[0] if last_error else {},
             "forwarded_today": self.store.forwarded_today(name),
+            "forwarded_window": self.store.forwarded_window(name),
+            "resets_today": self.store.limit_resets_today(name),
             "queue": self.store.deferred_count(name),
         }
 
@@ -878,6 +890,9 @@ class BotPanel:
             lines.append(f"   ✅ вход в Telegram успешен ({local_stamp(login.get('ts'))})")
         drive = state.get("session_sync") or {}
         status = drive.get("status")
+        if login.get("ok") is False and drive.get("same_key"):
+            lines.append("   ⚠️ ключ в файле на Диске тот же, что уже отозван — такой файл не поможет: "
+                         "нужен НОВЫЙ вход (QR), а не копия старой сессии")
         if status == "imported":
             lines.append(f"   сессия подгружена с Google Диска {local_stamp(drive.get('at'))} "
                          f"(версия {drive.get('sha', '?')})")
@@ -1125,7 +1140,7 @@ class BotPanel:
             if own:
                 limit = state["max_per_day"]
                 lines.append(f"  {state['name']}: {own}"
-                             + (f" (лимит {state['forwarded_today']}/{limit})" if limit else ""))
+                             + (f" (лимит {state['forwarded_window']}/{limit})" if limit else ""))
         oldest = self.store.deferred_oldest()
         if oldest:
             lines.append(f"Самая старая позиция висит с {local_time(oldest)} "
@@ -1137,7 +1152,15 @@ class BotPanel:
             lines.append(f"  {local_time(item.get('at'))} · {label}"
                          + (f" · {item['direction']}" if item.get("direction") else "")
                          + f"\n    {link}")
-        lines.append("Добор идёт первым делом при следующем запуске (и сразу после полуночи).")
+        expired = self._state_json("queue:last_expired")
+        if expired.get("count"):
+            lines.append(f"Устаревшее (старше {expired.get('hours', 24):g} ч) убирается само: в последний раз "
+                         f"{local_stamp(expired.get('ts'))} убрано {expired['count']}, "
+                         f"всего убрано {self.store.bot_state_get('queue:expired_total') or expired['count']}.")
+        else:
+            lines.append("Позиции старше суток убираются из очереди сами — объявление уже неактуально.")
+        lines.append("Добор идёт первым делом при следующем запуске (и сразу после полуночи). "
+                     "Не хочешь ждать полуночи — /boost обнулит лимит.")
         return "\n".join(lines)
 
     def cmd_last(self, count: str = "") -> str:
@@ -1333,20 +1356,53 @@ class BotPanel:
 
     def cmd_limits(self) -> str:
         states = self.account_states()
-        lines = ["🚦 Лимиты пересылок (в сутки, по аккаунтам):"]
+        lines = ["🚦 Лимиты пересылок (по аккаунтам):"]
         for state in states:
             limit = state["max_per_day"]
-            sent = state["forwarded_today"]
+            sent = state["forwarded_window"]
             if limit:
                 left = max(0, limit - sent)
                 note = f"{sent}/{limit} · осталось {left}"
+                if state["forwarded_today"] != sent:
+                    note += f" (всего сегодня {state['forwarded_today']}, обнулений {state['resets_today']})"
                 if left == 0:
                     note += " — лимит выбран, находки встают в очередь (/queue)"
             else:
                 note = f"{sent} · лимит не задан (∞)"
             lines.append(f"  {state['name']}: {note} · в очереди {state['queue']}")
-        lines.append("Лимит обнулится в местную полночь, добор очереди пойдёт автоматически.")
+        lines.append("Лимит обнулится в местную полночь, добор очереди пойдёт автоматически. "
+                     "Раньше срока — /boost (пробить лимит ещё на целый лимит).")
         return "\n".join(lines)
+
+    def cmd_boost(self, account: str = "") -> Answer:
+        """Пробить дневной лимит: счётчик отправок аккаунта обнуляется, очередь идёт дальше.
+
+        Обнуление вступает в силу в ближайшем проходе (команды разбираются в начале прохода,
+        до создания пересылки). Это не «магия»: Telegram сам ограничивает отправку, поэтому
+        каждое обнуление — повышенный риск ограничений аккаунта (PEER_FLOOD)."""
+        want = (account or "").strip().lower()
+        views = [view for view in self.known_accounts() if want in ("", "all", "все", view.name.lower())]
+        if not views:
+            names = ", ".join(view.name for view in self.known_accounts())
+            return Answer(f"Нет аккаунта «{account}». Есть: {names}. Без имени — все аккаунты: /boost",
+                          keyboard=True)
+        lines = ["🔓 Лимит пересылок пробит:"]
+        for view in views:
+            before = self.store.forwarded_window(view.name)
+            queue = self.store.deferred_count(view.name)
+            count = self.store.reset_limit(view.name)
+            lines.append(f"  {view.name}: счётчик {before}"
+                         + (f"/{view.max_per_day}" if view.max_per_day else "")
+                         + f" → 0, в очереди {queue}, обнулений сегодня {count}")
+            if count >= 3:
+                lines.append(f"    ⚠️ {count}-е обнуление за сутки: Telegram может ограничить аккаунт "
+                             f"(PEER_FLOOD) — при ошибке радар сам остановит отправку")
+        lines.append("Заработает в ближайшем проходе (до 10 минут): очередь пойдёт первой, "
+                     "потом свежие находки. Обычный сброс в полночь тоже сработает.")
+        broken = [name for name, _login in self.broken_logins() if not want or want in ("all", "все", name.lower())]
+        if broken:
+            lines.append(f"Внимание: аккаунт {', '.join(broken)} не вошёл в Telegram — его очередь не уйдёт (/accounts).")
+        return Answer("\n".join(lines), keyboard=True)
 
     def cmd_why(self, target: str = "") -> str:
         """Почему сообщение взяли (или не взяли): разбор правил по сохранённой находке."""
@@ -1565,10 +1621,10 @@ class BotPanel:
             return texts
         for state in self.account_states():
             limit = state["max_per_day"]
-            if limit and state["forwarded_today"] >= limit:
+            if limit and state["forwarded_window"] >= limit:
                 texts.append(f"⚠️ {state['name']}: дневной лимит пересылок выбран "
-                             f"({state['forwarded_today']}/{limit}), находки продолжают приходить — "
-                             f"в очереди {state['queue']} (/queue). Добор пойдёт после полуночи.")
+                             f"({state['forwarded_window']}/{limit}), находки продолжают приходить — "
+                             f"в очереди {state['queue']} (/queue). Добор пойдёт после полуночи или по /boost.")
         return texts
 
     def queue_alert(self) -> str:

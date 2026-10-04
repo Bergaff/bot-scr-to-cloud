@@ -33,7 +33,8 @@ class Forwarder:
 
     def __init__(self, client, target: str, store, paced, mode: str = "forward",
                  max_per_day: int = 100, fallback: str = "link", dry_run: bool = False,
-                 account: str = ""):
+                 account: str = "", queue_ttl_hours: float = 24.0):
+        self.queue_ttl_hours = queue_ttl_hours      # дольше — позиция устарела и уходит из очереди (0 — не чистить)
         self.client, self.target_name, self.store = client, target, store
         self.account = account          # чей аккаунт отправляет: у каждого свой дневной лимит
         self.paced, self.mode = paced, mode
@@ -46,7 +47,7 @@ class Forwarder:
 
     async def prepare(self) -> bool:
         """Разрешает получателя и считает, сколько уже отправлено сегодня."""
-        self.sent_today = self.store.forwarded_today(self.account or None)
+        self.sent_today = self.store.forwarded_window(self.account or None)
         try:
             self.target = await call(lambda: self.client.get_entity(self.target_name),
                                      self.paced, label=f"get_entity({self.target_name})")
@@ -159,7 +160,13 @@ class Forwarder:
         остаток очереди не теряется, а ждёт следующего прохода. Без этого большая очередь
         (каждая отправка — две паузы по ~2,5 с) съедала весь проход, и его обрывал таймаут.
         """
-        result = {"sent": 0, "failed": 0, "gone": 0, "leftover": 0, "retry": 0, "timeboxed": False}
+        result = {"sent": 0, "failed": 0, "gone": 0, "leftover": 0, "retry": 0, "timeboxed": False,
+                  "expired": 0}
+        if not self.dry_run:
+            result["expired"] = self.store.expire_queue(self.queue_ttl_hours, self.account or None)
+            if result["expired"]:
+                print(f"[i] очередь: убрано {result['expired']} устаревших позиций "
+                      f"(висели дольше {self.queue_ttl_hours:g} ч)", file=sys.stderr)
         queue = self.store.deferred_queue(self.account or None)
         if not queue:
             return result
