@@ -2019,6 +2019,11 @@ def build_forwarder(client, account: AccountConfig, store, paced, args):
                      account=account.name)
 
 
+# Почему аккаунт не вошёл: {имя аккаунта: (тип ошибки, текст)}. Нужно, чтобы проход мог пропустить
+# сломанный аккаунт и честно сообщить об этом в бота, а не умирать целиком.
+CONNECT_FAILURES: dict[str, tuple[str, str]] = {}
+
+
 async def connect_client(client, account: AccountConfig, args) -> None:
     """Вход в Telegram с понятными подсказками вместо трейсбеков."""
     try:
@@ -2032,6 +2037,7 @@ async def connect_client(client, account: AccountConfig, args) -> None:
             "PhoneNumberBannedError": "Этот номер заблокирован Telegram для API-входа.",
             "AuthKeyDuplicatedError": "Файл сессии повреждён (использовался с другого IP).",
         }.get(name, f"{name}: {exc}")
+        CONNECT_FAILURES[account.name] = (name, message)
         print(f"[!] Аккаунт «{account.name}» ({account.session}.session): {message}", file=sys.stderr)
         if name in ("SessionPasswordNeededError", "PasswordHashInvalidError", "PhoneCodeInvalidError"):
             print("    Надёжный способ войти без кода и SMS:  start.bat --login-qr", file=sys.stderr)
@@ -2910,7 +2916,20 @@ async def async_main(args) -> None:
         print(f"[i] выключатели: RADAR_ON=1, TG_COMMANDS={int(tg_commands_enabled(args))} "
               f"(правятся в Variables воркера, 0 — выкл, 1 — вкл)", file=sys.stderr)
 
+    # служебные сообщения — в TG_NOTIFY_CHAT (сводка прохода, падения). Находки идут
+    # отдельно: пересылкой аккаунта получателю из sources.yaml (forward.to).
+    service = ServiceNotify(store, mode=args.service_notify, every_hours=args.service_every)
+    if not service.enabled:
+        print(f"[i] служебные сообщения выключены: {service.why_disabled()}", file=sys.stderr)
+
+    # Команды бота — ПЕРВЫМ делом: до входа в аккаунты и чтения чатов. Раньше их разбирали только
+    # в конце прохода, и если проход обрывался или аккаунт не входил, бот молчал на /status
+    # и /version часами. Так ответ приходит в течение одного интервала cron в любом случае.
+    if args.once:
+        await handle_tg_commands(args, store, accounts, label="в начале прохода")
+
     runners: list[tuple[AccountConfig, object, Monitor]] = []
+    failed_accounts: list[str] = []
     for acc in accounts:
         acc_sources = buckets[acc.name]
         if not acc_sources:
@@ -2920,7 +2939,15 @@ async def async_main(args) -> None:
 
         client = make_client(acc.session, api_id, api_hash, delay=args.delay,
                              proxy=acc.proxy or args.proxy)
-        await connect_client(client, acc, args)
+        try:
+            await connect_client(client, acc, args)
+        except SystemExit:
+            # В одном проходе (облако) один сломанный аккаунт не должен останавливать остальные:
+            # раньше из-за одной сессии second не читал и main. Живой режим и --test-forward — как раньше.
+            if not args.once or args.test_forward or len(accounts) < 2:
+                raise
+            failed_accounts.append(acc.name)
+            continue
         me = await client.get_me()
         prefix = f"[{acc.name}] " if multi else ""
         print(f"[+] {prefix}вошли как {display_name(me)} (id={me.id})", file=sys.stderr)
@@ -2948,8 +2975,26 @@ async def async_main(args) -> None:
                           deadline=deadline, flood_wait_limit=args.flood_wait_limit)
         runners.append((acc, client, monitor))
 
+    if failed_accounts:
+        for name in failed_accounts:
+            kind, why = CONNECT_FAILURES.get(name, ("ConnectError", "не удалось войти"))
+            sess = next((a.session for a in accounts if a.name == name), name)
+            store.log_error(kind, f"аккаунт «{name}»: {why}"[:300], account=name)
+            await service.send(
+                f"⚠️ Аккаунт «{name}» не вошёл в Telegram: {why}\n"
+                f"Радар работает без него: " + (", ".join(a.name for a, _c, _m in runners) or "никто не вошёл") + ".\n"
+                f"Что делать: 1) RADAR_ON=0 в Variables воркера; 2) на своей машине "
+                f"start.bat --login-qr --session {sess}; 3) загрузи {sess}.session в R2 "
+                f"(sessions/{sess}.session, см. DEPLOY.md); 4) RADAR_ON=1 и GET /restart. "
+                f"Одну и ту же сессию нельзя держать одновременно на компьютере и в облаке.",
+                key=f"session_broken:{name}")
+        print(f"[!] Не вошли аккаунты: {', '.join(failed_accounts)} — проход идёт без них "
+              f"(причина и что делать — выше и в сообщении бота)", file=sys.stderr)
+
     if not runners:
-        sys.exit("Нет чатов для работы: проверь список источников и поле account в sources.yaml")
+        sys.exit("Нет чатов для работы: проверь список источников и поле account в sources.yaml"
+                 if not failed_accounts else
+                 "Ни один аккаунт не вошёл в Telegram — читать нечем (см. причины выше)")
 
     if order_mode == "random" and len(sources) > 1:
         print(f"[i] порядок обхода случайный: начинаем с {sources[0].target} "
@@ -2972,19 +3017,10 @@ async def async_main(args) -> None:
         print(f"[i] порядок аккаунтов: первым идёт «{runners[0][0].name}» — в прошлый "
               f"проход последним был «{previous_last or 'никто'}»", file=sys.stderr)
 
-    # служебные сообщения — в TG_NOTIFY_CHAT (сводка прохода, падения). Находки идут
-    # отдельно: пересылкой аккаунта получателю из sources.yaml (forward.to).
-    service = ServiceNotify(store, mode=args.service_notify, every_hours=args.service_every)
-    if not service.enabled:
-        print(f"[i] служебные сообщения выключены: {service.why_disabled()}", file=sys.stderr)
     gap_before = store.heartbeat_age_minutes("pulse")      # сколько радар молчал до этого прохода
     pass_started = time.time()
 
     if args.once:
-        # Команды бота — ПЕРВЫМ делом, до чтения чатов. Раньше их разбирали только в самом конце
-        # прохода, и если проход обрывался (а он обрывался каждый раз), бот молчал на /status
-        # и /version часами. Теперь ответ приходит в течение одного интервала cron в любом случае.
-        await handle_tg_commands(args, store, accounts, label="в начале прохода")
         try:
             for acc, client, monitor in runners:
                 prefix = f"[{acc.name}] " if multi else ""

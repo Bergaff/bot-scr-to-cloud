@@ -2060,9 +2060,27 @@ async def main() -> None:
 
     # команды бота разбираются ДО чтения чатов: оборванный проход не должен глушить бота
     first_call = mon_src.find('handle_tg_commands(args, store, accounts, label="в начале прохода")')
-    resolve_call = mon_src.find("resolved = await resolve_targets(client, [s_.target")
-    checks.append(("команды бота разбираются в начале прохода, до resolve_targets",
-                   0 < first_call < resolve_call, f"{first_call} < {resolve_call}"))
+    login_loop = mon_src.find("runners: list[tuple[AccountConfig, object, Monitor]] = []")
+    checks.append(("команды бота разбираются до входа в аккаунты: сломанная сессия их не глушит",
+                   0 < first_call < login_loop, f"{first_call} < {login_loop}"))
+
+    # один сломанный аккаунт не останавливает проход остальных
+    class DeadClient:
+        async def start(self):
+            raise type("AuthKeyDuplicatedError", (Exception,), {})("dup")
+    dead_acc = SimpleNamespace(name="second", session="second_session")
+    try:
+        await monitor_module.connect_client(DeadClient(), dead_acc, SimpleNamespace())
+        dead_exit = False
+    except SystemExit:
+        dead_exit = True
+    checks.append(("вход сломанной сессии: причина запоминается (для сообщения в бота)",
+                   dead_exit and monitor_module.CONNECT_FAILURES.get("second", ("",))[0] == "AuthKeyDuplicatedError",
+                   str(monitor_module.CONNECT_FAILURES)))
+    skip_block = mon_src[login_loop:login_loop + 2500]
+    checks.append(("в проходе (--once) сломанный аккаунт пропускается, остальные работают",
+                   "except SystemExit" in skip_block and "failed_accounts.append(acc.name)" in skip_block
+                   and "session_broken:" in mon_src, ""))
 
     async def boom_commands(*a, **k):
         raise RuntimeError("bot api недоступен")
