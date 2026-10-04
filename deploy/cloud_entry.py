@@ -117,6 +117,7 @@ class RadarRunner:
                  timeout: float = DEFAULT_TIMEOUT, sessions: tuple[str, ...] = ("monitor_session",),
                  db_name: str = "hits.sqlite3", metrics_name: str = "metrics.csv",
                  session_urls: dict | None = None, fetcher=None,
+                 session_folder: str = "", session_files: dict | None = None, api_key: str = "",
                  runner=subprocess.run, log=print):
         self.workdir = Path(workdir).resolve()
         self.client = client
@@ -127,6 +128,9 @@ class RadarRunner:
         self.db_name = db_name
         self.metrics_name = metrics_name
         self.session_urls = dict(session_urls or {})
+        self.session_folder = str(session_folder or "").strip()
+        self.session_files = dict(session_files or {})
+        self.api_key = str(api_key or "").strip()
         self._fetcher = fetcher or session_sync.fetch
         self._runner = runner
         self._log = log
@@ -157,18 +161,19 @@ class RadarRunner:
         покажет в /accounts, когда и какая версия сессии подгружена. Сбой Диска радар не роняет.
         """
         stale = self.workdir / session_sync.REPORT_NAME
-        if not self.session_urls:
+        if not self.session_urls and not self.session_folder:
             if stale.exists():
                 stale.unlink()
             return {}
         try:
             report = session_sync.sync_sessions(self.client, self.workdir, self.sessions,
                                                 self.session_urls, fetcher=self._fetcher,
-                                                log=self._log)
+                                                log=self._log, folder=self.session_folder,
+                                                files=self.session_files, api_key=self.api_key)
         except Exception as exc:                       # noqa: BLE001
             self._log(f"[!] подгрузка сессий по ссылкам не удалась: {type(exc).__name__}: {exc}")
             report = {name: {"status": "error", "detail": f"{type(exc).__name__}"}
-                      for name in self.session_urls}
+                      for name in (self.sessions if self.session_folder else self.session_urls)}
         session_sync.write_report(self.workdir, report)
         return report
 
@@ -215,7 +220,7 @@ class RadarRunner:
                 "error": f"нет файла сессии: {names}",
                 "hint": ("Проще всего: положи файл сессии на Google Диск (доступ «у кого есть "
                          f"ссылка») и задай секрет SESSION_URL_{session_sync.norm_name(missing[0])} "
-                         "со ссылкой — радар заберёт его сам (DEPLOY.md). Либо войди в Telegram на "
+                         "со ссылкой (или SESSION_DRIVE_URL — ссылка на папку) — радар заберёт его сам (DEPLOY.md). Либо войди в Telegram на "
                          "своей машине (start.bat --login) и загрузи файл в R2, например:\n  npx wrangler r2 object put "
                          f"<бакет>/sessions/{missing[0]}.session --file {missing[0]}.session "
                          "--remote\nБез сессии радар начал бы спрашивать телефон и код, а ввода "
@@ -706,6 +711,9 @@ def build_runner(env: dict | None = None) -> RadarRunner:
         db_name=env.get("RADAR_DB", "hits.sqlite3"),
         metrics_name=env.get("RADAR_METRICS_CSV", "metrics.csv"),
         session_urls=session_sync.sources_from_env(env, sessions),
+        session_folder=env.get("SESSION_DRIVE_URL", ""),
+        session_files=session_sync.file_names_from_env(env),
+        api_key=env.get("GOOGLE_API_KEY", ""),
     )
 
 

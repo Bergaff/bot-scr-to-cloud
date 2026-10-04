@@ -16,8 +16,15 @@
     хеш тот же                             -> ничего не трогаем (рабочая копия новее)
 
 Откуда берутся ссылки (секреты Worker'а — в ссылке есть id файла):
+  Способ 1 (проще): одна ссылка на ПАПКУ на Диске + имена файлов
+    SESSION_DRIVE_URL          ссылка на папку Диска («Все, у кого есть ссылка»)
+    SESSION_FILE_<ИМЯ>         имя файла в папке, ИМЯ — имя аккаунта (MAIN, SECOND) или сессии;
+                               не задано — ищется файл <имя_сессии>.session
+    GOOGLE_API_KEY             необязательно: ключ Drive API, если просмотр папки без ключа не открылся
+  Способ 2: ссылка на каждый файл
     SESSION_URL_<ИМЯ_СЕССИИ>   например SESSION_URL_SECOND_SESSION  (регистр и - / _ не важны)
     SESSION_URLS               «имя=ссылка» через запятую или перевод строки
+  Ссылка на конкретный файл (способ 2) главнее папки (способ 1).
 
 Скачанное проверяется: заголовок SQLite, таблица sessions, непустой auth_key. HTML-страница
 Google («нет доступа», «войдите в аккаунт») файлом сессии не считается и ничего не ломает.
@@ -26,6 +33,7 @@ Google («нет доступа», «войдите в аккаунт») фай�
 from __future__ import annotations
 
 import hashlib
+import html as html_lib
 import json
 import os
 import re
@@ -33,7 +41,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 KEY_SESSION_META = "state/session_sources.json"
@@ -97,6 +105,88 @@ def direct_url(link: str) -> str:
             raise ValueError("это ссылка на папку: открой сам файл .session и скопируй ссылку на него")
         return f"https://drive.google.com/uc?export=download&id={file_id}"
     return text
+
+
+def folder_id(link: str) -> str:
+    """Ссылка на папку Google Диска (или голый id) -> id папки. ValueError — если это не папка."""
+    text = str(link or "").strip()
+    if not text:
+        raise ValueError("пустая ссылка на папку")
+    if "://" not in text:
+        if ID_RE.match(text):
+            return text
+        raise ValueError("не похоже ни на ссылку, ни на id папки")
+    parsed = urlparse(text)
+    if parsed.scheme != "https" or parsed.hostname not in DRIVE_HOSTS:
+        raise ValueError("нужна https-ссылка на папку Google Диска")
+    match = re.search(r"/folders/([A-Za-z0-9_-]+)", parsed.path)
+    found = match.group(1) if match else (parse_qs(parsed.query).get("id") or [""])[0]
+    if not found:
+        raise ValueError("в ссылке не нашёл id папки (нужна ссылка вида drive.google.com/drive/folders/…)")
+    return found
+
+
+def parse_folder_html(page: str) -> dict[str, str]:
+    """Страница embeddedfolderview -> {имя файла: id}. Формат Google, держится на двух якорях."""
+    found: dict[str, str] = {}
+    for chunk in page.split('id="entry-')[1:]:
+        file_id = re.match(r"([A-Za-z0-9_-]+)", chunk)
+        title = re.search(r'flip-entry-title">([^<]+)<', chunk)
+        if file_id and title:
+            found[html_lib.unescape(title.group(1)).strip()] = file_id.group(1)
+    return found
+
+
+def list_folder(folder: str, api_key: str = "", fetcher=None) -> dict[str, str]:
+    """Файлы папки Диска: {имя: id}. С GOOGLE_API_KEY — через Drive API, иначе — страница просмотра папки.
+
+    Ошибка сети — исключение; пустая папка/закрытый доступ — пустой словарь."""
+    fetcher = fetcher or fetch
+    if api_key:
+        query = quote(f"'{folder}' in parents and trashed=false")
+        url = (f"https://www.googleapis.com/drive/v3/files?q={query}&pageSize=1000"
+               f"&fields=files(id,name)&key={quote(api_key)}")
+        data = json.loads(fetcher(url).decode("utf-8", "replace"))
+        return {str(x.get("name")): str(x.get("id")) for x in data.get("files", []) if x.get("id")}
+    page = fetcher(f"https://drive.google.com/embeddedfolderview?id={folder}#list")
+    return parse_folder_html(page.decode("utf-8", "replace"))
+
+
+def file_names_from_env(env: dict) -> dict[str, str]:
+    """{НОРМ_ИМЯ -> имя файла в папке} из SESSION_FILE_<ИМЯ>."""
+    out = {}
+    for key, value in env.items():
+        if key.startswith("SESSION_FILE_") and str(value or "").strip():
+            out[norm_name(key[len("SESSION_FILE_"):])] = str(value).strip()
+    return out
+
+
+def account_sessions(workdir: str | Path) -> dict[str, str]:
+    """{имя аккаунта: имя сессии} из sources.yaml (из R2 или репозитория), чтобы MAIN = monitor_session."""
+    for path in (Path(workdir) / "sources.yaml", Path(__file__).resolve().parent.parent / "sources.yaml"):
+        if not path.exists():
+            continue
+        try:
+            import yaml
+            accounts = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("accounts") or {}
+        except Exception:                                  # noqa: BLE001
+            continue
+        if isinstance(accounts, dict):
+            return {str(name): Path(str((cfg or {}).get("session") or "")).name.removesuffix(".session")
+                    for name, cfg in accounts.items() if isinstance(cfg, dict)}
+        if isinstance(accounts, list):
+            return {str(a.get("name")): Path(str(a.get("session") or "")).name.removesuffix(".session")
+                    for a in accounts if isinstance(a, dict) and a.get("name")}
+    return {}
+
+
+def pick_file(listing: dict[str, str], wanted: str) -> tuple[str, str] | None:
+    """Найти в папке файл по имени без учёта регистра; «second» найдёт и «second.session»."""
+    low = {name.lower(): (name, fid) for name, fid in listing.items()}
+    for candidate in (wanted, wanted + ".session"):
+        if candidate.lower() in low:
+            return low[candidate.lower()]
+    return None
 
 
 def validate_session(data: bytes) -> tuple[bool, str, dict]:
@@ -164,7 +254,8 @@ def _install(path: Path, data: bytes) -> None:
 
 
 def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: dict[str, str],
-                  *, fetcher=fetch, log=print) -> dict:
+                  *, fetcher=fetch, log=print, folder: str = "", files: dict | None = None,
+                  api_key: str = "") -> dict:
     """Один раунд подгрузки. Возвращает {сессия: {status, sha, ...}}.
 
     status: imported (поставили новую версию) · unchanged (версия уже была) · skipped (ссылки нет)
@@ -173,8 +264,27 @@ def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: 
     """
     root = Path(workdir)
     report: dict[str, dict] = {}
-    if not urls:
+    if not urls and not folder:
         return report
+    listing: dict[str, str] | None = None
+    listing_error = ""
+    if folder and any(name not in urls for name in sessions):
+        try:
+            listing = list_folder(folder_id(folder), api_key, fetcher=fetcher)
+            if not listing:
+                listing_error = ("папка пустая или закрыта: открой доступ «Все, у кого есть ссылка» "
+                                 "(либо задай GOOGLE_API_KEY)")
+        except ValueError as exc:
+            listing_error = f"ссылка на папку не подходит: {exc}"
+        except Exception as exc:                           # noqa: BLE001
+            listing_error = f"папка не открылась: {type(exc).__name__}"
+        if listing_error:
+            log(f"[!] папка с сессиями: {listing_error}")
+    accounts = account_sessions(root) if folder else {}
+    by_session = {}                                        # сессия -> желаемое имя файла
+    for acc_name, sess in accounts.items():
+        if files and norm_name(acc_name) in files:
+            by_session[sess] = files[norm_name(acc_name)]
     if client is not None:
         try:
             client.download(KEY_SESSION_META, root / META_NAME)
@@ -186,6 +296,22 @@ def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: 
 
     for name in sessions:
         link = urls.get(name)
+        if not link and folder:
+            wanted = (by_session.get(name) or (files or {}).get(norm_name(name))
+                      or f"{name}.session")
+            if listing:
+                hit = pick_file(listing, wanted)
+                if hit:
+                    link = hit[1]
+                else:
+                    shown = ", ".join(sorted(listing)[:8]) or "—"
+                    report[name] = {"status": "error",
+                                    "detail": f"в папке нет файла «{wanted}» (там: {shown})"}
+                    log(f"[!] сессия {name}: в папке нет файла «{wanted}»")
+                    continue
+            elif listing_error:
+                report[name] = {"status": "error", "detail": listing_error}
+                continue
         if not link:
             report[name] = {"status": "skipped"}
             continue

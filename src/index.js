@@ -58,7 +58,8 @@ function containerEnv(env) {
 	// В ссылке есть id файла, поэтому это секреты Worker'а; в логи не попадают.
 	const sessionUrls = {};
 	for (const key of Object.keys(env)) {
-		if (key === 'SESSION_URLS' || key.startsWith('SESSION_URL_')) {
+		if (key === 'SESSION_URLS' || key === 'SESSION_DRIVE_URL' || key === 'GOOGLE_API_KEY'
+			|| key.startsWith('SESSION_URL_') || key.startsWith('SESSION_FILE_')) {
 			sessionUrls[key] = String(env[key] ?? '');
 		}
 	}

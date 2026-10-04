@@ -1024,6 +1024,117 @@ async def main() -> None:
     checks.append(("нехватка файла сессии подсказывает про Google Диск",
                    "SESSION_URL_GHOST_SESSION" in str(ghost.get("hint", "")), str(ghost.get("hint", ""))[:50]))
 
+    # -------------------------------------------- папка Диска + имена файлов
+    section("Папка Диска: одна ссылка и имена файлов в переменных")
+    folder = "1FolderIdFolderIdFolderId12345"
+    main_id, second_id = "1MainFileIdMainFileId1234567", "1SecondFileIdSecondFile123456"
+    page = ('<div class="flip-entry" id="entry-%s"><div class="flip-entry-title">monitor_session.session</div></div>'
+            '<div class="flip-entry" id="entry-%s"><div class="flip-entry-title">Second &amp; new.session</div></div>'
+            % (main_id, second_id))
+    checks.append(("id папки берётся из ссылки /drive/folders/…, open?id=… и голого id",
+                   all(session_sync.folder_id(x) == folder for x in (
+                       f"https://drive.google.com/drive/folders/{folder}?usp=sharing",
+                       f"https://drive.google.com/open?id={folder}", folder)), ""))
+    try:
+        session_sync.folder_id("https://example.com/folders/abc")
+        folder_bad = False
+    except ValueError:
+        folder_bad = True
+    checks.append(("чужой сайт вместо папки Диска отвергается", folder_bad, ""))
+    listing = session_sync.parse_folder_html(page)
+    checks.append(("страница папки разбирается в {имя файла: id}, &amp; раскодируется",
+                   listing == {"monitor_session.session": main_id, "Second & new.session": second_id}, str(listing)))
+    checks.append(("имя файла ищется без учёта регистра и без .session",
+                   session_sync.pick_file(listing, "MONITOR_SESSION")[1] == main_id
+                   and session_sync.pick_file(listing, "second & new")[1] == second_id
+                   and session_sync.pick_file(listing, "nope") is None, ""))
+    checks.append(("SESSION_FILE_<ИМЯ> читается из окружения",
+                   session_sync.file_names_from_env({"SESSION_FILE_SECOND": "s2.session", "SESSION_FILE_MAIN": ""})
+                   == {"SECOND": "s2.session"}, ""))
+    acc_map = session_sync.account_sessions(ROOT)
+    checks.append(("имена аккаунтов main/second сопоставляются с сессиями из sources.yaml",
+                   acc_map.get("main") == "monitor_session" and acc_map.get("second") == "second_session", str(acc_map)))
+
+    folder_sessions = {main_id: good_v1, second_id: good_v2}
+    folder_calls: list[str] = []
+
+    def folder_fetch(url: str, timeout: float = 0) -> bytes:
+        folder_calls.append(url)
+        if "embeddedfolderview" in url:
+            return page.encode("utf-8")
+        return folder_sessions[url.rsplit("id=", 1)[1]]
+
+    fdir = WORKDIR / "folder"
+    shutil.rmtree(fdir, ignore_errors=True)
+    fdir.mkdir(parents=True, exist_ok=True)
+    for key in ("sessions/monitor_session.session", "sessions/second_session.session", "state/session_sources.json"):
+        OBJECTS.pop(key, None)
+    folder_runner = cloud_entry.RadarRunner(
+        workdir=fdir, client=client, runner=fake_run, args="--once", sessions=("monitor_session", "second_session"),
+        session_folder=f"https://drive.google.com/drive/folders/{folder}",
+        session_files={"MAIN": "monitor_session", "SECOND": "Second & new.session"},
+        fetcher=folder_fetch, log=quiet)
+    fres = folder_runner.run_pass()
+    checks.append(("одна ссылка на папку + имена файлов: обе сессии скачаны, проход пошёл",
+                   fres.get("ok") is True
+                   and (fdir / "monitor_session.session").read_bytes() == good_v1
+                   and (fdir / "second_session.session").read_bytes() == good_v2,
+                   str(fres.get("restored", {}).get("session_sync"))))
+    checks.append(("папка просматривается один раз за проход, а не на каждый файл",
+                   sum("embeddedfolderview" in u for u in folder_calls) == 1, ""))
+    fres2 = folder_runner.run_pass()
+    rep_f = json.loads((fdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]
+    checks.append(("второй проход: версии те же — файлы не перезаписываются",
+                   rep_f["monitor_session"]["status"] == "unchanged" and rep_f["second_session"]["status"] == "unchanged"
+                   and fres2.get("ok") is True, str({k: v["status"] for k, v in rep_f.items()})))
+    folder_sessions[second_id] = make_session_bytes(key=b"c" * 256)
+    folder_runner.run_pass()
+    rep_f = json.loads((fdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]
+    checks.append(("файл second в папке заменили: подхватился только он",
+                   rep_f["second_session"]["status"] == "imported" and rep_f["monitor_session"]["status"] == "unchanged", ""))
+    noname = cloud_entry.RadarRunner(
+        workdir=fdir, client=client, runner=fake_run, args="--once", sessions=("second_session",),
+        session_folder=folder, session_files={"SECOND": "нет-такого.session"}, fetcher=folder_fetch, log=quiet)
+    noname.run_pass()
+    rep_n = json.loads((fdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    checks.append(("файла с таким именем в папке нет: ошибка называет файлы папки, рабочая сессия цела",
+                   rep_n["status"] == "error" and "нет-такого.session" in rep_n["detail"]
+                   and "monitor_session.session" in rep_n["detail"], rep_n["detail"][:80]))
+    default_name = cloud_entry.RadarRunner(
+        workdir=fdir, client=client, runner=fake_run, args="--once", sessions=("monitor_session",),
+        session_folder=folder, fetcher=folder_fetch, log=quiet)
+    default_name.run_pass()
+    checks.append(("имя файла не задано: ищется <имя_сессии>.session",
+                   json.loads((fdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]
+                   ["monitor_session"]["status"] == "unchanged", ""))
+
+    def closed_fetch(url: str, timeout: float = 0) -> bytes:
+        return b"<html>sign in</html>"
+    closed = cloud_entry.RadarRunner(
+        workdir=fdir, client=client, runner=fake_run, args="--once", sessions=("second_session",),
+        session_folder=folder, fetcher=closed_fetch, log=quiet)
+    closed.run_pass()
+    rep_c = json.loads((fdir / "session_sync.json").read_text(encoding="utf-8"))["sessions"]["second_session"]
+    checks.append(("папка закрыта: понятная ошибка про доступ, сессия не тронута",
+                   rep_c["status"] == "error" and "доступ" in rep_c["detail"], rep_c["detail"][:60]))
+    api_urls: list[str] = []
+
+    def api_fetch(url: str, timeout: float = 0) -> bytes:
+        api_urls.append(url)
+        return json.dumps({"files": [{"id": second_id, "name": "second_session.session"}]}).encode()
+    api_listing = session_sync.list_folder(folder, "KEY123", fetcher=api_fetch)
+    checks.append(("с GOOGLE_API_KEY папка читается через Drive API",
+                   api_listing == {"second_session.session": second_id} and "googleapis.com/drive/v3/files" in api_urls[0]
+                   and "key=KEY123" in api_urls[0], ""))
+    folder_env = cloud_entry.build_runner({"R2_BUCKET": "b", "TG_SESSION": "monitor_session,second_session",
+                                           "SESSION_DRIVE_URL": "https://drive.google.com/drive/folders/" + folder,
+                                           "SESSION_FILE_SECOND": "s.session", "RADAR_WORKDIR": str(fdir)})
+    checks.append(("build_runner подхватывает SESSION_DRIVE_URL и SESSION_FILE_*",
+                   folder_env.session_folder.endswith(folder) and folder_env.session_files == {"SECOND": "s.session"}, ""))
+    js_src = repo_text("src", "index.js")
+    checks.append(("воркер передаёт в контейнер SESSION_DRIVE_URL, SESSION_FILE_* и GOOGLE_API_KEY",
+                   all(x in js_src for x in ("SESSION_DRIVE_URL", "SESSION_FILE_", "GOOGLE_API_KEY")), ""))
+
     # -------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:
