@@ -799,7 +799,8 @@ async def main() -> None:
             key, _, value = line.partition("=")
             template[key.strip()] = value.strip()
     passed = set(re.findall(r"^\t\t([A-Z][A-Z0-9_]+):", worker, flags=re.MULTILINE))
-    non_secret = set((config.get("vars") or {}).keys())
+    # выключатели и список сессий задаются в дашборде по желанию: в шаблон секретов они не входят
+    non_secret = set((config.get("vars") or {}).keys()) | {"RADAR_ON", "TG_COMMANDS", "RADAR_SESSIONS"}
     expected = sorted(passed - non_secret)
     checks.append(("шаблон секретов = ровно то, что Worker передаёт в контейнер, минус vars",
                    sorted(template) == expected and len(expected) == 8,

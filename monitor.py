@@ -3015,7 +3015,7 @@ async def async_main(args) -> None:
     # выключатель радара: RADAR_ON=0 в Variables воркера — и проходы встают, без деплоя
     if not env_flag("RADAR_ON", True):
         print("[i] радар выключен переменной RADAR_ON=0 — проход пропущен. "
-              "Включить: Variables → RADAR_ON=1, затем GET /restart", file=sys.stderr)
+              "Включить: Variables → RADAR_ON=1", file=sys.stderr)
         return
     if args.once:
         print(f"[i] выключатели: RADAR_ON=1, TG_COMMANDS={int(tg_commands_enabled(args))} "

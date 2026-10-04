@@ -75,6 +75,10 @@ function containerEnv(env) {
 		R2_ACCESS_KEY_ID: String(env.R2_ACCESS_KEY_ID ?? ''),
 		R2_SECRET_ACCESS_KEY: String(env.R2_SECRET_ACCESS_KEY ?? ''),
 		RADAR_TOKEN: String(env.RADAR_TOKEN ?? ''),
+		// Выключатели: раньше в контейнер не передавались вовсе, и RADAR_ON=0 внутри не действовал.
+		RADAR_ON: String(env.RADAR_ON ?? '1'),
+		TG_COMMANDS: String(env.TG_COMMANDS ?? '1'),
+		RADAR_SESSIONS: String(env.RADAR_SESSIONS ?? ''),
 		RADAR_ARGS: String(env.RADAR_ARGS ?? '--once --catchup 0 --notify bot --mode B'),
 		RADAR_TIMEOUT: String(env.RADAR_TIMEOUT ?? '540'),
 	};
@@ -156,9 +160,27 @@ const HELP = `Telegram-радар (схема B: проход по распис�
 const PROTECTED = ['/check', '/run', '/status', '/usage', '/metrics.csv', '/log', '/restart',
 	'/sources-check'];
 
+/**
+ * Выключатель радара RADAR_ON читаем здесь, в Worker'е, при КАЖДОМ запуске: Worker получает
+ * свежие переменные сразу после правки в дашборде. Контейнер же читает переменные только при
+ * старте, а при cron раз в 10 минут и sleepAfter 15 минут он не засыпает вовсе — поэтому
+ * RADAR_ON=0, проверяемый одним контейнером, молча не действовал до ручного /restart.
+ */
+function radarOn(env) {
+	const raw = String(env.RADAR_ON ?? '').trim().toLowerCase();
+	return !['0', 'off', 'false', 'no', 'нет', 'выкл'].includes(raw);
+}
+
+const OFF_NOTE = 'радар выключен переменной RADAR_ON=0 (Worker не будит контейнер). '
+	+ 'Включить: RADAR_ON=1 в Variables — рестарт не нужен.';
+
 export default {
 	/** Cron: wall-clock до 15 минут, поэтому дожидаемся прохода целиком и пишем итог в лог. */
 	async scheduled(event, env) {
+		if (!radarOn(env)) {
+			console.log(`[radar] ${OFF_NOTE}`);
+			return;
+		}
 		try {
 			await runPass(env);
 		} catch (error) {
@@ -186,6 +208,7 @@ export default {
 		try {
 			if (path === '/run') {
 				if (request.method !== 'POST') return text('/run принимает только POST\n', 405);
+				if (!radarOn(env)) return text(`${OFF_NOTE}\n`, 200);
 				return await runPass(env);
 			}
 			if (path === '/restart') {

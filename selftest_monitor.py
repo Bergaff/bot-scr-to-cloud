@@ -2052,8 +2052,21 @@ async def main() -> None:
     checks.append(("состояние выключателей видно в логе прохода, а не Only в дашборде",
                    "выключатели: RADAR_ON=1" in mon_src, ""))
     cfg_src = Path("wrangler.jsonc").read_text(encoding="utf-8", errors="replace")
-    checks.append(("оба выключателя объявлены в vars воркера и включены",
-                   '"RADAR_ON": "1"' in cfg_src and '"TG_COMMANDS": "1"' in cfg_src, ""))
+    js_src = Path("src/index.js").read_text(encoding="utf-8", errors="replace")
+    import json as _json2, re as _re2, shutil as _sh2, subprocess as _sp2
+    checks.append(("выключатели RADAR_ON и TG_COMMANDS ПЕРЕДАЮТСЯ в контейнер (раньше не передавались — 0 не действовал)",
+                   "RADAR_ON: String(env.RADAR_ON" in js_src and "TG_COMMANDS: String(env.TG_COMMANDS" in js_src, ""))
+    checks.append(("Worker сам проверяет RADAR_ON на каждом cron-тике и в /run, контейнер не будит",
+                   "if (!radarOn(env))" in js_src and js_src.count("radarOn(env)") >= 3, ""))
+    checks.append(("деплой не стирает выключатели: keep_vars, а в vars RADAR_ON/TG_COMMANDS не заданы",
+                   '"keep_vars": true' in cfg_src and '"RADAR_ON": ' not in cfg_src and '"TG_COMMANDS": ' not in cfg_src, ""))
+    fn = _re2.search(r"function radarOn\(env\) \{.*?\n\}", js_src, _re2.S)
+    if fn and _sh2.which("node"):
+        script = fn.group(0) + "\nconsole.log(JSON.stringify(%s.map(v => radarOn(v === null ? {} : {RADAR_ON: v}))));" % _json2.dumps(
+            ["0", "off", " 0 ", "OFF", "1", "on", "", "yes", None])
+        got = _sp2.run(["node", "-e", script], capture_output=True, text=True, timeout=20).stdout.strip()
+        checks.append(("radarOn: 0/off выключают, 1/пусто/нет переменной/«yes» — включено",
+                       got == "[false,false,false,false,true,true,true,true,true]", got))
 
     # ------------------------------------------------- метка сборки
     section("Метка сборки: видно, какой код реально работает в облаке")

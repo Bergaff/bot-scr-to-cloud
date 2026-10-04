@@ -14,19 +14,21 @@
 	// Логи вызовов видны в дашборде и в `npx wrangler tail`
 	"observability": { "enabled": true },
 
+	// Не стирать переменные, добавленные в дашборде (RADAR_ON, TG_COMMANDS): иначе каждый
+	// деплой возвращал бы радар во «включено», даже если ты его выключил.
+	"keep_vars": true,
+
 	// Несекретные настройки. Секреты (TG_API_HASH, TG_BOT_TOKEN, R2_SECRET_ACCESS_KEY,
 	// RADAR_TOKEN) сюда НЕ пишем — только `npx wrangler secret put <ИМЯ>`.
 	"vars": {
 		"R2_BUCKET": "radar-state",
 		"TG_SESSION": "monitor_session,second_session",
 		"RADAR_ARGS": "--once --notify console --mode B --auto-join --service-notify bot",
-		"RADAR_TIMEOUT": "420",
-
-		// Выключатели: 1 — вкл, 0 — выкл. Правятся прямо в дашборде
-		// (Workers & Pages → bot-scr-to-cloud → Settings → Variables), деплой не нужен.
-		// Контейнер читает переменные при старте: после смены значения — GET /restart.
-		"RADAR_ON": "1",
-		"TG_COMMANDS": "1"
+		"RADAR_TIMEOUT": "420"
+		// Выключатели RADAR_ON и TG_COMMANDS (1 — вкл, 0 — выкл) здесь НЕ заданы нарочно: они
+		// живут только в дашборде (Workers & Pages → bot-scr-to-cloud → Settings → Variables),
+		// а keep_vars выше не даёт деплою их стереть. Не заданы = включено.
+		// RADAR_ON Worker проверяет на каждом cron-тике: перезапуск после смены не нужен.
 	},
 
 	// Контейнер с Python-радаром. image указывает на Dockerfile — wrangler сам соберёт
