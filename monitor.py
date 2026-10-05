@@ -1800,7 +1800,8 @@ class Monitor:
 
         chat_report: dict = {}
         resolved = await resolve_targets(self.client, [s.target for s in self.sources], self.paced,
-                                         auto_join=self.auto_join, report=chat_report)
+                                         auto_join=self.auto_join, report=chat_report,
+                                         memory=self.store, account=self.account or "")
         if self.account:
             record_account_chats(self.store, self.account, self.sources, resolved, chat_report)
         self.entities = resolved
@@ -2132,6 +2133,20 @@ def build_forwarder(client, account: AccountConfig, store, paced, args):
 # Почему аккаунт не вошёл: {имя аккаунта: (тип ошибки, текст)}. Нужно, чтобы проход мог пропустить
 # сломанный аккаунт и честно сообщить об этом в бота, а не умирать целиком.
 CONNECT_FAILURES: dict[str, tuple[str, str]] = {}
+
+
+async def announce_joins(service, account_name: str, sources, resolved: dict, report: dict) -> None:
+    """Сообщение в бот: аккаунт вступил в чат или подал заявку (раз на событие, не каждый проход)."""
+    titles = {src.target: (src.title or src.target) for src in sources}
+    for target, (code, note) in report.items():
+        label = (getattr(resolved.get(target), "title", None) or titles.get(target) or target)
+        if code == "requested":
+            await service.send(f"📨 Аккаунт «{account_name}» подал заявку на вступление в «{label}» — "
+                               f"ждёт одобрения админа (повтор не раньше чем через сутки).",
+                               key=f"join_request:{account_name}:{target}", force=True)
+        elif code == "ok" and note.startswith("вступил"):
+            await service.send(f"➕ Аккаунт «{account_name}» вступил в «{label}».",
+                               key=f"join_done:{account_name}:{target}", force=True)
 
 
 async def connect_client(client, account: AccountConfig, args) -> None:
@@ -3185,6 +3200,12 @@ async def async_main(args) -> None:
         client = make_client(acc.session, api_id, api_hash, delay=args.delay,
                              proxy=acc.proxy or args.proxy)
         try:
+            if args.once and not Path(f"{acc.session}.session").exists():
+                # В облаке ввести телефон и код негде: без файла сессии Telethon завис бы на вопросе.
+                CONNECT_FAILURES[acc.name] = ("SessionFileMissing",
+                                              f"нет файла сессии {acc.session}.session (ни в R2, ни на Диске)")
+                print(f"[!] Аккаунт «{acc.name}»: нет файла {acc.session}.session — пропускаю", file=sys.stderr)
+                sys.exit(1)
             await connect_client(client, acc, args)
         except SystemExit:
             # Бот должен ВИДЕТЬ, что аккаунт не вошёл (/accounts, /status), даже если проход
@@ -3293,8 +3314,10 @@ async def async_main(args) -> None:
                 prefix = f"[{acc.name}] " if multi else ""
                 chat_report: dict = {}
                 resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
-                                                 auto_join=args.auto_join, report=chat_report)
+                                                 auto_join=args.auto_join, report=chat_report,
+                                                 memory=store, account=acc.name)
                 record_account_chats(store, acc.name, monitor.sources, resolved, chat_report)
+                await announce_joins(service, acc.name, monitor.sources, resolved, chat_report)
                 monitor.entities = resolved
                 monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
                 if multi:

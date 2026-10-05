@@ -118,6 +118,7 @@ class RadarRunner:
                  db_name: str = "hits.sqlite3", metrics_name: str = "metrics.csv",
                  session_urls: dict | None = None, fetcher=None,
                  session_folder: str = "", session_files: dict | None = None, api_key: str = "",
+                 env: dict | None = None,
                  runner=subprocess.run, log=print):
         self.workdir = Path(workdir).resolve()
         self.client = client
@@ -131,6 +132,7 @@ class RadarRunner:
         self.session_folder = str(session_folder or "").strip()
         self.session_files = dict(session_files or {})
         self.api_key = str(api_key or "").strip()
+        self.env = dict(env) if env else None      # чтобы подобрать ссылки для аккаунтов, найденных в конфиге
         self._fetcher = fetcher or session_sync.fetch
         self._runner = runner
         self._log = log
@@ -153,6 +155,31 @@ class RadarRunner:
                           db_name=self.db_name, metrics_name=self.metrics_name,
                           log_file=str(self.log_path) if with_log and self.log_path.exists() else None,
                           log=self._log)
+
+    def discover_sessions(self, restored: dict) -> list[str]:
+        """Аккаунты из секции accounts в sources.yaml, которых нет в списке сессий: добавить в работу.
+
+        Чтобы завести ещё один аккаунт, не надо трогать TG_SESSION: достаточно записи в accounts
+        (и файла сессии в R2 либо ссылки на Диске). Файл из R2 подтягивается здесь же."""
+        try:
+            wanted = list(dict.fromkeys(session_sync.account_sessions(self.workdir).values()))
+        except Exception:                                # noqa: BLE001
+            return []
+        extra = [name for name in wanted if name and name not in self.sessions]
+        for name in extra:
+            self.sessions = self.sessions + (name,)
+            if self.client is not None:
+                try:
+                    status = self.client.download(session_key(name), self.workdir / f"{name}.session")
+                except Exception as exc:                 # noqa: BLE001
+                    status = f"error:{type(exc).__name__}"
+            else:
+                status = "missing"
+            restored.setdefault("sessions", {})[name] = status
+            self._log(f"[i] аккаунт из конфига: сессия {name}: {status}")
+        if extra and self.env is not None:
+            self.session_urls = session_sync.sources_from_env(self.env, self.sessions)
+        return extra
 
     def sync_sessions(self) -> dict:
         """Новые версии сессий по ссылкам (Google Диск): после R2, до проверки «файл есть».
@@ -209,10 +236,17 @@ class RadarRunner:
 
     def _run_pass_locked(self, started: float) -> dict:
         restored = self.restore()
+        self.discover_sessions(restored)
         synced = self.sync_sessions()
         if synced:
             restored = dict(restored, session_sync={n: v.get("status") for n, v in synced.items()})
         missing = self.missing_session_files()
+        # Часть аккаунтов без файла сессии — не повод останавливать остальные: монитор пропустит их
+        # сам и пришлёт в бот, чего не хватает. Стоим только когда нет НИ ОДНОЙ сессии.
+        if missing and len(missing) < len(self.sessions):
+            self._log(f"[!] нет файла сессии: {', '.join(missing)} — эти аккаунты пропущены, остальные работают")
+            restored = dict(restored, missing_sessions=list(missing))
+            missing = []
         if missing:
             names = ", ".join(missing)
             return {
@@ -714,6 +748,7 @@ def build_runner(env: dict | None = None) -> RadarRunner:
         session_folder=env.get("SESSION_DRIVE_URL", ""),
         session_files=session_sync.file_names_from_env(env),
         api_key=env.get("GOOGLE_API_KEY", ""),
+        env={k: v for k, v in env.items() if k.startswith(("SESSION_", "GOOGLE_"))},
     )
 
 

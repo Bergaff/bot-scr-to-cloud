@@ -663,6 +663,78 @@ async def main() -> None:
     batch_all = await resolve_targets(InviteClient(already_member=True), batch_links, Paced(0), auto_join=True)
     checks.append(("лимит вступлений не мешает чатам, где аккаунт уже состоит", len(batch_all) == 5, ""))
 
+    # публичные чаты: аккаунт вступает сам, заявку подаёт и не повторяет её каждый проход
+    class Channel(FakeEntity):
+        def __init__(self, entity_id, title, username=None, left=True):
+            super().__init__(entity_id, title, username)
+            self.left = left
+
+    class PublicClient:
+        """get_entity отдаёт канал; JoinChannelRequest ведёт себя по сценарию."""
+        def __init__(self, left=True, join_error=None):
+            self.left, self.join_error, self.joins = left, join_error, []
+        async def get_entity(self, target):
+            return Channel(-100500, "Публичный чат " + target, target.lstrip("@"), left=self.left)
+        async def __call__(self, request):
+            self.joins.append(request)
+            if self.join_error:
+                raise type(self.join_error, (Exception,), {})("boom")
+            return SimpleNamespace(chats=[Channel(-100500, "Вступили", "x", left=False)])
+
+    pub_store = HitStore(":memory:")
+    pub_client = PublicClient()
+    pub_rep: dict = {}
+    pub_res = await resolve_targets(pub_client, ["@pubchat"], Paced(0), auto_join=True, report=pub_rep,
+                                    memory=pub_store, account="second")
+    checks.append(("публичный чат, где аккаунта нет: радар вступает сам и читает его",
+                   len(pub_client.joins) == 1 and "@pubchat" in pub_res
+                   and pub_rep["@pubchat"] == ("ok", "вступил в этом проходе"), str(pub_rep)))
+    member_client = PublicClient(left=False)
+    await resolve_targets(member_client, ["@pubchat"], Paced(0), auto_join=True, memory=pub_store, account="second")
+    checks.append(("аккаунт уже в чате — вступление не вызывается", not member_client.joins, ""))
+    nojoin_client = PublicClient()
+    await resolve_targets(nojoin_client, ["@pubchat"], Paced(0), auto_join=False)
+    checks.append(("без --auto-join радар никуда не вступает", not nojoin_client.joins, ""))
+    req_store = HitStore(":memory:")
+    req_client = PublicClient(join_error="InviteRequestSentError")
+    req_rep: dict = {}
+    await resolve_targets(req_client, ["@closed"], Paced(0), auto_join=True, report=req_rep, memory=req_store, account="main")
+    req_rep2: dict = {}
+    await resolve_targets(req_client, ["@closed"], Paced(0), auto_join=True, report=req_rep2, memory=req_store, account="main")
+    checks.append(("чат с одобрением: заявка подаётся один раз, повторно сутки не подаётся",
+                   req_rep["@closed"][0] == "requested" and "одобрения" in req_rep["@closed"][1]
+                   and req_rep2["@closed"][0] == "pending" and len(req_client.joins) == 1, str(req_rep2)))
+    stale = json.loads(req_store.bot_state_get("join:main:@closed"))
+    stale["ts"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(timespec="seconds")
+    req_store.bot_state_set("join:main:@closed", json.dumps(stale))
+    await resolve_targets(req_client, ["@closed"], Paced(0), auto_join=True, memory=req_store, account="main")
+    checks.append(("через сутки заявка подаётся заново (вдруг админ не заметил)", len(req_client.joins) == 2, ""))
+    many_client = PublicClient()
+    many_rep: dict = {}
+    await resolve_targets(many_client, [f"@c{i}" for i in range(5)], Paced(0), auto_join=True, report=many_rep,
+                          memory=HitStore(":memory:"), account="main")
+    checks.append(("публичные чаты тоже в лимите «не больше 3 вступлений за проход», остальные ждут",
+                   len(many_client.joins) == 3 and sorted(v[0] for v in many_rep.values()).count("deferred") == 2, ""))
+    full_client = PublicClient(join_error="ChannelsTooMuchError")
+    full_rep: dict = {}
+    await resolve_targets(full_client, ["@x"], Paced(0), auto_join=True, report=full_rep, memory=HitStore(":memory:"))
+    checks.append(("предел чатов у аккаунта объясняется человеческим текстом",
+                   full_rep["@x"][0] == "error" and "500" in full_rep["@x"][1], str(full_rep)))
+    spoken: list[str] = []
+    class SpyService:
+        async def send(self, text, key="", force=False):
+            spoken.append(text)
+            return True
+    await monitor_module.announce_joins(SpyService(), "second", [Source(target="@closed", title="Закрытый"),
+                                                                   Source(target="@pubchat", title="Публичный")],
+                                        pub_res, {"@closed": ("requested", "x"), "@pubchat": ("ok", "вступил в этом проходе"),
+                                                  "@other": ("ok", "")})
+    checks.append(("в бот приходят сообщения: заявка подана и вступил (про обычные чаты — молчим)",
+                   len(spoken) == 2 and "подал заявку" in spoken[0] and "вступил" in spoken[1], str(spoken)[:100]))
+    checks.append(("нет файла сессии в проходе: аккаунт пропускается, а не ждёт телефон и код",
+                   (lambda src: "SessionFileMissing" in src and 'Path(f"{acc.session}.session").exists()' in src)(
+                       Path("monitor.py").read_text(encoding="utf-8")), ""))
+
     # итог по каждой цели для /chats в боте
     rep_ok: dict = {}
     await resolve_targets(InviteClient(already_member=True), ["https://t.me/+CmQyl50rf-NlODFi"], Paced(0),
@@ -681,7 +753,7 @@ async def main() -> None:
     checks.append(("отчёт resolve_targets: читается / не в чате / отложено / заявка ждёт админа",
                    list(rep_ok.values())[0][0] == "ok" and list(rep_no.values())[0][0] == "not_member"
                    and sorted(v[0] for v in rep_batch.values()) == ["deferred", "deferred", "ok", "ok", "ok"]
-                   and list(rep_pending.values())[0][0] == "pending"
+                   and list(rep_pending.values())[0][0] == "requested"
                    and "одобрения" in list(rep_pending.values())[0][1], str(rep_pending)))
 
     # ссылки: публичный чат и приватный

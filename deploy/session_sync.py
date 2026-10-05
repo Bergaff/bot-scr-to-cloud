@@ -178,12 +178,16 @@ def account_sessions(workdir: str | Path) -> dict[str, str]:
             accounts = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("accounts") or {}
         except Exception:                                  # noqa: BLE001
             continue
+        def _session(name: str, cfg: dict) -> str:
+            raw = Path(str(cfg.get("session") or f"{name}_session")).name
+            return raw[:-len(".session")] if raw.endswith(".session") else raw
+
         if isinstance(accounts, dict):
-            return {str(name): Path(str((cfg or {}).get("session") or "")).name.removesuffix(".session")
-                    for name, cfg in accounts.items() if isinstance(cfg, dict)}
+            return {str(name): _session(str(name), cfg or {}) for name, cfg in accounts.items()
+                    if isinstance(cfg or {}, dict) and (cfg or {}).get("enabled", True)}
         if isinstance(accounts, list):
-            return {str(a.get("name")): Path(str(a.get("session") or "")).name.removesuffix(".session")
-                    for a in accounts if isinstance(a, dict) and a.get("name")}
+            return {str(a.get("name")): _session(str(a.get("name")), a) for a in accounts
+                    if isinstance(a, dict) and a.get("name") and a.get("enabled", True)}
     return {}
 
 

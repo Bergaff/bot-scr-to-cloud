@@ -81,6 +81,7 @@ KEYBOARD_ROWS = [[{"text": "/status"}, {"text": "/queue"}, {"text": "/limits"}],
 KEYBOARD_COMMANDS = {"help", "start", "queue", "limits", "boost"}
 
 CHAT_STATUS_FALLBACK = {"deferred": "вступление отложено", "pending": "ждёт одобрения админа",
+                        "requested": "заявка подана, ждёт одобрения админа",
                         "not_member": "аккаунт не в чате", "error": "ошибка",
                         "no_login": "аккаунт не вошёл"}
 
@@ -1078,7 +1079,7 @@ class BotPanel:
         if not views:
             names = ", ".join(view.name for view in self.known_accounts())
             return f"Нет аккаунта «{account}». Есть: {names}"
-        icons = {"ok": "✅", "deferred": "⏳", "pending": "⏳", "not_member": "🚫",
+        icons = {"ok": "✅", "deferred": "⏳", "pending": "⏳", "requested": "📨", "not_member": "🚫",
                  "error": "⚠️", "no_login": "❌"}
         lines = ["🔗 Привязка чатов к аккаунтам (по Telegram-id)"]
         for view in views:

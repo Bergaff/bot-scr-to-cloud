@@ -945,6 +945,7 @@ async def main() -> None:
     sync_dir = WORKDIR / "sync"
     shutil.rmtree(sync_dir, ignore_errors=True)
     sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "sources.yaml").write_text("accounts: {}\n", encoding="utf-8")   # без авто-поиска аккаунтов
     served = {"data": good_v1, "fail": False, "urls": []}
 
     def fake_fetch(url: str, timeout: float = 0) -> bytes:
@@ -1019,11 +1020,43 @@ async def main() -> None:
                    not (sync_dir / "session_sync.json").exists(), ""))
     miss_dir = WORKDIR / "miss"
     miss_dir.mkdir(parents=True, exist_ok=True)
+    (miss_dir / "sources.yaml").write_text("accounts: {}\n", encoding="utf-8")
     OBJECTS.pop("sessions/ghost_session.session", None)
     ghost = cloud_entry.RadarRunner(workdir=miss_dir, client=client, runner=fake_run,
                                     sessions=("ghost_session",), log=quiet).run_pass()
     checks.append(("нехватка файла сессии подсказывает про Google Диск",
                    "SESSION_URL_GHOST_SESSION" in str(ghost.get("hint", "")), str(ghost.get("hint", ""))[:50]))
+
+    # ------------- новые аккаунты из accounts: подхватываются без правки TG_SESSION
+    disc_dir = WORKDIR / "disc"
+    shutil.rmtree(disc_dir, ignore_errors=True)
+    disc_dir.mkdir(parents=True, exist_ok=True)
+    (disc_dir / "sources.yaml").write_text(
+        "accounts:\n  main: {session: monitor_session}\n  third: {}\n  old: {enabled: false}\n"
+        "  fourth: {session: ./sessions/fourth_x.session}\n", encoding="utf-8")
+    for key in list(OBJECTS):
+        if key.startswith("sessions/"):
+            OBJECTS.pop(key)
+    OBJECTS["sessions/monitor_session.session"] = good_v1
+    OBJECTS["sessions/third_session.session"] = good_v1
+    disc_calls: list = []
+
+    def disc_run(command, **kwargs):
+        disc_calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout="ИТОГ: ок\n", stderr="")
+
+    disc = cloud_entry.RadarRunner(workdir=disc_dir, client=client, runner=disc_run, args="--once",
+                                   sessions=("monitor_session",), env={"SESSION_URL_THIRD_SESSION": "https://x/3"},
+                                   log=quiet)
+    disc_res = disc.run_pass()
+    checks.append(("аккаунты из accounts добавляются в работу сами, выключенный (enabled: false) — нет",
+                   disc.sessions == ("monitor_session", "third_session", "fourth_x"), str(disc.sessions)))
+    checks.append(("файл новой сессии подтянут из R2, а у аккаунта без файла проход не останавливается",
+                   (disc_dir / "third_session.session").exists() and disc_res.get("ok") is True
+                   and disc_res["restored"].get("missing_sessions") == ["fourth_x"] and len(disc_calls) == 1,
+                   str(disc_res.get("restored"))[:120]))
+    checks.append(("ссылка Диска для нового аккаунта берётся из окружения",
+                   disc.session_urls == {"third_session": "https://x/3"}, str(disc.session_urls)))
 
     # -------------------------------------------- сессия Pyrogram на Диске
     section("Сессия Pyrogram на Диске: конвертируется сама")

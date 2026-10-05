@@ -12,6 +12,7 @@ import asyncio
 import os
 import random
 import re
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -167,19 +168,67 @@ def invite_hash(target: str) -> str | None:
 MAX_JOINS_PER_PASS = 3
 
 
+# Как долго не повторять вступление после исхода (часы): заявка ждёт админа — повторная подача
+# только занимает слот из MAX_JOINS_PER_PASS; ошибку тоже не надо долбить каждые 10 минут.
+JOIN_RETRY_HOURS = {"pending": 24.0, "error": 6.0, "deferred": 1.0}
+
+
+def _memo_key(account: str, target: str) -> str:
+    return f"join:{account or '-'}:{target}"
+
+
+def _memo_recent(memory, account: str, target: str) -> tuple[str, str] | None:
+    """Недавний исход вступления (код, пояснение), если повторять ещё рано; иначе None."""
+    if memory is None:
+        return None
+    try:
+        raw = memory.bot_state_get(_memo_key(account, target))
+        data = json.loads(raw) if raw else None
+        if not data:
+            return None
+        stamp = datetime.fromisoformat(data["ts"])
+        age_h = (datetime.now(timezone.utc) - stamp).total_seconds() / 3600.0
+        if age_h < JOIN_RETRY_HOURS.get(data.get("code"), 6.0):
+            return data.get("code", "error"), data.get("text", "")
+    except Exception:  # noqa: BLE001 - память вступлений не должна ронять проход
+        return None
+    return None
+
+
+def _memo_put(memory, account: str, target: str, code: str = "", text: str = "") -> None:
+    """Запомнить исход вступления; пустой code — стереть (вступили или заявку одобрили)."""
+    if memory is None:
+        return
+    try:
+        memory.bot_state_set(_memo_key(account, target), json.dumps(
+            {"code": code, "text": text, "ts": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+            ensure_ascii=False) if code else "")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _needs_join(entity) -> bool:
+    """Аккаунт не состоит в этом канале/группе (Telegram отдаёт флаг left у чужих чатов)."""
+    return type(entity).__name__ == "Channel" and getattr(entity, "left", False) is True
+
+
 async def resolve_targets(client, targets: list[str], paced: Paced,
                           auto_join: bool = False,
                           max_joins: int = MAX_JOINS_PER_PASS,
-                          report: dict | None = None) -> dict[str, object]:
+                          report: dict | None = None,
+                          memory=None, account: str = "") -> dict[str, object]:
     """'@chat' / 'https://t.me/name' / 'https://t.me/+invite' / '-100…' -> entity.
 
-    Для приватных ссылок-приглашений: если аккаунт уже в чате — разрешается сразу;
-    если нет и включён auto_join — подписываемся (ImportChatInvite) и только потом читаем.
+    С auto_join аккаунт сам вступает в чаты, где его ещё нет: по ссылке-приглашению
+    (ImportChatInvite) и в публичные каналы/группы (JoinChannelRequest). Если чат требует
+    одобрения админа, подаётся заявка; повторно её не подают сутки (memory — любое хранилище
+    с bot_state_get/bot_state_set, обычно база радара). Не больше max_joins вступлений за проход.
     Ошибки по одной цели не роняют остальные.
 
     report (необязательный словарь) получает по каждой цели итог для бота: report[цель] =
-    (код, пояснение), код: ok · deferred · pending · not_member · error. Так бот в /chats
-    показывает, к какому чату аккаунт реально привязан, а к какому — нет и почему."""
+    (код, пояснение), код: ok · deferred · requested (заявка подана сейчас) · pending (заявка
+    ждёт админа) · not_member · error. Так бот в /chats показывает, к какому чату аккаунт реально
+    привязан, а к какому — нет и почему."""
     resolved: dict[str, object] = {}
     if report is None:
         report = {}
@@ -188,12 +237,17 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
         target = raw.strip()
         if not target:
             continue
+        status: tuple[str, str] = ("ok", "")
         try:
             entity = await call(lambda t=target: client.get_entity(t), paced, label=f"get_entity({target})")
         except Exception as exc:  # noqa: BLE001
             hash_ = invite_hash(target)
             not_member = "not part of" in str(exc) or "Cannot get entity" in str(exc)
             if hash_ and not_member and auto_join:
+                recent = _memo_recent(memory, account, target)
+                if recent:
+                    report[target] = ("pending" if recent[0] == "pending" else recent[0], recent[1])
+                    continue
                 if max_joins and joins_done >= max_joins:
                     print(f"[i] вступление в {target} отложено: за проход не больше {max_joins} "
                           f"вступлений (чтобы не злить Telegram), дойдёт в следующий проход",
@@ -205,9 +259,13 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                 outcome: dict = {}
                 entity = await _join_by_invite(client, target, hash_, paced, outcome)
                 if entity is None:
-                    report[target] = (outcome.get("code", "error"),
-                                      outcome.get("text", "вступить не удалось"))
+                    code = outcome.get("code", "error")
+                    text = outcome.get("text", "вступить не удалось")
+                    _memo_put(memory, account, target, "pending" if code == "pending" else code, text)
+                    report[target] = ("requested" if code == "pending" else code, text)
                     continue
+                _memo_put(memory, account, target)
+                status = ("ok", "вступил в этом проходе")
             else:
                 print(f"[!] не смог разрешить {target}: {type(exc).__name__} {exc}", file=sys.stderr)
                 if not_member:
@@ -221,11 +279,70 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                 else:
                     print("    проверь, что аккаунт подписан на этот чат и username верный", file=sys.stderr)
                 continue
+        else:
+            # Чат разрешился, но аккаунт может в нём не состоять (публичный канал/группа).
+            if auto_join and _needs_join(entity):
+                recent = _memo_recent(memory, account, target)
+                if recent:
+                    status = (recent[0], recent[1])
+                elif max_joins and joins_done >= max_joins:
+                    status = ("deferred", f"вступление отложено (не больше {max_joins} за проход), дойдёт позже")
+                else:
+                    joins_done += 1
+                    outcome = {}
+                    joined = await _join_public(client, entity, target, paced, outcome)
+                    code = outcome.get("code", "ok")
+                    if code == "ok":
+                        entity = joined or entity
+                        _memo_put(memory, account, target)
+                        status = ("ok", "вступил в этом проходе")
+                    else:
+                        _memo_put(memory, account, target, code if code != "requested" else "pending",
+                                  outcome.get("text", ""))
+                        status = (code, outcome.get("text", ""))
+                        if code == "deferred":
+                            joins_done = max(joins_done, max_joins or joins_done)   # флуд: больше не вступаем
+            elif auto_join and memory is not None:
+                _memo_put(memory, account, target)              # заявку одобрили или вступили руками
         resolved[target] = entity
-        report[target] = ("ok", "")
+        report[target] = status
         title = getattr(entity, "title", None) or getattr(entity, "username", target)
-        print(f"[+] {target} -> «{title}» (id={getattr(entity, 'id', '?')})", file=sys.stderr)
+        print(f"[+] {target} -> «{title}» (id={getattr(entity, 'id', '?')})"
+              + (f" — {status[1]}" if status[1] else ""), file=sys.stderr)
     return resolved
+
+
+async def _join_public(client, entity, target: str, paced: Paced, outcome: dict):
+    """Вступление в публичный канал/группу (JoinChannelRequest). Итог — в outcome[code/text].
+
+    code: ok · requested (подана заявка, нужно одобрение админа) · deferred (флуд, позже) · error."""
+    from telethon.tl.functions.channels import JoinChannelRequest
+
+    try:
+        updates = await call(lambda: client(JoinChannelRequest(entity)), paced,
+                             label=f"join({target})", retries=2)
+        chats = getattr(updates, "chats", None) or []
+        title = getattr(chats[0], "title", None) if chats else None
+        print(f"[+] вступил: {target} -> «{title or getattr(entity, 'title', target)}»", file=sys.stderr)
+        outcome.update(code="ok")
+        return chats[0] if chats else entity
+    except Exception as exc:  # noqa: BLE001
+        kind = type(exc).__name__
+        if kind == "UserAlreadyParticipantError":
+            outcome.update(code="ok")
+            return entity
+        if kind == "InviteRequestSentError":
+            outcome.update(code="requested", text="заявка на вступление подана, ждёт одобрения админа")
+        elif kind in ("FloodWaitError", "FloodWaitTooLong", "FloodPremiumWaitError"):
+            outcome.update(code="deferred", text="Telegram просит подождать перед вступлением, повторим позже")
+        elif kind == "ChannelsTooMuchError":
+            outcome.update(code="error", text="у аккаунта достигнут предел чатов (500): освободи место")
+        elif kind in ("UserBannedInChannelError", "ChannelPrivateError", "ChannelBannedError"):
+            outcome.update(code="error", text=f"аккаунту нельзя вступить в этот чат ({kind})")
+        else:
+            outcome.update(code="error", text=f"вступить не удалось: {kind}")
+        print(f"[!] не удалось вступить в {target}: {kind} {exc}", file=sys.stderr)
+    return None
 
 
 async def _join_by_invite(client, target: str, hash_: str, paced: Paced,
