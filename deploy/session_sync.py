@@ -197,6 +197,14 @@ def pick_file(listing: dict[str, str], wanted: str) -> tuple[str, str] | None:
     for candidate in (wanted, wanted + ".session"):
         if candidate.lower() in low:
             return low[candidate.lower()]
+    # Pyrogram-файлы называются «<telegram-id>_pyrogram.session»: достаточно написать id (или начало имени)
+    base = wanted.lower()
+    if base.endswith(".session"):
+        base = base[:-len(".session")]
+    if len(base) >= 5:
+        starts = [v for k, v in low.items() if k.startswith((base + "_", base + "."))]
+        if len(starts) == 1:
+            return starts[0]
     return None
 
 
@@ -376,7 +384,7 @@ def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: 
                 if hit:
                     link = hit[1]
                 else:
-                    shown = ", ".join(sorted(listing)[:8]) or "—"
+                    shown = ", ".join(sorted(listing)[:20]) or "—"
                     report[name] = {"status": "error",
                                     "detail": f"в папке нет файла «{wanted}» (там: {shown})"}
                     log(f"[!] сессия {name}: в папке нет файла «{wanted}»")

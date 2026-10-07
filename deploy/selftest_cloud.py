@@ -1153,6 +1153,12 @@ async def main() -> None:
                    session_sync.pick_file(listing, "MONITOR_SESSION")[1] == main_id
                    and session_sync.pick_file(listing, "second & new")[1] == second_id
                    and session_sync.pick_file(listing, "nope") is None, ""))
+    pyro_list = {"8125160821_pyrogram.session": "a", "8713797475_pyrogram.session": "b", "8713797475_old.session": "c"}
+    checks.append(("файл Pyrogram находится по одному Telegram-id; неоднозначное и чужое — нет",
+                   session_sync.pick_file(pyro_list, "8125160821")[1] == "a"
+                   and session_sync.pick_file(pyro_list, "8125160821_pyrogram")[1] == "a"
+                   and session_sync.pick_file(pyro_list, "8713797475") is None
+                   and session_sync.pick_file(pyro_list, "6721679210_pyrogram") is None, ""))
     checks.append(("SESSION_FILE_<ИМЯ> читается из окружения",
                    session_sync.file_names_from_env({"SESSION_FILE_SECOND": "s2.session", "SESSION_FILE_MAIN": ""})
                    == {"SECOND": "s2.session"}, ""))
