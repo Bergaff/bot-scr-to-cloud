@@ -85,7 +85,7 @@
     {
       "target": "@granica_BY_LT_PL",
       "title": "Граница BY-LT-PL",
-      "account": "main",
+      "account": "second",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50

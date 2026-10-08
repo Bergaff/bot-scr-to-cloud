@@ -117,7 +117,7 @@ sources:
 
   - target: "@granica_BY_LT_PL"
     title: "Граница BY-LT-PL"
-    account: main
+    account: second       # перенесён 08.10: самый шумный чат (≈ половина находок), делит нагрузку с main
     profile: chat
     min_score: 5
     catchup: 50
