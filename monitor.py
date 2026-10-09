@@ -2144,6 +2144,11 @@ async def announce_joins(service, account_name: str, sources, resolved: dict, re
             await service.send(f"📨 Аккаунт «{account_name}» подал заявку на вступление в «{label}» — "
                                f"ждёт одобрения админа (повтор не раньше чем через сутки).",
                                key=f"join_request:{account_name}:{target}", force=True)
+        elif code == "error" and note.startswith("вступил недавно"):
+            await service.send(f"⚠️ Аккаунт «{account_name}» вступил в «{label}», но Telegram снова считает его "
+                               f"не участником (антибот/капча?). Повторно вступаю не чаще раза в сутки — "
+                               f"зайди в чат с этого аккаунта и пройди проверку.",
+                               key=f"join_flap:{account_name}:{target}")
         elif code == "ok" and note.startswith("вступил"):
             await service.send(f"➕ Аккаунт «{account_name}» вступил в «{label}».",
                                key=f"join_done:{account_name}:{target}", force=True)

@@ -709,6 +709,33 @@ async def main() -> None:
     req_store.bot_state_set("join:main:@closed", json.dumps(stale))
     await resolve_targets(req_client, ["@closed"], Paced(0), auto_join=True, memory=req_store, account="main")
     checks.append(("через сутки заявка подаётся заново (вдруг админ не заметил)", len(req_client.joins) == 2, ""))
+    # цикл «вступил -> Telegram снова не участник»: вступаем один раз, а не каждые 10 минут
+    loop_store = HitStore(":memory:")
+    loop_client = PublicClient()
+    loop_reps: list[dict] = []
+    for _ in range(4):
+        rep_i: dict = {}
+        await resolve_targets(loop_client, ["@batumi"], Paced(0), auto_join=True, report=rep_i,
+                              memory=loop_store, account="second")
+        loop_reps.append(rep_i)
+    checks.append(("вступил, а Telegram всё ещё «не участник»: вступление не повторяется каждый проход",
+                   len(loop_client.joins) == 1 and loop_reps[0]["@batumi"][1] == "вступил в этом проходе"
+                   and all(r["@batumi"][0] == "error" and "вступил недавно" in r["@batumi"][1] for r in loop_reps[1:]),
+                   str(loop_reps[-1])))
+    stale_j = json.loads(loop_store.bot_state_get("join:second:@batumi"))
+    stale_j["ts"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(timespec="seconds")
+    loop_store.bot_state_set("join:second:@batumi", json.dumps(stale_j))
+    await resolve_targets(loop_client, ["@batumi"], Paced(0), auto_join=True, memory=loop_store, account="second")
+    checks.append(("через сутки вступление пробуется ещё раз", len(loop_client.joins) == 2, ""))
+    keep_client = PublicClient(left=False)
+    await resolve_targets(keep_client, ["@batumi"], Paced(0), auto_join=True, memory=loop_store, account="second")
+    checks.append(("пока вступление свежее, память о нём не стирается, даже если чат уже виден участником",
+                   json.loads(loop_store.bot_state_get("join:second:@batumi")).get("code") == "joined", ""))
+    already_rep: dict = {}
+    await resolve_targets(PublicClient(join_error="UserAlreadyParticipantError"), ["@z"], Paced(0), auto_join=True,
+                          report=already_rep, memory=HitStore(":memory:"), account="second")
+    checks.append(("«уже участник»: это не «вступил», сообщения в бот не будет",
+                   already_rep["@z"][0] == "ok" and not already_rep["@z"][1].startswith("вступил"), str(already_rep)))
     many_client = PublicClient()
     many_rep: dict = {}
     await resolve_targets(many_client, [f"@c{i}" for i in range(5)], Paced(0), auto_join=True, report=many_rep,
@@ -731,6 +758,12 @@ async def main() -> None:
                                                   "@other": ("ok", "")})
     checks.append(("в бот приходят сообщения: заявка подана и вступил (про обычные чаты — молчим)",
                    len(spoken) == 2 and "подал заявку" in spoken[0] and "вступил" in spoken[1], str(spoken)[:100]))
+    spoken.clear()
+    for _ in range(2):
+        await monitor_module.announce_joins(SpyService(), "second", [Source(target="@batumi", title="Батуми")], {},
+                                            {"@batumi": ("error", "вступил недавно, но Telegram снова …")})
+    checks.append(("цикл вступления: в бот уходит понятное предупреждение (без force: ключ гасит повторы)",
+                   len(spoken) == 2 and "антибот" in spoken[0], str(spoken)[:80]))
     checks.append(("нет файла сессии в проходе: аккаунт пропускается, а не ждёт телефон и код",
                    (lambda src: "SessionFileMissing" in src and 'Path(f"{acc.session}.session").exists()' in src)(
                        Path("monitor.py").read_text(encoding="utf-8")), ""))

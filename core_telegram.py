@@ -170,7 +170,14 @@ MAX_JOINS_PER_PASS = 3
 
 # Как долго не повторять вступление после исхода (часы): заявка ждёт админа — повторная подача
 # только занимает слот из MAX_JOINS_PER_PASS; ошибку тоже не надо долбить каждые 10 минут.
-JOIN_RETRY_HOURS = {"pending": 24.0, "error": 6.0, "deferred": 1.0}
+JOIN_RETRY_HOURS = {"pending": 24.0, "error": 6.0, "deferred": 1.0, "joined": 24.0}
+
+# «joined» — мы только что вступили. Если Telegram через проход снова говорит «ты не участник»
+# (антибот/капча выкинули новичка или данные устарели), заново вступать каждые 10 минут нельзя:
+# это и спам в боте, и путь к FloodWait и бану. Повтор — не раньше чем через сутки.
+REJOIN_TEXT = ("вступил недавно, но Telegram снова показывает «не участник» (чат, вероятно, выкидывает "
+               "новичков: капча/антибот). Повторное вступление не раньше чем через сутки; "
+               "пройди проверку чата вручную с этого аккаунта")
 
 
 def _memo_key(account: str, target: str) -> str:
@@ -246,7 +253,10 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
             if hash_ and not_member and auto_join:
                 recent = _memo_recent(memory, account, target)
                 if recent:
-                    report[target] = ("pending" if recent[0] == "pending" else recent[0], recent[1])
+                    if recent[0] == "joined":
+                        report[target] = ("error", REJOIN_TEXT)
+                    else:
+                        report[target] = ("pending" if recent[0] == "pending" else recent[0], recent[1])
                     continue
                 if max_joins and joins_done >= max_joins:
                     print(f"[i] вступление в {target} отложено: за проход не больше {max_joins} "
@@ -264,7 +274,7 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                     _memo_put(memory, account, target, "pending" if code == "pending" else code, text)
                     report[target] = ("requested" if code == "pending" else code, text)
                     continue
-                _memo_put(memory, account, target)
+                _memo_put(memory, account, target, "joined")
                 status = ("ok", "вступил в этом проходе")
             else:
                 print(f"[!] не смог разрешить {target}: {type(exc).__name__} {exc}", file=sys.stderr)
@@ -284,7 +294,7 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
             if auto_join and _needs_join(entity):
                 recent = _memo_recent(memory, account, target)
                 if recent:
-                    status = (recent[0], recent[1])
+                    status = ("error", REJOIN_TEXT) if recent[0] == "joined" else (recent[0], recent[1])
                 elif max_joins and joins_done >= max_joins:
                     status = ("deferred", f"вступление отложено (не больше {max_joins} за проход), дойдёт позже")
                 else:
@@ -294,8 +304,8 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                     code = outcome.get("code", "ok")
                     if code == "ok":
                         entity = joined or entity
-                        _memo_put(memory, account, target)
-                        status = ("ok", "вступил в этом проходе")
+                        _memo_put(memory, account, target, "joined")
+                        status = ("ok", outcome.get("text") or "вступил в этом проходе")
                     else:
                         _memo_put(memory, account, target, code if code != "requested" else "pending",
                                   outcome.get("text", ""))
@@ -303,7 +313,9 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                         if code == "deferred":
                             joins_done = max(joins_done, max_joins or joins_done)   # флуд: больше не вступаем
             elif auto_join and memory is not None:
-                _memo_put(memory, account, target)              # заявку одобрили или вступили руками
+                recent = _memo_recent(memory, account, target)  # заявку одобрили или вступили руками
+                if not (recent and recent[0] == "joined"):      # «joined» не стираем: защита от цикла вступлений
+                    _memo_put(memory, account, target)
         resolved[target] = entity
         report[target] = status
         title = getattr(entity, "title", None) or getattr(entity, "username", target)
@@ -329,7 +341,7 @@ async def _join_public(client, entity, target: str, paced: Paced, outcome: dict)
     except Exception as exc:  # noqa: BLE001
         kind = type(exc).__name__
         if kind == "UserAlreadyParticipantError":
-            outcome.update(code="ok")
+            outcome.update(code="ok", text="аккаунт уже участник (данные Telegram были устаревшими)")
             return entity
         if kind == "InviteRequestSentError":
             outcome.update(code="requested", text="заявка на вступление подана, ждёт одобрения админа")
