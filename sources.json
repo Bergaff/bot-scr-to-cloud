@@ -30,7 +30,9 @@
     "max_per_day": 180,
     "fallback": "link",
     "queue_ttl_hours": 24,
-    "reset_hours": [16],
+    "reset_hours": [
+      16
+    ],
     "utc_offset": 3
   },
   "sources": [
@@ -230,6 +232,38 @@
     },
     {
       "target": "@pkhuket2",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@mybatumi_chat",
+      "title": "Батуми (чат)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@Batumi14",
+      "title": "Батуми 14",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@tbilisi14",
+      "title": "Тбилиси 14",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@Vietnam_Bazaar",
+      "title": "Вьетнам (барахолка)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,

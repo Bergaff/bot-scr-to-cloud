@@ -258,6 +258,35 @@ sources:
     min_score: 5
     catchup: 50
 
+  # ─── Добавлено 08.10.2026: Грузия и Вьетнам (second вступит сам, не более 3 чатов за проход) ───
+  - target: "@mybatumi_chat"
+    title: "Батуми (чат)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@Batumi14"
+    title: "Батуми 14"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@tbilisi14"
+    title: "Тбилиси 14"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@Vietnam_Bazaar"
+    title: "Вьетнам (барахолка)"
+    account: second
+    profile: chat
+    min_score: 5
+    catchup: 50
+
   # ─── Выключенные примеры (раскомментируй, если понадобятся) ─────────────────
   # - target: "@granica_polsha"        # новостной канал
   #   profile: news
