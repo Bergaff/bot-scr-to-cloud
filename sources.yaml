@@ -43,7 +43,7 @@ accounts:
     session: second_session       # second_session.session
     forward:
       to: "@parcel_transfer_bot"
-      max_per_day: 120            # второй аккаунт моложе — лимит держим ниже
+      max_per_day: 180            # как у main: на нём самый шумный чат (было 120)
 
 # Пересылка найденных сообщений (именно forward, не копия) твоим аккаунтом.
 # Получатель — твой бот @parcel_transfer_bot: открой с этого же аккаунта чат с ботом

@@ -20,7 +20,7 @@
       "session": "second_session",
       "forward": {
         "to": "@parcel_transfer_bot",
-        "max_per_day": 120
+        "max_per_day": 180
       }
     }
   },
