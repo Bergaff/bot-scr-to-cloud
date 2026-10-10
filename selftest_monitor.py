@@ -870,7 +870,7 @@ async def main() -> None:
 
     # фильтры: только «ищу» и только нужное направление
     filtered = Monitor(client, store, [source], silent, Paced(0), only_intents=("request",),
-                       dedup_scope="chat", dedup_window=0)
+                       dedup_scope="chat", dedup_window=0, drop_seekers=False)
     filtered.entities = {source.target: entity}
     filtered.meta = {source.target: source}
     offer_hit = await filtered.process_message(fake_message(3001, "Везу в Вильнюс, есть места, возьму передачки"), source)
@@ -886,6 +886,63 @@ async def main() -> None:
     right_dir = await direction_filter.process_message(fake_message(3004, "Еду Минск-Варшава, возьму посылки"), source)
     checks.append(("--only-direction=BY->PL фильтрует направления",
                    wrong_dir is None and right_dir is not None, f"filtered={direction_filter.counter['filtered']}"))
+
+    # те, кто ищет место для себя, не нужны; водитель с «ищу попутчиков» и «возьму» — нужны
+    seeker_mon = Monitor(client, HitStore(":memory:"), [source], silent, Paced(0), dedup_scope="chat", dedup_window=0)
+    seeker_mon.entities = {source.target: entity}
+    seeker_mon.meta = {source.target: source}
+    seek_texts = ["Ищу одно место 14.10. Варшава-Минск. 1 большой чемодан.",
+                  "Нужно одно место на 10.10 Минск - Вроцлав( Варшава)",
+                  "Ищу место в машине Варшава-Брест, 1 чемодан"]
+    seek_res = [await seeker_mon.process_message(fake_message(7100 + i, t), source) for i, t in enumerate(seek_texts)]
+    keep_texts = ["Еду Брест-Варшава завтра в 7.00, возьму попутчиков без предоплаты",
+                  "Ищу попутчиков Минск-Варшава 20.09, есть места в машине",
+                  "Хочу передать посылку из Минска в Варшаву, кто едет?"]
+    keep_res = [await seeker_mon.process_message(fake_message(7200 + i, t), source) for i, t in enumerate(keep_texts)]
+    checks.append(("«ищу одно место» отсеивается как не водитель и не посылка",
+                   all(r is None for r in seek_res) and seeker_mon.counter["filtered"] == 3, str(seeker_mon.counter)))
+    checks.append(("водитель («еду, возьму», «ищу попутчиков») и посылка проходят",
+                   all(r is not None for r in keep_res), str([r is not None for r in keep_res])))
+    seeker_keep = Monitor(client, HitStore(":memory:"), [source], silent, Paced(0), dedup_scope="chat", dedup_window=0,
+                          drop_seekers=False)
+    seeker_keep.entities = {source.target: entity}
+    seeker_keep.meta = {source.target: source}
+    checks.append(("--keep-seekers возвращает прежнее поведение",
+                   await seeker_keep.process_message(fake_message(7300, seek_texts[0]), source) is not None, ""))
+
+    # перепост того же автора с мелкими правками — дубль; другой маршрут/автор — нет
+    near_mon = Monitor(client, HitStore(":memory:"), [source], silent, Paced(0), dedup_scope="chat", dedup_window=72)
+    near_mon.entities = {source.target: entity}
+    near_mon.meta = {source.target: source}
+    first_post = await near_mon.process_message(
+        fake_message(7400, "Еду завтра в 7.00 Брест-Варшава возьму попутчиков без предоплаты", sender_id=555), source)
+    edited = await near_mon.process_message(
+        fake_message(7401, "Завтра утром в 7.00 еду Брест-Варшава, возьму попутчиков без предоплаты", sender_id=555), source)
+    edited2 = await near_mon.process_message(
+        fake_message(7402, "Еду в воскресенье в 7.00 Брест-Варшава возьму попутчиков без предоплаты", sender_id=555), source)
+    reverse = await near_mon.process_message(
+        fake_message(7403, "Еду завтра в 7.00 Варшава-Брест возьму попутчиков без предоплаты", sender_id=555), source)
+    other_city = await near_mon.process_message(
+        fake_message(7404, "Еду завтра в 7.00 Брест-Познань возьму попутчиков без предоплаты", sender_id=555), source)
+    other_person = await near_mon.process_message(
+        fake_message(7405, "Завтра утром в 7.00 еду Брест-Варшава, возьму попутчиков без предоплаты и багаж", sender_id=556), source)
+    checks.append(("тот же автор перепостил объявление чуть иначе — дубль",
+                   first_post is not None and edited is None and edited2 is None
+                   and near_mon.counter["text_duplicates"] == 2, str(near_mon.counter)))
+    checks.append(("обратное направление, другой город и другой автор — не дубль",
+                   reverse is not None and other_city is not None and other_person is not None, ""))
+    near_store = HitStore(":memory:")
+    checks.append(("окно дублей считается от первого поста, а не продлевается дублями",
+                   not near_store.sender_near_duplicate(9, "Еду Брест-Варшава завтра возьму попутчиков", "BY->PL", 72)
+                   and near_store.sender_near_duplicate(9, "Еду Брест-Варшава завтра возьму попутчиков", "BY->PL", 72)
+                   and not near_store.sender_near_duplicate(9, "Еду Брест-Варшава завтра возьму попутчиков", "BY->PL", 0)
+                   and not near_store.sender_near_duplicate("", "Еду Брест-Варшава завтра возьму попутчиков", "BY->PL", 72), ""))
+    old_rows = near_store.conn.execute("SELECT COUNT(*) FROM sender_seen").fetchone()[0]
+    near_store.conn.execute("UPDATE sender_seen SET seen_at=?",
+                            ((datetime.now(timezone.utc) - timedelta(hours=73)).isoformat(timespec="seconds"),))
+    checks.append(("через 73 часа тот же текст снова проходит",
+                   old_rows >= 1 and not near_store.sender_near_duplicate(
+                       9, "Еду Брест-Варшава завтра возьму попутчиков", "BY->PL", 72), ""))
 
     # окно свежести: старое не уведомляет, свежее — да
     fresh_store = HitStore(str(workdir / "fresh.sqlite3"))

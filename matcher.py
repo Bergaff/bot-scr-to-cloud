@@ -117,6 +117,18 @@ BORDER_NEWS_RE = re.compile(
 TRAVEL_VERB_RE = re.compile(r"(?<![а-я])(?:еду|едем|лечу|летим|поеду|полечу|выезжаю|выезжаем|вылетаю|вылетаем)(?![а-я])")
 CITY_ROUTE_RE = re.compile(r"[А-ЯЁ][а-яё]{2,}(?:\s*(?:-|–|—|->|→|>)+\s*[А-ЯЁ][а-яё]{2,})+")
 
+# Человек ищет место/машину ДЛЯ СЕБЯ («ищу одно место 14.10», «нужна машина до Варшавы»). Это не водитель
+# и не посылка: боту-получателю такое не нужно. «Ищу попутчиков» сюда НЕ входит — так пишут водители.
+SEEKER_RE = re.compile(
+    r"(?<![а-я])(?:ищу|ищем|нужн[оаы]?|нужен|надо|необходим[оаы]?|требуется|"
+    r"хотим\s+найти|хочу\s+найти|помогите\s+найти|подскажите[^.?!\n]{0,40}?нужн[оаы]?)\s+"
+    r"(?:(?:\d+(?:\s*-\s*\d+)?|одн[оуа]|двух|два|две|трое|троих|пару|пара)\s*(?:человек\w*\s+)?)?"
+    r"(?:мест[оаы]?|попутк[ауи]|машин[ауы]|бус\w*|микроавтобус\w*|водител[а-яь]{0,3}|транспорт)(?![а-я])")
+# явные признаки предложения: если они есть, это водитель, а не ищущий место
+OFFER_SIGNAL_RE = re.compile(
+    r"(?<![а-я])(?:еду|едем|возьму|беру|заберу|везу|везем|выезд[а-я]*|выезжаю|выезжаем|отправление|"
+    r"есть\s+(?:\d+\s+)?(?:свободн[а-я]{0,3}\s+)?мест|свободн[а-я]{0,3}\s+мест)(?![а-я])")
+
 # ------------------------------------------------------------------ география
 
 GEO: dict[str, list[str]] = {
@@ -227,6 +239,7 @@ class Match:
     explain: bool = False
     details: bool = False
     border_context: bool = False
+    seat_seeker: bool = False       # человек ищет место/машину для себя (не водитель и не посылка)
 
     @property
     def matched(self) -> bool:
@@ -264,6 +277,7 @@ class Match:
             "score": self.score, "category": self.category, "intent": self.intent,
             "countries": self.countries, "direction": self.direction,
             "hits": self.hit_labels, "penalties": self.penalties, "details": self.details,
+            "seat_seeker": self.seat_seeker,
         }
 
     def line(self) -> str:
@@ -294,6 +308,8 @@ def analyze(text: str, min_score: int = 4, explain: bool = False, profile: str =
 
     result.details = "детали объявления" in result.hit_labels
     result.border_context = bool(BORDER_NEWS_RE.search(flat))
+    result.seat_seeker = bool(SEEKER_RE.search(flat) and "parcel" not in result.categories
+                              and not OFFER_SIGNAL_RE.search(flat))
     result.countries, result.direction = detect_geo(text)
     if result.countries:
         result.score += 1

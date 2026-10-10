@@ -38,7 +38,7 @@ from core_telegram import (BOT_TOKEN_HINT, FloodWaitTooLong, Paced, add_flood_ho
                            invite_hash, load_dotenv, make_client, message_link, peer_id,
                            resolve_targets, topic_of, topic_title_of)
 from forwarder import FETCH_FAILED
-from matcher import analyze, direction_allowed
+from matcher import GEO, analyze, direction_allowed
 
 _MISSING = object()          # «в кэше пачки ничего нет» (None в кэше значит «сообщение удалено»)
 
@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS text_seen_global (
     first_seen TEXT NOT NULL,
     chat_key   TEXT
 );
+CREATE TABLE IF NOT EXISTS sender_seen (
+    sender_id TEXT NOT NULL,
+    seen_at   TEXT NOT NULL,
+    direction TEXT,
+    tokens    TEXT,
+    geo       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sender_seen ON sender_seen(sender_id);
 CREATE TABLE IF NOT EXISTS forwarded (
     chat_key TEXT NOT NULL,
     msg_id   INTEGER NOT NULL,
@@ -241,6 +249,49 @@ class HitStore:
             self.conn.execute("INSERT INTO text_seen VALUES (?, ?, ?)", (chat_key, digest, stamp))
         self.conn.commit()
         return False, None
+
+    def sender_near_duplicate(self, sender_id, text: str, direction: str, window_hours: float,
+                              threshold: float = 0.7) -> bool:
+        """Тот же человек уже писал почти такой же текст по тому же направлению за окно.
+
+        Водители перепостят объявление каждые несколько часов, чуть меняя слова/время
+        («Еду завтра в 7.00…» -> «Еду в воскресенье в 7.00…»): точный хеш такое не ловит.
+        Сравниваем наборы слов (Жаккар >= threshold). Окно считается от ПЕРВОГО пропущенного
+        объявления, дубли его не продлевают: через окно новый пост снова проходит."""
+        sid = str(sender_id or "").strip()
+        if window_hours <= 0 or not sid.isdigit():          # нет автора/канал — не сравниваем
+            return False
+        words = frozenset(re.findall(r"\w+", (text or "").lower().replace("ё", "е")))
+        if len(words) < 3:
+            return False
+        places = tuple(p for names in GEO.values() for p in names)
+        geo = " ".join(sorted(w for w in words if len(w) >= 4 and w.startswith(places)))
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(hours=window_hours)).isoformat(timespec="seconds")
+        self.conn.execute("DELETE FROM sender_seen WHERE seen_at < ?", (cutoff,))
+        rows = self.conn.execute(
+            "SELECT direction, tokens, geo, seen_at FROM sender_seen WHERE sender_id=?", (sid,)).fetchall()
+        seen_of = {(d, t): at for d, t, _g, at in rows}
+        for old_direction, tokens, old_geo, _seen_at in rows:
+            if (old_direction or "?") != (direction or "?") or (old_geo or "") != geo:
+                continue                       # другой маршрут (Брест-Варшава и Брест-Познань — разные)
+            old = frozenset((tokens or "").split())
+            if not old:
+                continue
+            common = len(old & words)
+            smaller = min(len(old), len(words))
+            if (common / len(old | words) >= threshold
+                    or (smaller >= 6 and common / smaller >= 0.85)):      # короткая версия длинного поста
+                # вариант запоминаем с ВРЕМЕНЕМ ОРИГИНАЛА: цепочка правок ловится, окно не продлевается
+                self.conn.execute("INSERT INTO sender_seen VALUES (?, ?, ?, ?, ?)",
+                                  (sid, seen_of[(old_direction, tokens)], direction or "?",
+                                   " ".join(sorted(words)), geo))
+                self.conn.commit()
+                return True
+        self.conn.execute("INSERT INTO sender_seen VALUES (?, ?, ?, ?, ?)",
+                          (sid, now.isoformat(timespec="seconds"), direction or "?", " ".join(sorted(words)), geo))
+        self.conn.commit()
+        return False
 
     def save_hit(self, hit: dict) -> bool:
         """True — если такого совпадения ещё не было."""
@@ -1329,8 +1380,11 @@ class Monitor:
                  only_categories: tuple[str, ...] = (), forwarder=None, auto_join: bool = False,
                  heartbeat_minutes: float = 0.0, keep_hidden: bool = False,
                  account: str = "", show_account: bool = False,
-                 deadline: float | None = None, flood_wait_limit: float = 0.0):
+                 deadline: float | None = None, flood_wait_limit: float = 0.0,
+                 drop_seekers: bool = True, sender_dedup: bool = True):
         self.client, self.store, self.sources = client, store, sources
+        self.drop_seekers = drop_seekers            # не пересылать тех, кто ищет место для себя
+        self.sender_dedup = sender_dedup            # почти одинаковые перепосты одного автора — дубль
         self.notify, self.paced, self.explain, self.skip_out = notifier, paced, explain, skip_out
         self.dedup_window = dedup_window
         self.dedup_scope = dedup_scope
@@ -1531,6 +1585,8 @@ class Monitor:
         rejected = None
         if self.only_categories and match.category not in self.only_categories:
             rejected = ("category", f"категория {match.category}, нужна {','.join(self.only_categories)}")
+        elif self.drop_seekers and match.seat_seeker:
+            rejected = ("intent", "ищет место/машину для себя — не водитель и не посылка")
         elif self.only_intents and match.intent not in self.only_intents:
             rejected = ("intent", f"намерение {match.intent}, нужно {','.join(self.only_intents)}")
         elif self.only_directions and not direction_allowed(match.direction, self.only_directions):
@@ -1566,6 +1622,11 @@ class Monitor:
             if source_chat and source_chat != key:
                 self.counter["cross_chat_duplicates"] += 1   # тот же текст уже приходил из другого чата
                 self._bump(key, cross_chat=1)
+            return None
+        if self.sender_dedup and self.store.sender_near_duplicate(
+                getattr(message, "sender_id", None), text, match.direction, self.dedup_window):
+            self.counter["text_duplicates"] += 1            # тот же автор повторил объявление чуть иначе
+            self._bump(key, text_duplicates=1)
             return None
         self.counter["matched"] += 1
         self._bump(key, matched=1)
@@ -3253,7 +3314,8 @@ async def async_main(args) -> None:
                           account=acc.name, show_account=multi,
                           only_intents=tuple(x.strip() for x in (args.only_intent or "").split(",") if x.strip()),
                           only_directions=tuple(x.strip() for x in (args.only_direction or "").split(",") if x.strip()),
-                          deadline=deadline, flood_wait_limit=args.flood_wait_limit)
+                          deadline=deadline, flood_wait_limit=args.flood_wait_limit,
+                          drop_seekers=not args.keep_seekers, sender_dedup=not args.no_sender_dedup)
         runners.append((acc, client, monitor))
 
     if failed_accounts:
@@ -3608,8 +3670,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--notify-file", default="hits.log")
     ap.add_argument("--explain", action="store_true", help="показывать, какие правила сработали")
     ap.add_argument("--include-own", action="store_true", help="не пропускать свои сообщения")
-    ap.add_argument("--dedup-window", type=float, default=24.0,
+    ap.add_argument("--dedup-window", type=float, default=72.0,
                     help="окно (часы), в котором одинаковые тексты считаются дублем; 0 — выключить")
+    ap.add_argument("--keep-seekers", action="store_true",
+                    help="не отсеивать тех, кто ищет место/машину для себя («ищу одно место 14.10»)")
+    ap.add_argument("--no-sender-dedup", action="store_true",
+                    help="не считать дублем почти такой же текст того же автора по тому же направлению")
     ap.add_argument("--dedup-scope", choices=["global", "chat"], default="global",
                     help="global — дубли ловятся между чатами (по умолчанию), chat — только внутри одного")
     ap.add_argument("--category", help="категории: parcel (посылки/передачи), mixed (посылки+попутчики), ride (только люди)")
