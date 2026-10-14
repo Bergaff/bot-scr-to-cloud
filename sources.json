@@ -30,9 +30,7 @@
     "max_per_day": 180,
     "fallback": "link",
     "queue_ttl_hours": 24,
-    "reset_hours": [
-      16
-    ],
+    "reset_hours": [16],
     "utc_offset": 3
   },
   "sources": [
@@ -264,6 +262,78 @@
     {
       "target": "@Vietnam_Bazaar",
       "title": "Вьетнам (барахолка)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@pochta_brazil",
+      "title": "Почта Бразилия",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@posylkathai",
+      "title": "Посылки Таиланд",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@SkyPtoP_package",
+      "title": "SkyPtoP (посылки)",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@airfellow",
+      "title": "Airfellow (попутчики)",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@dubaisend",
+      "title": "Дубай (передачи)",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@china_poputchik",
+      "title": "Китай (попутчики)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@dubai70077",
+      "title": "Дубай (чат)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@czech_info_chat2",
+      "title": "Чехия (инфо-чат)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@refugees_in_Germany",
+      "title": "Германия (беженцы)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,
