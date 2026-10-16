@@ -96,6 +96,8 @@ class Forwarder:
         from telethon.errors import ChatForwardsRestrictedError, FloodWaitError, RPCError
 
         try:
+            if self.mode == "forward" and getattr(message, "noforwards", False) is True:
+                raise ChatForwardsRestrictedError(None)   # Telegram сам пометил: пересылка запрещена — не стучимся зря
             if self.mode == "forward":
                 await self.paced.wait()
                 await self.client.forward_messages(self.target, messages=[message])
@@ -222,5 +224,7 @@ class Forwarder:
     def _text_with_link(hit: dict, note: bool = False) -> str:
         head = "🔁 Пересылка запрещена в источнике — текст со ссылкой:" if note else "📨 Найдено:"
         text = (hit.get("text") or "").strip()
-        parts = [head, "", text, "", hit.get("link", ""), f"({hit.get('chat_title') or hit.get('chat_key')})"]
+        author = str(hit.get("sender_name") or "").strip()
+        parts = [head, "", text, "", f"Автор: {author}" if author else None, hit.get("link", ""),
+                 f"({hit.get('chat_title') or hit.get('chat_key')})"]
         return "\n".join(part for part in parts if part is not None)[:4000]

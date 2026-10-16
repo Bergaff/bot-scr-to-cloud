@@ -2290,17 +2290,24 @@ def record_account_me(store, account_name: str, me) -> None:
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds")})
 
 
+def is_protected(entity) -> bool:
+    """В чате отключено сохранение контента (noforwards): пересылать оттуда нельзя, уйдёт текстом со ссылкой."""
+    return getattr(entity, "noforwards", False) is True
+
+
 def record_account_chats(store, account_name: str, sources, resolved: dict | None = None,
-                         report: dict | None = None, no_login: bool = False) -> None:
+                         report: dict | None = None, no_login: bool = False) -> list[tuple[str, str]]:
     """Чаты аккаунта: цель из конфига, название, Telegram-id чата, статус (/chats в боте).
 
-    no_login — аккаунт не вошёл: берём конфиг, а id и названия оставляем из прошлого прохода."""
+    no_login — аккаунт не вошёл: берём конфиг, а id и названия оставляем из прошлого прохода.
+    Возвращает [(цель, название)] чатов, где запрет пересылки обнаружен ВПЕРВЫЕ (сообщить в бот)."""
     key = f"account:{account_name}:chats"
     previous = {item.get("target"): item for item in _state_json(store, key).get("items", [])
                 if isinstance(item, dict)}
     resolved = resolved or {}
     report = report or {}
     items = []
+    newly: list[tuple[str, str]] = []
     for source in sources:
         target = source.target
         old = previous.get(target, {})
@@ -2312,10 +2319,58 @@ def record_account_chats(store, account_name: str, sources, resolved: dict | Non
         title = (getattr(entity, "title", None) or getattr(entity, "first_name", None)
                  or source.title or old.get("title") or "")
         chat_id = peer_id(entity) if entity is not None else old.get("id")
+        protected = is_protected(entity) if entity is not None else bool(old.get("protected"))
+        if protected and entity is not None and not old.get("protected"):
+            newly.append((target, str(title)))
         items.append({"target": target, "title": str(title), "id": chat_id,
-                      "status": code, "note": note})
+                      "status": code, "note": note, "protected": protected})
     _state_put(store, key, {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                             "items": items})
+    return newly
+
+
+async def announce_protected(service, account_name: str, newly: list[tuple[str, str]]) -> None:
+    """Один раз на чат: в нём запрещена пересылка, находки оттуда придут текстом со ссылкой."""
+    for target, title in newly:
+        await service.send(f"🔒 В чате «{title}» ({target}) запрещена пересылка и копирование. "
+                           f"Аккаунт «{account_name}» читает его, но находки оттуда придут в бот не пересылкой, "
+                           f"а текстом со ссылкой на сообщение. Все такие чаты: /protected",
+                           key=f"protected:{account_name}:{target}", force=True)
+
+
+async def scan_protected_dialogs(client, store, account_name: str, paced, max_age_hours: float = 24.0,
+                                 limit: int = 800) -> dict | None:
+    """Все подписки аккаунта: у каких отключено сохранение контента. Раз в сутки, результат — /protected.
+
+    Один запрос списка диалогов (по 100 штук за вызов), поэтому дёшево. Любая ошибка не роняет проход."""
+    key = f"account:{account_name}:protected"
+    previous = _state_json(store, key)
+    try:
+        last = datetime.fromisoformat(previous["ts"])
+        if (datetime.now(timezone.utc) - last).total_seconds() < max_age_hours * 3600.0:
+            return None
+    except (KeyError, ValueError, TypeError):
+        pass
+    try:
+        dialogs = await call(lambda: client.get_dialogs(limit=limit), paced, label="get_dialogs")
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"[!] подписки аккаунта «{account_name}» не прочитались: {type(exc).__name__}", file=sys.stderr)
+        return None
+    items, scanned = [], 0
+    for dialog in dialogs or []:
+        entity = getattr(dialog, "entity", None)
+        if type(entity).__name__ not in ("Channel", "Chat"):
+            continue
+        scanned += 1
+        if is_protected(entity):
+            items.append({"title": str(getattr(entity, "title", "") or ""),
+                          "username": getattr(entity, "username", None) or "",
+                          "id": peer_id(entity),
+                          "kind": "канал" if getattr(entity, "broadcast", False) else "группа"})
+    result = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "scanned": scanned, "items": items}
+    _state_put(store, key, result)
+    print(f"[i] «{account_name}»: подписок {scanned}, с запретом пересылки {len(items)}", file=sys.stderr)
+    return result
 
 
 def import_session_sync(store, accounts, path: str = "session_sync.json") -> dict:
@@ -3383,8 +3438,10 @@ async def async_main(args) -> None:
                 resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
                                                  auto_join=args.auto_join, report=chat_report,
                                                  memory=store, account=acc.name)
-                record_account_chats(store, acc.name, monitor.sources, resolved, chat_report)
+                newly_protected = record_account_chats(store, acc.name, monitor.sources, resolved, chat_report)
                 await announce_joins(service, acc.name, monitor.sources, resolved, chat_report)
+                await announce_protected(service, acc.name, newly_protected)
+                await scan_protected_dialogs(client, store, acc.name, paced)
                 monitor.entities = resolved
                 monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
                 if multi:

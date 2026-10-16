@@ -54,6 +54,7 @@ HELP_LINES = [
     ("status", "общий статус: режим, аптайм, аккаунты, находки, очередь, ошибки"),
     ("accounts", "по каждому аккаунту: Telegram-id, вошёл ли, пульс, счётчик/лимит, ошибки"),
     ("chats [аккаунт]", "к каким чатам привязан каждый аккаунт: название, Telegram-id чата, статус"),
+    ("protected", "чаты с запретом пересылки и копирования среди подписок аккаунтов"),
     ("stats [N]", "статистика за N дней (по умолчанию 7)"),
     ("report", "прислать файл stats.txt документом"),
     ("queue", "очередь отложенных пересылок: сколько и что самое старое"),
@@ -1104,13 +1105,43 @@ class BotPanel:
                 mark = icons.get(status, "•")
                 title = str(item.get("title") or item.get("target") or "?")[:40]
                 chat_id = item.get("id")
-                row = f"  {mark} {title}" + (f" · {chat_id}" if chat_id else " · id н/д")
+                row = f"  {mark} {title}" + (" 🔒" if item.get("protected") else "") \
+                    + (f" · {chat_id}" if chat_id else " · id н/д")
                 if status != "ok":
                     row += f" — {item.get('note') or CHAT_STATUS_FALLBACK.get(status, status)}"
                 lines.append(row)
             if data.get("ts"):
                 lines.append(f"  обновлено {local_stamp(data['ts'])}")
+        if any(item.get("protected") for view in views
+               for item in self._state_json(f"account:{view.name}:chats").get("items", []) if isinstance(item, dict)):
+            lines += ["", "🔒 — в чате запрещена пересылка: находки приходят текстом со ссылкой. Все такие чаты: /protected"]
         return truncate("\n".join(lines), self.message_limit, hint="/chats <аккаунт>")
+
+    def cmd_protected(self) -> str:
+        """Подписки аккаунтов, где отключено сохранение контента: пересылка оттуда невозможна."""
+        lines = ["🔒 Чаты с запретом пересылки и копирования",
+                 "Находки из них приходят в бот не пересылкой, а текстом со ссылкой на сообщение."]
+        for view in self.known_accounts():
+            data = self._state_json(f"account:{view.name}:protected")
+            chats = self._state_json(f"account:{view.name}:chats")
+            radar_ids = {str(item.get("id")) for item in chats.get("items", []) if isinstance(item, dict)
+                         and item.get("id") and item.get("protected")}
+            lines.append("")
+            if not data.get("ts"):
+                lines.append(f"{view.name} · список подписок ещё не проверялся (проверка идёт раз в сутки в проходе)")
+                continue
+            items = [item for item in data.get("items", []) if isinstance(item, dict)]
+            lines.append(f"{view.name} · подписок {data.get('scanned', '?')}, с запретом {len(items)} "
+                         f"· проверено {local_stamp(data['ts'])}")
+            for item in sorted(items, key=lambda x: str(x.get("title") or "")):
+                name = str(item.get("title") or item.get("username") or "?")[:40]
+                user = f" @{item['username']}" if item.get("username") else ""
+                where = "в радаре" if str(item.get("id")) in radar_ids else "не в конфиге радара"
+                lines.append(f"  🔒 {name}{user} · {item.get('kind') or 'чат'} · {where}")
+        if len(lines) == 2:
+            lines.append("")
+            lines.append("Нет данных об аккаунтах.")
+        return truncate("\n".join(lines), self.message_limit)
 
     def cmd_stats(self, days: str = "") -> Answer:
         blocked = self._heavy_guard("stats")

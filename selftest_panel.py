@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -860,6 +861,27 @@ async def main() -> None:
                    and "👥 Аккаунты" in empty_panel.dispatch("/accounts").text, ""))
     checks.append(("/chats есть в справке и в меню бота", any(line[0].startswith("chats") for line in HELP_LINES)
                    and "chats" in COMMANDS, ""))
+
+    # защищённые чаты: 🔒 в /chats и список подписок в /protected
+    prot_panel_store = HitStore(":memory:")
+    prot_panel_store.bot_state_set("account:main:chats", json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
+        "items": [{"target": "@secret", "title": "Секретный чат", "id": -1001000000007, "status": "ok", "protected": True},
+                  {"target": "@open", "title": "Открытый чат", "id": -1001000000008, "status": "ok", "protected": False}]}))
+    prot_panel_store.bot_state_set("account:main:protected", json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
+        "scanned": 40, "items": [{"title": "Секретный чат", "username": "secret", "id": -1001000000007, "kind": "группа"},
+                                 {"title": "Чужой защищённый канал", "username": "", "id": -1001000000099, "kind": "канал"}]}))
+    prot_panel = BotPanel(prot_panel_store, transport=object(), accounts=[AccountView(name="main"), AccountView(name="second")])
+    prot_chats = prot_panel.dispatch("/chats").text
+    prot_text = prot_panel.dispatch("/protected").text
+    checks.append(("/chats: чат с запретом пересылки помечен 🔒, обычный — нет",
+                   "Секретный чат 🔒" in prot_chats and "Открытый чат 🔒" not in prot_chats and "/protected" in prot_chats,
+                   prot_chats[:160]))
+    checks.append(("/protected: подписки с запретом, видно какие уже в радаре, а какие нет; у second «не проверялся»",
+                   "подписок 40, с запретом 2" in prot_text and "Секретный чат @secret · группа · в радаре" in prot_text
+                   and "Чужой защищённый канал · канал · не в конфиге радара" in prot_text
+                   and "second · список подписок ещё не проверялся" in prot_text, prot_text[:200]))
+    checks.append(("/protected есть в справке и в меню бота",
+                   any(line[0] == "protected" for line in HELP_LINES) and "protected" in COMMANDS, ""))
 
     section("15d. Очередь: чистка старше суток, /boost, окна лимита")
     q_store = HitStore(":memory:")

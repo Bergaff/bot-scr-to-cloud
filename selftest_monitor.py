@@ -1033,6 +1033,71 @@ async def main() -> None:
     checks.append(("в чате с запретом пересылки ушёл текст со ссылкой",
                    len(fwd_client.sent) == 1 and "t.me/travelersminsk/1010" in fwd_client.sent[0], ""))
 
+    # чат с запретом пересылки (флаг noforwards у сообщения): пересылку даже не пробуем, уходит текст с автором
+    prot_store = HitStore(":memory:")
+    prot_client = FwdClient(entity, [])
+    prot_fwd = Forwarder(prot_client, "@parcel_transfer_bot", prot_store, Paced(0), mode="forward",
+                         max_per_day=10, fallback="link")
+    await prot_fwd.prepare()
+    prot_mon = Monitor(prot_client, prot_store, [source], silent, Paced(0), forwarder=prot_fwd,
+                       dedup_scope="chat", dedup_window=0)
+    prot_mon.entities = {source.target: entity}
+    prot_mon.meta = {source.target: source}
+    prot_msg = fake_message(1201, "Еду Брест-Варшава завтра в 7.00, возьму посылки и попутчиков")
+    prot_msg.noforwards = True
+    await prot_mon.process_message(prot_msg, source)
+    checks.append(("флаг noforwards: пересылка не пробуется, в бот уходит текст со ссылкой и автором",
+                   not prot_client.forwarded and len(prot_client.sent) == 1
+                   and "t.me/travelersminsk/1201" in prot_client.sent[0] and "Автор: Иван Тестов" in prot_client.sent[0],
+                   str(prot_client.sent)[:120]))
+
+    # защищённые чаты: отметка в /chats, одно сообщение в бот, проверка всех подписок
+    class Channel:
+        def __init__(self, title, username=None, noforwards=False, broadcast=False, entity_id=-1001000000001):
+            self.title, self.username, self.noforwards, self.broadcast, self.id = title, username, noforwards, broadcast, entity_id
+
+    class User:
+        first_name, noforwards = "Вася", True
+        id = 5
+
+    prot_chat_store = HitStore(":memory:")
+    prot_sources = [Source(target="@secret", title="Секретный"), Source(target="@open", title="Открытый")]
+    prot_resolved = {"@secret": Channel("Секретный чат", "secret", noforwards=True, entity_id=-1001000000007),
+                     "@open": Channel("Открытый чат", "open", entity_id=-1001000000008)}
+    first_new = monitor_module.record_account_chats(prot_chat_store, "main", prot_sources, prot_resolved)
+    second_new = monitor_module.record_account_chats(prot_chat_store, "main", prot_sources, prot_resolved)
+    saved_items = json.loads(prot_chat_store.bot_state_get("account:main:chats"))["items"]
+    checks.append(("запрет пересылки записывается по чату и о нём сообщают один раз",
+                   first_new == [("@secret", "Секретный чат")] and second_new == []
+                   and [i["protected"] for i in saved_items] == [True, False], str(saved_items)[:100]))
+    said: list[str] = []
+
+    class SaySvc:
+        async def send(self, text, key="", force=False):
+            said.append(text)
+            return True
+    await monitor_module.announce_protected(SaySvc(), "main", first_new)
+    checks.append(("в бот приходит 🔒-сообщение про чат с запретом", len(said) == 1 and "🔒" in said[0]
+                   and "/protected" in said[0], str(said)[:80]))
+
+    class DialogClient:
+        calls = 0
+        async def get_dialogs(self, limit=None):
+            DialogClient.calls += 1
+            return [SimpleNamespace(entity=Channel("Закрытая группа", "closed", noforwards=True,
+                                                   entity_id=-1001000000007)),
+                    SimpleNamespace(entity=Channel("Обычный канал", "plain", broadcast=True)),
+                    SimpleNamespace(entity=Channel("Защищённый канал", None, noforwards=True, broadcast=True,
+                                                   entity_id=-1001000000099)),
+                    SimpleNamespace(entity=User())]
+    scan_store = HitStore(":memory:")
+    scan = await monitor_module.scan_protected_dialogs(DialogClient(), scan_store, "main", Paced(0))
+    again = await monitor_module.scan_protected_dialogs(DialogClient(), scan_store, "main", Paced(0))
+    checks.append(("проверка подписок: найдены чаты с запретом, личные диалоги не считаются, повтор раз в сутки",
+                   scan is not None and scan["scanned"] == 3 and [i["title"] for i in scan["items"]]
+                   == ["Закрытая группа", "Защищённый канал"] and again is None and DialogClient.calls == 1,
+                   str(scan)[:120]))
+
     # ---------- форум-чаты: определение темы, чтение по темам, фильтр в живом режиме
     from core_telegram import collect_topics, topic_of, topic_title_of
 
