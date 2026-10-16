@@ -1082,8 +1082,41 @@ async def main() -> None:
     await prot_mon.process_message(prot_msg, source)
     checks.append(("флаг noforwards: пересылка не пробуется, в бот уходит текст со ссылкой и автором",
                    not prot_client.forwarded and len(prot_client.sent) == 1
-                   and "t.me/travelersminsk/1201" in prot_client.sent[0] and "Автор: Иван Тестов" in prot_client.sent[0],
-                   str(prot_client.sent)[:120]))
+                   and "t.me/travelersminsk/1201" in prot_client.sent[0] and "@ivan_test" in prot_client.sent[0]
+                   and "Автор" not in prot_client.sent[0] and "запрещена" not in prot_client.sent[0]
+                   and "Иван" not in prot_client.sent[0],
+                   str(prot_client.sent)[:160]))
+    # контакт: телефон из самого сообщения важнее username; нет ни того ни другого — строки нет, имени профиля тоже
+    phone_msg = fake_message(1202, "Еду Брест-Варшава завтра, возьму посылку. Звоните +375 29 123-45-67")
+    phone_msg.noforwards = True
+    await prot_mon.process_message(phone_msg, source)
+    class NoNameClient(FwdClient):
+        async def get_entity(self, target):
+            if isinstance(target, int):
+                return SimpleNamespace(id=target, first_name="Анна", last_name=None, username=None, title=None)
+            return await super().get_entity(target)
+    noname_client = NoNameClient(entity, [])
+    noname_fwd = Forwarder(noname_client, "@parcel_transfer_bot", HitStore(":memory:"), Paced(0), mode="forward",
+                           max_per_day=10, fallback="link")
+    await noname_fwd.prepare()
+    noname_mon = Monitor(noname_client, noname_fwd.store, [source], silent, Paced(0), forwarder=noname_fwd,
+                         dedup_scope="chat", dedup_window=0)
+    noname_mon.entities = {source.target: entity}
+    noname_mon.meta = {source.target: source}
+    noname_msg = fake_message(1203, "Еду Брест-Варшава завтра в 7.00, возьму посылки и попутчиков")
+    noname_msg.noforwards = True
+    await noname_mon.process_message(noname_msg, source)
+    checks.append(("контакт: телефон из текста, иначе @username; без них строки нет и имя профиля не пишем",
+                   "+375 29 123-45-67" in prot_client.sent[1] and "@ivan_test" not in prot_client.sent[1]
+                   and len(noname_client.sent) == 1 and "Анна" not in noname_client.sent[0]
+                   and noname_client.sent[0].splitlines()[-2].startswith("https://t.me/"),
+                   str(noname_client.sent)[:160]))
+    checks.append(("телефон ищется в разных записях и не путается с датами и ценами",
+                   Forwarder.phone_in("8 029 123 45 67 звоните") == "8 029 123 45 67"
+                   and Forwarder.phone_in("пишите +48(500)123-456") == "+48(500)123-456"
+                   and Forwarder.phone_in("375291234567") == "375291234567"
+                   and Forwarder.phone_in("выезд 17.10.2026 в 7.00, 1 500 000 руб") == ""
+                   and Forwarder.phone_in("https://t.me/c/1234567890/77") == "", ""))
 
     # защищённые чаты: отметка в /chats, одно сообщение в бот, проверка всех подписок
     class Channel:

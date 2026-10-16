@@ -16,10 +16,13 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
 from core_telegram import call
+
+PHONE_RE = re.compile(r"(?<![\w/])(?:\+|00)?\d(?:[\s\-().]?\d){8,14}(?!\w)")
 
 
 # fetch() в flush_deferred возвращает: сообщение | None (его правда нет: удалено) | FETCH_FAILED
@@ -104,12 +107,14 @@ class Forwarder:
                 status, error = "forwarded", ""
             else:
                 await self.paced.wait()
+                hit = dict(hit, contact=await self._contact(message, hit))
                 await self.client.send_message(self.target, self._text_with_link(hit))
                 status, error = "copied", ""
         except ChatForwardsRestrictedError:
             # в чате отключено сохранение контента: пересылка запрещена
             if self.fallback == "link":
                 await self.paced.wait()
+                hit = dict(hit, contact=await self._contact(message, hit))
                 await self.client.send_message(self.target, self._text_with_link(hit, note=True))
                 status, error = "copied", "forwards_restricted"
             else:
@@ -221,10 +226,44 @@ class Forwarder:
         return result
 
     @staticmethod
+    def phone_in(text: str) -> str:
+        """Первый телефон из текста объявления (9–15 цифр) в том виде, как его написал автор."""
+        for found in PHONE_RE.finditer(text or ""):
+            if 9 <= sum(ch.isdigit() for ch in found.group(0)) <= 15:
+                return found.group(0).strip(" .-")
+        return ""
+
+    async def _contact(self, message, hit: dict) -> str:
+        """Как связаться с автором: телефон из самого сообщения, иначе @username (если он у автора есть).
+        Имя из профиля не пишем: по нему человека не найти."""
+        phone = self.phone_in(hit.get("text") or "")
+        if phone:
+            return phone
+        sender = getattr(message, "sender", None)
+        try:
+            if sender is None and hasattr(message, "get_sender"):
+                sender = await message.get_sender()
+            sender_id = getattr(message, "sender_id", None)
+            if sender is None and sender_id:
+                await self.paced.wait()
+                sender = await self.client.get_entity(sender_id)
+        except Exception:  # noqa: BLE001 - контакт не стоит сорванной отправки
+            sender = None
+        username = getattr(sender, "username", None)
+        if not username:
+            for item in (getattr(sender, "usernames", None) or []):
+                if getattr(item, "active", True) and getattr(item, "username", None):
+                    username = item.username
+                    break
+        return f"@{username}" if username else ""
+
+    @staticmethod
     def _text_with_link(hit: dict, note: bool = False) -> str:
-        head = "🔁 Пересылка запрещена в источнике — текст со ссылкой:" if note else "📨 Найдено:"
+        """Текст находки для случая, когда настоящая пересылка невозможна (чат с запретом).
+        note=True — без заголовка вовсе: получателю нужны только текст, контакт и ссылка."""
+        head = None if note else "📨 Найдено:"
         text = (hit.get("text") or "").strip()
-        author = str(hit.get("sender_name") or "").strip()
-        parts = [head, "", text, "", f"Автор: {author}" if author else None, hit.get("link", ""),
+        contact = str(hit.get("contact") or "").strip()
+        parts = [head, "" if head else None, text, "", contact or None, hit.get("link", ""),
                  f"({hit.get('chat_title') or hit.get('chat_key')})"]
         return "\n".join(part for part in parts if part is not None)[:4000]
