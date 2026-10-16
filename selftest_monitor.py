@@ -764,6 +764,40 @@ async def main() -> None:
                                             {"@batumi": ("error", "вступил недавно, но Telegram снова …")})
     checks.append(("цикл вступления: в бот уходит понятное предупреждение (без force: ключ гасит повторы)",
                    len(spoken) == 2 and "антибот" in spoken[0], str(spoken)[:80]))
+    # «снимок» в бот, когда вступить не вышло: ответ Telegram, сведения о чате, последние сообщения с кнопками
+    from core_telegram import take_join_failures
+    take_join_failures("second")
+    snap_client = PublicClient(join_error="ChannelsTooMuchError")
+    async def fake_get_messages(entity, limit=3):
+        btn = SimpleNamespace(text="Я не бот")
+        return [SimpleNamespace(date=datetime(2026, 10, 16, 12, 5, tzinfo=timezone.utc),
+                                message="Нажмите <кнопку>, чтобы подтвердить, что вы человек", buttons=[[btn]])]
+    snap_client.get_messages = fake_get_messages
+    await resolve_targets(snap_client, ["@closed2"], Paced(0), auto_join=True, report={},
+                          memory=HitStore(":memory:"), account="second")
+    snap_failures = take_join_failures("second")
+    checks.append(("неудачное вступление запоминается с точным ответом Telegram",
+                   list(snap_failures) == ["@closed2"] and snap_failures["@closed2"]["kind"] == "ChannelsTooMuchError"
+                   and "boom" in snap_failures["@closed2"]["detail"], str(snap_failures)[:100]))
+    checks.append(("после забора неудачи стираются (не повторяются в следующем аккаунте)",
+                   take_join_failures("second") == {}, ""))
+    spoken.clear()
+    await monitor_module.announce_join_failures(SpyService(), snap_client, Paced(0), "second",
+                                                [Source(target="@closed2", title="Закрытый 2")], snap_failures)
+    snap_text = spoken[0] if spoken else ""
+    checks.append(("снимок в боте: чат, ответ Telegram, последние сообщения с кнопками и что делать (HTML экранирован)",
+                   "Снимок" in snap_text and "ChannelsTooMuchError" in snap_text and "Я не бот" in snap_text
+                   and "&lt;кнопку&gt;" in snap_text and "500" in snap_text and "16.10 12:05" in snap_text, snap_text[:120]))
+    spoken.clear()
+    await monitor_module.announce_joins(SpyService(), "second", [Source(target="@batumi", title="Батуми")], {},
+                                        {"@batumi": ("error", "вступил недавно, но …")},
+                                        failures={"@batumi": {"stage": "flap"}})
+    checks.append(("цикл вступления со снимком: короткое предупреждение не дублируется", spoken == [], str(spoken)[:60]))
+    take_join_failures("main")
+    await resolve_targets(PublicClient(left=True, join_error="InviteRequestSentError"), ["@req2"], Paced(0),
+                          auto_join=True, report={}, memory=HitStore(":memory:"), account="main")
+    checks.append(("заявка админу — не неудача: снимок не нужен", take_join_failures("main") == {}, ""))
+
     checks.append(("нет файла сессии в проходе: аккаунт пропускается, а не ждёт телефон и код",
                    (lambda src: "SessionFileMissing" in src and 'Path(f"{acc.session}.session").exists()' in src)(
                        Path("monitor.py").read_text(encoding="utf-8")), ""))

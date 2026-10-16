@@ -219,6 +219,132 @@ def _needs_join(entity) -> bool:
     return type(entity).__name__ == "Channel" and getattr(entity, "left", False) is True
 
 
+# Неудачные попытки вступить за этот проход: (аккаунт, цель) -> подробности. Из них монитор шлёт
+# в бот «снимок»: что ответил Telegram, что известно о чате и что в нём написано.
+JOIN_FAILURES: dict[tuple[str, str], dict] = {}
+
+
+def _error_detail(exc) -> str:
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def _note_failure(account: str, target: str, stage: str, kind: str, detail: str = "",
+                  entity=None, hash_: str | None = None) -> None:
+    JOIN_FAILURES[(account, target)] = {"stage": stage, "kind": kind, "detail": detail,
+                                        "entity": entity, "hash": hash_ or ""}
+
+
+def take_join_failures(account: str) -> dict[str, dict]:
+    """Забрать (и стереть) неудачи этого аккаунта: {цель: подробности}."""
+    taken = {t: info for (acc, t), info in JOIN_FAILURES.items() if acc == account}
+    for target in taken:
+        JOIN_FAILURES.pop((account, target), None)
+    return taken
+
+
+JOIN_STAGE_TEXT = {"join": "вступление в публичный чат", "invite": "вступление по ссылке-приглашению",
+                   "flap": "проверка после вступления", "resolve": "поиск чата по адресу"}
+JOIN_ERROR_HINT = {
+    "ChannelsTooMuchError": "У аккаунта предел в 500 чатов: выйди из ненужных.",
+    "UserChannelsTooMuchError": "У аккаунта предел в 500 чатов: выйди из ненужных.",
+    "UserBannedInChannelError": "Аккаунт забанен в этом чате: нужен другой аккаунт или разбан.",
+    "ChannelBannedError": "Чат заблокирован Telegram.",
+    "ChannelPrivateError": "Чат закрытый или аккаунт из него удалён: нужна новая ссылка-приглашение.",
+    "InviteHashExpiredError": "Ссылка-приглашение устарела: нужна новая.",
+    "InviteHashInvalidError": "Ссылка-приглашение неверная: проверь её в конфиге.",
+    "InviteHashEmptyError": "Ссылка-приглашение пустая: проверь её в конфиге.",
+    "UsernameNotOccupiedError": "Такого адреса нет: проверь username чата в конфиге.",
+    "UsernameInvalidError": "Адрес чата записан неверно: проверь конфиг.",
+    "FloodWaitError": "Telegram просит подождать: радар повторит позже сам.",
+    "NotMemberAfterJoin": "Похоже на антибот или капчу: зайди в чат этим аккаунтом, пройди проверку (кнопки в последних сообщениях чата выше).",
+}
+
+
+async def join_snapshot(client, info: dict, paced: Paced) -> dict:
+    """Что известно о чате, куда не вышло войти (best-effort: любая ошибка просто пропускает пункт)."""
+    snap: dict = {"facts": [], "messages": [], "notes": []}
+    entity = info.get("entity")
+    if entity is None and info.get("hash"):
+        try:
+            from telethon.tl.functions.messages import CheckChatInviteRequest
+            invite = await call(lambda: client(CheckChatInviteRequest(info["hash"])), paced, retries=1,
+                                label="check_invite")
+            chat = getattr(invite, "chat", None)
+            if chat is not None:
+                entity = chat
+            else:
+                snap["title"] = getattr(invite, "title", None)
+                snap["facts"].append("приватный чат по приглашению")
+                count = getattr(invite, "participants_count", None)
+                if count:
+                    snap["facts"].append(f"участников {count}")
+                if getattr(invite, "request_needed", False):
+                    snap["facts"].append("вход только по заявке админу")
+                if getattr(invite, "channel", False):
+                    snap["facts"].append("супергруппа или канал")
+        except Exception as exc:  # noqa: BLE001
+            snap["notes"].append(f"приглашение не открылось: {type(exc).__name__}")
+    if entity is not None:
+        snap["title"] = getattr(entity, "title", None) or snap.get("title")
+        username = getattr(entity, "username", None)
+        if getattr(entity, "broadcast", False):
+            snap["facts"].append("канал")
+        elif getattr(entity, "megagroup", False):
+            snap["facts"].append("супергруппа")
+        snap["facts"].append(f"публичный @{username}" if username else "без публичного адреса")
+        if getattr(entity, "participants_count", None):
+            snap["facts"].append(f"участников {entity.participants_count}")
+        if getattr(entity, "join_request", False):
+            snap["facts"].append("вход по заявке админу")
+        if getattr(entity, "join_to_send", False):
+            snap["facts"].append("писать могут только вступившие")
+        if getattr(entity, "noforwards", False) is True:
+            snap["facts"].append("запрещена пересылка 🔒")
+        if getattr(entity, "restricted", False):
+            snap["facts"].append("чат ограничен Telegram")
+        try:
+            messages = await call(lambda: client.get_messages(entity, limit=3), paced, retries=1,
+                                  label="snapshot_messages")
+            for message in messages or []:
+                buttons = []
+                for row in (getattr(message, "buttons", None) or []):
+                    for button in (row if isinstance(row, (list, tuple)) else [row]):
+                        if getattr(button, "text", None):
+                            buttons.append(str(button.text))
+                snap["messages"].append({"date": getattr(message, "date", None),
+                                         "text": (getattr(message, "message", None) or getattr(message, "text", "") or ""),
+                                         "buttons": buttons})
+        except Exception as exc:  # noqa: BLE001
+            snap["notes"].append(f"последние сообщения прочитать нельзя: {type(exc).__name__}")
+    return snap
+
+
+def format_join_snapshot(account: str, label: str, info: dict, snap: dict) -> str:
+    """Текст «снимка» для бота (HTML: parse_mode у служебных сообщений HTML)."""
+    from html import escape
+    kind = info.get("kind", "")
+    lines = [f"📸 <b>Снимок: аккаунт «{escape(account)}» не смог войти в «{escape(str(snap.get('title') or label))}»</b>",
+             f"Этап: {JOIN_STAGE_TEXT.get(info.get('stage'), info.get('stage', ''))}",
+             f"Ответ Telegram: {escape(info.get('detail') or kind or '—')}"]
+    if snap.get("facts"):
+        lines.append("Чат: " + ", ".join(escape(f) for f in snap["facts"]))
+    if snap.get("messages"):
+        lines.append("Последние сообщения в чате (как их видит аккаунт):")
+        for message in snap["messages"]:
+            date = message.get("date")
+            stamp = date.strftime("%d.%m %H:%M UTC") if hasattr(date, "strftime") else ""
+            text = " ".join(str(message.get("text") or "").split())[:200] or "(без текста)"
+            btn = f" [кнопки: {', '.join(message['buttons'][:4])}]" if message.get("buttons") else ""
+            lines.append(f"• {stamp} «{escape(text)}»{escape(btn)}")
+    for note in snap.get("notes", []):
+        lines.append(escape(note))
+    hint = JOIN_ERROR_HINT.get(kind)
+    if hint:
+        lines.append("Что делать: " + escape(hint))
+    lines.append("Это текстовый снимок: у аккаунта нет экрана, а сообщения и кнопки взяты из самого чата.")
+    return "\n".join(lines)[:3900]
+
+
 async def resolve_targets(client, targets: list[str], paced: Paced,
                           auto_join: bool = False,
                           max_joins: int = MAX_JOINS_PER_PASS,
@@ -255,6 +381,8 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                 if recent:
                     if recent[0] == "joined":
                         report[target] = ("error", REJOIN_TEXT)
+                        _note_failure(account, target, "flap", "NotMemberAfterJoin",
+                                      "Telegram не считает аккаунт участником сразу после вступления", hash_=hash_)
                     else:
                         report[target] = ("pending" if recent[0] == "pending" else recent[0], recent[1])
                     continue
@@ -273,6 +401,8 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                     text = outcome.get("text", "вступить не удалось")
                     _memo_put(memory, account, target, "pending" if code == "pending" else code, text)
                     report[target] = ("requested" if code == "pending" else code, text)
+                    if outcome.get("kind"):
+                        _note_failure(account, target, "invite", outcome["kind"], outcome.get("detail", ""), hash_=hash_)
                     continue
                 _memo_put(memory, account, target, "joined")
                 status = ("ok", "вступил в этом проходе")
@@ -283,6 +413,7 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                                       + (" (включи --auto-join или вступи вручную)" if hash_ else ""))
                 else:
                     report[target] = ("error", f"не разрешился: {type(exc).__name__}")
+                    _note_failure(account, target, "resolve", type(exc).__name__, _error_detail(exc), hash_=hash_)
                 if hash_ and not_member:
                     print("    Это ссылка-приглашение, а аккаунт в чате не состоит. "
                           "Вступи вручную или запусти с --auto-join.", file=sys.stderr)
@@ -295,6 +426,9 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                 recent = _memo_recent(memory, account, target)
                 if recent:
                     status = ("error", REJOIN_TEXT) if recent[0] == "joined" else (recent[0], recent[1])
+                    if recent[0] == "joined":
+                        _note_failure(account, target, "flap", "NotMemberAfterJoin",
+                                      "Telegram не считает аккаунт участником сразу после вступления", entity=entity)
                 elif max_joins and joins_done >= max_joins:
                     status = ("deferred", f"вступление отложено (не больше {max_joins} за проход), дойдёт позже")
                 else:
@@ -310,6 +444,8 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                         _memo_put(memory, account, target, code if code != "requested" else "pending",
                                   outcome.get("text", ""))
                         status = (code, outcome.get("text", ""))
+                        if outcome.get("kind") and code in ("error", "deferred"):
+                            _note_failure(account, target, "join", outcome["kind"], outcome.get("detail", ""), entity=entity)
                         if code == "deferred":
                             joins_done = max(joins_done, max_joins or joins_done)   # флуд: больше не вступаем
             elif auto_join and memory is not None:
@@ -353,6 +489,7 @@ async def _join_public(client, entity, target: str, paced: Paced, outcome: dict)
             outcome.update(code="error", text=f"аккаунту нельзя вступить в этот чат ({kind})")
         else:
             outcome.update(code="error", text=f"вступить не удалось: {kind}")
+        outcome.update(kind=kind, detail=_error_detail(exc))
         print(f"[!] не удалось вступить в {target}: {kind} {exc}", file=sys.stderr)
     return None
 
@@ -384,6 +521,8 @@ async def _join_by_invite(client, target: str, hash_: str, paced: Paced,
             outcome.update(code="pending", text="заявка на вступление отправлена, ждёт одобрения админа")
         else:
             outcome.update(code="error", text=f"вступить не удалось: {kind}")
+        if kind != "InviteRequestSentError":
+            outcome.update(kind=kind, detail=_error_detail(exc))
         print(f"[!] не удалось вступить по {target}: {kind} {exc}", file=sys.stderr)
     return None
 

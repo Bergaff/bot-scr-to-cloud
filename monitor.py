@@ -33,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core_telegram import (BOT_TOKEN_HINT, FloodWaitTooLong, Paced, add_flood_hook,
-                           build_notifier, call,
+                           build_notifier, call, format_join_snapshot, join_snapshot, take_join_failures,
                            collect_topics, display_name, format_hit, hidden_author_reason,
                            invite_hash, load_dotenv, make_client, message_link, peer_id,
                            resolve_targets, topic_of, topic_title_of)
@@ -2196,7 +2196,21 @@ def build_forwarder(client, account: AccountConfig, store, paced, args):
 CONNECT_FAILURES: dict[str, tuple[str, str]] = {}
 
 
-async def announce_joins(service, account_name: str, sources, resolved: dict, report: dict) -> None:
+async def announce_join_failures(service, client, paced, account_name: str, sources, failures: dict) -> None:
+    """«Снимок» в бот, когда вступить или найти чат не вышло: ответ Telegram, сведения о чате,
+    последние сообщения (там обычно видна капча). Раз в несколько часов на чат, не каждый проход."""
+    titles = {src.target: (src.title or src.target) for src in sources}
+    for target, info in failures.items():
+        try:
+            snap = await join_snapshot(client, info, paced)
+        except Exception as exc:  # noqa: BLE001 - снимок не должен ронять проход
+            snap = {"facts": [], "messages": [], "notes": [f"снимок не собрался: {type(exc).__name__}"]}
+        await service.send(format_join_snapshot(account_name, titles.get(target) or target, info, snap),
+                           key=f"join_fail:{account_name}:{target}")
+
+
+async def announce_joins(service, account_name: str, sources, resolved: dict, report: dict,
+                         failures: dict | None = None) -> None:
     """Сообщение в бот: аккаунт вступил в чат или подал заявку (раз на событие, не каждый проход)."""
     titles = {src.target: (src.title or src.target) for src in sources}
     for target, (code, note) in report.items():
@@ -2206,6 +2220,8 @@ async def announce_joins(service, account_name: str, sources, resolved: dict, re
                                f"ждёт одобрения админа (повтор не раньше чем через сутки).",
                                key=f"join_request:{account_name}:{target}", force=True)
         elif code == "error" and note.startswith("вступил недавно"):
+            if failures and target in failures:
+                continue          # то же самое, но подробнее, расскажет «снимок»
             await service.send(f"⚠️ Аккаунт «{account_name}» вступил в «{label}», но Telegram снова считает его "
                                f"не участником (антибот/капча?). Повторно вступаю не чаще раза в сутки — "
                                f"зайди в чат с этого аккаунта и пройди проверку.",
@@ -3439,7 +3455,9 @@ async def async_main(args) -> None:
                                                  auto_join=args.auto_join, report=chat_report,
                                                  memory=store, account=acc.name)
                 newly_protected = record_account_chats(store, acc.name, monitor.sources, resolved, chat_report)
-                await announce_joins(service, acc.name, monitor.sources, resolved, chat_report)
+                join_failures = take_join_failures(acc.name)
+                await announce_joins(service, acc.name, monitor.sources, resolved, chat_report, join_failures)
+                await announce_join_failures(service, client, paced, acc.name, monitor.sources, join_failures)
                 await announce_protected(service, acc.name, newly_protected)
                 await scan_protected_dialogs(client, store, acc.name, paced)
                 monitor.entities = resolved

@@ -30,7 +30,9 @@
     "max_per_day": 180,
     "fallback": "link",
     "queue_ttl_hours": 24,
-    "reset_hours": [16],
+    "reset_hours": [
+      16
+    ],
     "utc_offset": 3
   },
   "sources": [
@@ -262,6 +264,14 @@
     {
       "target": "@Vietnam_Bazaar",
       "title": "Вьетнам (барахолка)",
+      "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@granica_belarus_chat",
+      "title": "Граница Беларусь (чат)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,
