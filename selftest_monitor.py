@@ -1103,13 +1103,27 @@ async def main() -> None:
                          dedup_scope="chat", dedup_window=0)
     noname_mon.entities = {source.target: entity}
     noname_mon.meta = {source.target: source}
-    noname_msg = fake_message(1203, "Еду Брест-Варшава завтра в 7.00, возьму посылки и попутчиков")
+    noname_msg = fake_message(1203, "Нужно передать документы в Вильнюс, кто едет?")
     noname_msg.noforwards = True
     await noname_mon.process_message(noname_msg, source)
+    offer_msg = fake_message(1204, "Еду Брест-Варшава завтра в 7.00, возьму посылки и попутчиков", sender_id=778)
+    offer_msg.noforwards = True
+    await noname_mon.process_message(offer_msg, source)
+    mention_msg = fake_message(1205, "Еду Брест-Варшава завтра, возьму посылки, пишите @driver_by1", sender_id=779)
+    mention_msg.noforwards = True
+    await noname_mon.process_message(mention_msg, source)
+    offer_state = noname_fwd.store.conn.execute(
+        "SELECT ok, mode, error FROM forwarded WHERE msg_id=1204").fetchone()
+    checks.append(("защищённый чат: предложение без контакта в бот не уходит, просьба без контакта — только текст и ссылка",
+                   len(noname_client.sent) == 2 and "t.me/travelersminsk/1203" in noname_client.sent[0]
+                   and "(" not in noname_client.sent[0].splitlines()[-1]
+                   and not any("t.me/travelersminsk/1204" in t for t in noname_client.sent)
+                   and offer_state is not None and offer_state[1] == "skipped" and offer_state[2] == "no_contact_offer"
+                   and "@driver_by1" in noname_client.sent[1], str(noname_client.sent)[:200]))
     checks.append(("контакт: телефон из текста, иначе @username; без них строки нет и имя профиля не пишем",
                    "+375 29 123-45-67" in prot_client.sent[1] and "@ivan_test" not in prot_client.sent[1]
-                   and len(noname_client.sent) == 1 and "Анна" not in noname_client.sent[0]
-                   and noname_client.sent[0].splitlines()[-2].startswith("https://t.me/"),
+                   and "Анна" not in noname_client.sent[0]
+                   and noname_client.sent[0].splitlines()[-1].startswith("https://t.me/"),
                    str(noname_client.sent)[:160]))
     checks.append(("телефон ищется в разных записях и не путается с датами и ценами",
                    Forwarder.phone_in("8 029 123 45 67 звоните") == "8 029 123 45 67"

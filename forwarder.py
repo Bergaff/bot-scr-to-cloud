@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 from core_telegram import call
 
+MENTION_RE = re.compile(r"(?<![\w/@.])@[A-Za-z][A-Za-z0-9_]{3,31}(?!\w)")
 PHONE_RE = re.compile(r"(?<![\w/])(?:\+|00)?\d(?:[\s\-().]?\d){8,14}(?!\w)")
 
 
@@ -113,10 +114,16 @@ class Forwarder:
         except ChatForwardsRestrictedError:
             # в чате отключено сохранение контента: пересылка запрещена
             if self.fallback == "link":
-                await self.paced.wait()
-                hit = dict(hit, contact=await self._contact(message, hit))
-                await self.client.send_message(self.target, self._text_with_link(hit, note=True))
-                status, error = "copied", "forwards_restricted"
+                contact = await self._contact(message, hit)
+                if not contact and hit.get("intent") == "offer":
+                    # предложение («везу», «есть места») без телефона и @username: приёмнику нечего
+                    # передать, он подставил бы чужой контакт (аккаунта радара) — лучше молчать
+                    status, error = "skipped", "no_contact_offer"
+                else:
+                    await self.paced.wait()
+                    hit = dict(hit, contact=contact)
+                    await self.client.send_message(self.target, self._text_with_link(hit, note=True))
+                    status, error = "copied", "forwards_restricted"
             else:
                 status, error = "skipped", "forwards_restricted"
         except FloodWaitError as exc:
@@ -239,6 +246,9 @@ class Forwarder:
         phone = self.phone_in(hit.get("text") or "")
         if phone:
             return phone
+        mention = MENTION_RE.search(hit.get("text") or "")
+        if mention:
+            return mention.group(0)
         sender = getattr(message, "sender", None)
         try:
             if sender is None and hasattr(message, "get_sender"):
@@ -264,6 +274,7 @@ class Forwarder:
         head = None if note else "📨 Найдено:"
         text = (hit.get("text") or "").strip()
         contact = str(hit.get("contact") or "").strip()
-        parts = [head, "" if head else None, text, "", contact or None, hit.get("link", ""),
-                 f"({hit.get('chat_title') or hit.get('chat_key')})"]
+        # без контакта — только текст и ссылка на сообщение (название чата приёмник мог принять за контакт)
+        title = f"({hit.get('chat_title') or hit.get('chat_key')})" if (contact or not note) else None
+        parts = [head, "" if head else None, text, "", contact or None, hit.get("link", ""), title]
         return "\n".join(part for part in parts if part is not None)[:4000]
