@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core_telegram import BOT_TOKEN_HINT
+from core_telegram import BOT_TOKEN_HINT, format_auth
 import metrics as metrics_module
 import release as release_module
 
@@ -69,6 +69,7 @@ HELP_LINES = [
     ("export [N]", "stats.csv за N дней документом (+ находки за 24 ч)"),
     ("top", "топ чатов за сутки по находкам"),
     ("limits", "лимиты пересылок и сколько осталось по аккаунтам"),
+    ("security [аккаунт]", "кто сидит в аккаунте: сеансы с устройством, IP и страной; ключ сессии; последний вход радара"),
     ("reserve [N]", "по дням: сколько не хватило до лимита у каждого аккаунта (свободный запас: пора ли добавлять чаты или аккаунты)"),
     ("boost [аккаунт]", "пробить лимит: обнулить счётчик пересылок, очередь пойдёт ещё на целый лимит"),
     ("why <id|ссылка>", "почему сообщение взяли или не взяли"),
@@ -1118,6 +1119,32 @@ class BotPanel:
                for item in self._state_json(f"account:{view.name}:chats").get("items", []) if isinstance(item, dict)):
             lines += ["", "🔒 — в чате запрещена пересылка: находки приходят текстом со ссылкой. Все такие чаты: /protected"]
         return truncate("\n".join(lines), self.message_limit, hint="/chats <аккаунт>")
+
+    def cmd_security(self, account: str = "") -> str:
+        """Сеансы аккаунта (устройство, приложение, IP, страна), отпечаток ключа сессии и когда радар был в аккаунте."""
+        want = (account or "").strip().lower()
+        views = [view for view in self.known_accounts() if not want or view.name.lower() == want]
+        if not views:
+            return f"Нет аккаунта «{account}»."
+        lines = ["🛡 Безопасность аккаунтов"]
+        for view in views:
+            login = self._state_json(f"account:{view.name}:login")
+            key = self._state_json(f"account:{view.name}:key")
+            snap = self._state_json(f"account:{view.name}:auths")
+            items = [i for i in snap.get("items", []) if isinstance(i, dict)]
+            state = ("вошёл" if login.get("ok") else f"НЕ вошёл ({login.get('kind') or '?'})") if login else "нет данных"
+            lines += ["", f"{view.name}: {state}"]
+            if login.get("last_ok") and not login.get("ok"):
+                lines.append(f"  последний раз радар работал: {local_stamp(login['last_ok'])}")
+            if key.get("id"):
+                lines.append(f"  ключ сессии {key['id']} (работает с {local_stamp(key.get('since'))})")
+            if not items:
+                lines.append("  список сеансов ещё не снимался (первый снимок — в ближайший проход вошедшего аккаунта)")
+                continue
+            lines.append(f"  сеансов {len(items)} на {local_stamp(snap.get('ts'))}:")
+            lines += ["  • " + format_auth(item) for item in items]
+        lines += ["", "Незнакомый сеанс — Telegram → Настройки → Устройства → завершить. Новые чужие входы бот присылает сам (🚨)."]
+        return truncate("\n".join(lines), self.message_limit, hint="/security <аккаунт>")
 
     def cmd_protected(self) -> str:
         """Подписки аккаунтов, где отключено сохранение контента: пересылка оттуда невозможна."""

@@ -2470,16 +2470,87 @@ async def main() -> None:
                    dead_exit and monitor_module.CONNECT_FAILURES.get("second", ("",))[0] == "AuthKeyDuplicatedError",
                    str(monitor_module.CONNECT_FAILURES)))
     class EofClient:                        # Telethon спрашивает телефон: сессия не авторизована
+        def __init__(self, reply=None):
+            self.reply, self.connected = reply, True
+        def is_connected(self):
+            return self.connected
         async def start(self):
             raise EOFError("EOF when reading a line")
-    try:
-        await monitor_module.connect_client(EofClient(), SimpleNamespace(name="second", session="second_session"),
-                                            SimpleNamespace())
-    except SystemExit:
-        pass
-    eof_kind, eof_text = monitor_module.CONNECT_FAILURES.get("second", ("", ""))
-    checks.append(("EOFError при входе = «сессия не авторизована», а не загадочное EOF",
-                   eof_kind == "SessionNotAuthorized" and "аккаунт вышел" in eof_text, f"{eof_kind}"))
+        async def __call__(self, request):
+            if self.reply:
+                raise type(self.reply, (Exception,), {})("401")
+            return []
+    import sqlite3 as _sq3x
+    import tempfile as _tmpx
+    sess_dir = Path(_tmpx.mkdtemp())
+    empty_base = str(sess_dir / "empty_session")            # файла нет вообще
+    keyed_base = str(sess_dir / "keyed_session")            # файл с ключом
+    _conn = _sq3x.connect(keyed_base + ".session")
+    _conn.execute("CREATE TABLE sessions (dc_id INTEGER, server_address TEXT, port INTEGER, auth_key BLOB, takeout_id INTEGER)")
+    _conn.execute("INSERT INTO sessions VALUES (2, '1.2.3.4', 443, ?, NULL)", (b"k" * 256,))
+    _conn.commit()
+    _conn.close()
+    for base, reply, want in ((empty_base, None, "SessionFileEmpty"),
+                              (keyed_base, "AuthKeyUnregisteredError", "AuthKeyUnregisteredError"),
+                              (keyed_base, "SessionRevokedError", "SessionRevokedError"),
+                              (keyed_base, None, "SessionNotAuthorized")):
+        try:
+            await monitor_module.connect_client(EofClient(reply), SimpleNamespace(name="second", session=base),
+                                                SimpleNamespace())
+        except SystemExit:
+            pass
+        got = monitor_module.CONNECT_FAILURES.get("second", ("", ""))
+        checks.append((f"EOFError при входе -> точная причина {want}", got[0] == want, f"{got[0]}: {got[1][:60]}"))
+
+    # слежение за сеансами: первый снимок молчит, новый чужой сеанс — тревога с IP, свой (current) — нет
+    def _auth(hash_, ip, current=False, device="Pixel", created=datetime(2026, 10, 20, tzinfo=timezone.utc)):
+        return SimpleNamespace(hash=hash_, current=current, device_model=device, platform="Android",
+                               system_version="14", app_name="Telegram", app_version="10", official_app=True,
+                               ip=ip, country="Georgia", region="Tbilisi", date_created=created, date_active=created)
+    class SecClient:
+        def __init__(self):
+            self.auths = [_auth(1, "10.0.0.1", current=True), _auth(2, "10.0.0.2")]
+            self.msgs = [SimpleNamespace(id=5, message="Login code: 12345. Do not give this code to anyone.",
+                                         date=datetime(2026, 10, 24, tzinfo=timezone.utc))]
+        async def __call__(self, request):
+            return SimpleNamespace(authorizations=self.auths)
+        async def get_messages(self, entity, limit=8):
+            return self.msgs
+    class SecService:
+        def __init__(self):
+            self.sent = []
+        async def send(self, text, key="", force=False):
+            self.sent.append((key, text))
+            return True
+    sec_store, sec_service, sec_client = HitStore(":memory:"), SecService(), SecClient()
+    await monitor_module.watch_account_security(sec_service, sec_client, sec_store, "second", every_minutes=0)
+    first_silent = not sec_service.sent
+    sec_client.auths.append(_auth(3, "203.0.113.9", device="Chrome", created=datetime(2026, 10, 24, 9, 0, tzinfo=timezone.utc)))
+    sec_client.msgs.append(SimpleNamespace(id=6, message="Новый вход. Мы обнаружили вход с устройства Chrome, IP 203.0.113.9. Код 54321",
+                                           date=datetime(2026, 10, 24, tzinfo=timezone.utc)))
+    await monitor_module.watch_account_security(sec_service, sec_client, sec_store, "second", every_minutes=0)
+    texts = " | ".join(t for _k, t in sec_service.sent)
+    checks.append(("сеансы: первый снимок молчит, новый чужой сеанс -> 🚨 с IP, страной и устройством",
+                   first_silent and "🚨" in texts and "203.0.113.9" in texts and "Georgia" in texts and "Chrome" in texts
+                   and "10.0.0.1" not in texts.split("🔔")[0], texts[:120]))
+    checks.append(("сообщение Telegram про вход доходит, а код входа спрятан",
+                   "🔔" in texts and "54321" not in texts and "•••••" in texts and "12345" not in texts, ""))
+    sec_service.sent.clear()
+    sec_client.auths = [_auth(1, "10.0.0.1", current=True), _auth(3, "203.0.113.9", device="Chrome")]
+    await monitor_module.watch_account_security(sec_service, sec_client, sec_store, "second", every_minutes=0)
+    checks.append(("исчезнувший сеанс — сообщение ℹ️, повторных тревог нет",
+                   any("исчез сеанс" in t for _k, t in sec_service.sent) and not any("🚨" in t for _k, t in sec_service.sent), ""))
+    monitor_module.record_session_key(sec_store, "second", monitor_module.session_file_info(keyed_base + ".session"))
+    monitor_module.record_login(sec_store, "second", True)
+    monitor_module.record_login(sec_store, "second", False, "AuthKeyUnregisteredError", "x")
+    diag = monitor_module.login_diagnosis(sec_store, "second", keyed_base + ".session", "AuthKeyUnregisteredError")
+    checks.append(("при смерти сеанса в сообщении: точная причина, ключ, последний вход и сеансы с IP",
+                   "AuthKeyUnregisteredError" in diag and "Последний раз радар работал" in diag
+                   and "тот же, что работал" in diag and "203.0.113.9" in diag and "Telegram не сообщает" in diag, diag[:100]))
+    from bot_panel import AccountView, BotPanel
+    sec_panel = BotPanel(sec_store, transport=object(), accounts=[AccountView(name="second", max_per_day=10)])
+    sec_answer = sec_panel.dispatch("/security").text
+    checks.append(("/security показывает сеансы с IP и состояние входа", "203.0.113.9" in sec_answer and "second" in sec_answer, sec_answer[:80]))
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска
     snap = HitStore(":memory:")
     first = monitor_module.record_login(snap, "second", False, "AuthKeyDuplicatedError", "ключ использован с другого IP")

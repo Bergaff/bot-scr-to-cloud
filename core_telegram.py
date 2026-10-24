@@ -858,3 +858,131 @@ def build_notifier(mode: str, notify_file_path: str = "hits.log", explain: bool 
 
     notify.bot_state = state          # для диагностики и тестов
     return notify
+
+
+# ---------------------------------------------------------------------------------------------
+# Безопасность аккаунта: кто ещё в нём сидит, почему сеанс умер.
+# Telegram НЕ говорит, кто и откуда завершил сеанс. Зато пока аккаунт жив, можно запросить список
+# его сеансов (устройство, приложение, IP, страна, даты) и сообщения самого Telegram (777000:
+# «Новый вход…»). Радар запоминает их; когда сеанс умирает — в бот уходит последний снимок.
+# ---------------------------------------------------------------------------------------------
+
+SESSION_ERROR_TEXT = {
+    "AuthKeyUnregisteredError": "Telegram больше не признаёт ключ этой сессии: сеанс завершён (в Telegram → Настройки → "
+                                "Устройства, кнопкой «выйти» или автоматически самим Telegram). Кто именно, Telegram не говорит.",
+    "SessionRevokedError": "сеанс завершил сам владелец аккаунта (из другого устройства: «Завершить сеанс» или выход).",
+    "SessionExpiredError": "сеанс закрыт Telegram как устаревший (долго не использовался или истёк срок).",
+    "AuthKeyDuplicatedError": "один и тот же ключ использовали одновременно с двух разных IP — Telegram сам убил ключ. "
+                              "Значит, где-то работала вторая копия этой сессии (компьютер, старый бот, чужой доступ).",
+    "UserDeactivatedError": "аккаунт удалён или деактивирован.",
+    "UserDeactivatedBanError": "аккаунт заблокирован Telegram (бан).",
+    "PhoneNumberBannedError": "номер телефона заблокирован Telegram.",
+    "SessionPasswordNeededError": "включён облачный пароль (2FA): сессии нужен пароль.",
+    "SessionFileEmpty": "в файле сессии нет ключа входа: файл пустой или сохранён до окончания входа.",
+    "SessionNotAuthorized": "ключ в файле есть, но вход в аккаунт не подтверждён (причину Telegram не назвал).",
+}
+
+
+def session_file_info(path) -> dict:
+    """Что внутри файла сессии Telethon: есть ли ключ и его отпечаток (key_id, как в «Устройствах» — не секрет)."""
+    import hashlib
+    import sqlite3
+    info = {"exists": False, "has_key": False, "key_id": "", "size": 0}
+    file = Path(path)
+    if not file.exists():
+        return info
+    info.update(exists=True, size=file.stat().st_size)
+    try:
+        conn = sqlite3.connect(f"file:{file}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT auth_key FROM sessions LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - не sqlite / другой формат
+        return info
+    key = bytes(row[0]) if row and row[0] else b""
+    if key:
+        info.update(has_key=True, key_id=hashlib.sha1(key).digest()[12:20][::-1].hex())
+    return info
+
+
+def _iso(value) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return ""
+
+
+async def fetch_authorizations(client) -> list[dict]:
+    """Все сеансы аккаунта (account.getAuthorizations): устройство, приложение, IP, страна, даты."""
+    from telethon.tl.functions.account import GetAuthorizationsRequest
+    result = await client(GetAuthorizationsRequest())
+    items = []
+    for auth in getattr(result, "authorizations", []) or []:
+        items.append({
+            "hash": str(getattr(auth, "hash", "")),
+            "current": bool(getattr(auth, "current", False)),
+            "device": str(getattr(auth, "device_model", "") or ""),
+            "platform": str(getattr(auth, "platform", "") or ""),
+            "system": str(getattr(auth, "system_version", "") or ""),
+            "app": str(getattr(auth, "app_name", "") or ""),
+            "app_version": str(getattr(auth, "app_version", "") or ""),
+            "official": bool(getattr(auth, "official_app", False)),
+            "ip": str(getattr(auth, "ip", "") or ""),
+            "country": str(getattr(auth, "country", "") or ""),
+            "region": str(getattr(auth, "region", "") or ""),
+            "created": _iso(getattr(auth, "date_created", None)),
+            "active": _iso(getattr(auth, "date_active", None)),
+        })
+    return items
+
+
+def diff_authorizations(previous: list | None, now: list) -> tuple[list[dict], list[dict]]:
+    """(появились, исчезли) по сравнению с прошлым снимком. Первый снимок — основа, тревоги нет."""
+    if not previous:
+        return [], []
+    before = {item.get("hash"): item for item in previous if isinstance(item, dict)}
+    after = {item.get("hash"): item for item in now}
+    return ([item for key, item in after.items() if key not in before],
+            [item for key, item in before.items() if key not in after])
+
+
+def _local(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%d.%m %H:%M")
+    except (TypeError, ValueError):
+        return "?"
+
+
+def format_auth(item: dict) -> str:
+    """Один сеанс одной строкой: устройство · приложение · IP (страна) · вход · был активен."""
+    device = " ".join(part for part in (item.get("device"), item.get("platform") and f"({item['platform']}"
+                      + (f" {item['system']}" if item.get("system") else "") + ")") if part) or "устройство неизвестно"
+    app = f"{item.get('app') or '?'} {item.get('app_version') or ''}".strip()
+    place = ", ".join(part for part in (item.get("country"), item.get("region")) if part) or "место неизвестно"
+    return (f"{device} · {app}{'' if item.get('official') else ' (неофициальное приложение)'} · "
+            f"IP {item.get('ip') or '?'} ({place}) · вход {_local(item.get('created', ''))}, "
+            f"активен {_local(item.get('active', ''))}" + (" · ЭТО РАДАР" if item.get("current") else ""))
+
+
+def mask_login_code(text: str) -> str:
+    """Код входа из сообщения Telegram прячем: в бот он попадать не должен."""
+    return re.sub(r"(?<!\d)\d{5,6}(?!\d)|(?<=\d)-(?=\d)", lambda m: "•" * len(m.group(0)), text or "")
+
+
+LOGIN_NOTICE_RE = re.compile(r"новый вход|new login|log ?in|login code|код для входа|код входа|вход в|устройств|device|"
+                             r"ip[- ]адрес|ip address|завершен|terminated|сеанс", re.IGNORECASE)
+
+
+async def fetch_login_notices(client, last_id: int = 0, limit: int = 8) -> tuple[list[dict], int]:
+    """Сообщения самого Telegram (777000) про входы, новее last_id. Возвращает (сообщения, максимальный id)."""
+    messages = await client.get_messages(777000, limit=limit)
+    top = max([int(getattr(m, "id", 0) or 0) for m in messages] + [last_id])
+    notices = []
+    for message in sorted(messages, key=lambda m: m.id):
+        text = getattr(message, "message", "") or ""
+        if message.id > last_id and LOGIN_NOTICE_RE.search(text):
+            notices.append({"id": int(message.id), "date": _iso(getattr(message, "date", None)),
+                            "text": mask_login_code(text)[:600]})
+    return notices, top

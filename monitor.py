@@ -32,8 +32,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core_telegram import (BOT_TOKEN_HINT, FloodWaitTooLong, Paced, add_flood_hook,
-                           build_notifier, call, format_join_snapshot, join_snapshot, take_join_failures,
+from core_telegram import (BOT_TOKEN_HINT, SESSION_ERROR_TEXT, FloodWaitTooLong, Paced, add_flood_hook,
+                           build_notifier, call, diff_authorizations, fetch_authorizations,
+                           fetch_login_notices, format_auth, format_join_snapshot, join_snapshot,
+                           session_file_info, take_join_failures,
                            collect_topics, display_name, format_hit, hidden_author_reason,
                            invite_hash, load_dotenv, make_client, message_link, peer_id,
                            resolve_targets, topic_of, topic_title_of)
@@ -2280,6 +2282,23 @@ async def announce_joins(service, account_name: str, sources, resolved: dict, re
                                key=f"join_done:{account_name}:{target}", force=True)
 
 
+async def probe_session_failure(client, session_path: str) -> str:
+    """Почему вход не удался: SessionFileEmpty (в файле нет ключа) или точный ответ Telegram на запрос о себе
+    (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedBanError …). Запасной вариант — SessionNotAuthorized."""
+    if not session_file_info(session_path)["has_key"]:
+        return "SessionFileEmpty"
+    try:
+        if not client.is_connected():
+            await client.connect()
+        from telethon.tl.functions.users import GetUsersRequest
+        from telethon.tl.types import InputUserSelf
+        await client(GetUsersRequest([InputUserSelf()]))
+    except Exception as probe:  # noqa: BLE001 - нужен только тип ответа
+        if type(probe).__name__ in SESSION_ERROR_TEXT:
+            return type(probe).__name__
+    return "SessionNotAuthorized"
+
+
 async def connect_client(client, account: AccountConfig, args) -> None:
     """Вход в Telegram с понятными подсказками вместо трейсбеков."""
     try:
@@ -2287,11 +2306,11 @@ async def connect_client(client, account: AccountConfig, args) -> None:
     except Exception as exc:  # noqa: BLE001
         name = type(exc).__name__
         if isinstance(exc, EOFError):
-            # Telethon не нашёл рабочий вход в файле сессии и спросил телефон, а в облаке вводить некому
-            name = "SessionNotAuthorized"
+            # Telethon не нашёл рабочий вход в файле сессии и спросил телефон, а в облаке вводить некому.
+            # Выясняем настоящую причину: нет ключа в файле — или Telegram его не признаёт (и как именно отвечает).
+            name = await probe_session_failure(client, f"{account.session}.session")
         message = {
-            "SessionNotAuthorized": "Сессия не авторизована: аккаунт вышел (сеанс завершён в Telegram) или файл "
-                                    "сессии пустой/сохранён до конца входа. Нужен новый вход.",
+            **SESSION_ERROR_TEXT,
             "SessionPasswordNeededError": "Включён облачный пароль (2FA).",
             "PasswordHashInvalidError": "Облачный пароль указан неверно.",
             "PhoneCodeInvalidError": "Код из Telegram неверный или устарел (каждый новый запрос обнуляет предыдущий).",
@@ -2348,9 +2367,113 @@ def record_login(store, account_name: str, ok: bool, kind: str = "", text: str =
         state["since"] = now if before.get("ok") is not True else before.get("since", now)
     else:
         state.update(kind=kind, text=text[:300],
-                     since=before.get("since", now) if before.get("ok") is False else now)
+                     since=before.get("since", now) if before.get("ok") is False else now,
+                     last_ok=(before.get("ts") if before.get("ok") else before.get("last_ok")) or "")
     _state_put(store, key, state)
     return bool(ok and before.get("ok") is False)
+
+
+def _local_stamp(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%d.%m %H:%M")
+    except (TypeError, ValueError):
+        return "?"
+
+
+def record_session_key(store, account_name: str, info: dict) -> None:
+    """Отпечаток ключа сессии, с которым аккаунт РАБОТАЛ: потом видно, тот же это ключ, что умер, или файл подменили."""
+    if not info.get("has_key"):
+        return
+    key = f"account:{account_name}:key"
+    before = _state_json(store, key)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if before.get("id") == info["key_id"]:
+        before["ts"] = now
+        _state_put(store, key, before)
+    else:
+        _state_put(store, key, {"id": info["key_id"], "since": now, "ts": now})
+
+
+async def watch_account_security(service, client, store, account_name: str, every_minutes: float = 30.0) -> None:
+    """Пока аккаунт жив: снимок списка его сеансов и сообщения Telegram про входы.
+
+    Новый чужой сеанс — тревога с устройством, приложением, IP и страной. Всё лежит в bot_state:
+    когда сеанс умрёт, в бот уйдёт последний известный снимок (кто ещё сидел в аккаунте).
+    Ошибки здесь проход не роняют."""
+    key = f"account:{account_name}:auths"
+    state = _state_json(store, key)
+    try:
+        last = datetime.fromisoformat(state.get("ts") or "")
+        if (datetime.now(timezone.utc) - last).total_seconds() < every_minutes * 60:
+            return
+    except (TypeError, ValueError):
+        pass
+    try:
+        items = await fetch_authorizations(client)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[!] [{account_name}] список сеансов не получен: {type(exc).__name__}", file=sys.stderr)
+        return
+    new, gone = diff_authorizations(state.get("items"), items)
+    _state_put(store, key, {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "items": items})
+    for item in new:
+        if item.get("current"):
+            continue
+        await service.send(f"🚨 Новый вход в аккаунт «{account_name}»:\n{format_auth(item)}\n"
+                           "Если это не ты — Telegram → Настройки → Устройства → завершить этот сеанс и сменить "
+                           "облачный пароль. Радар (его сеанс помечен «ЭТО РАДАР») здесь ни при чём.",
+                           key=f"new_login:{account_name}:{item.get('hash')}", force=True)
+    previous = {i.get("hash"): i for i in state.get("items") or [] if isinstance(i, dict)}
+    for item in gone:
+        if previous.get(item.get("hash"), {}).get("current"):
+            continue
+        await service.send(f"ℹ️ В аккаунте «{account_name}» исчез сеанс: {format_auth(item)}",
+                           key=f"login_gone:{account_name}:{item.get('hash')}")
+    nkey = f"account:{account_name}:notices"
+    nstate = _state_json(store, nkey)
+    try:
+        notices, top = await fetch_login_notices(client, int(nstate.get("last_id") or 0))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[!] [{account_name}] сообщения Telegram не прочитаны: {type(exc).__name__}", file=sys.stderr)
+        return
+    _state_put(store, nkey, {"last_id": top})
+    if "last_id" not in nstate:
+        return                               # первый раз: только запоминаем, что уже было
+    for notice in notices:
+        await service.send(f"🔔 Telegram написал аккаунту «{account_name}» ({_local_stamp(notice['date'])}):\n"
+                           f"{notice['text']}", key=f"login_notice:{account_name}:{notice['id']}", force=True)
+
+
+def login_diagnosis(store, account_name: str, session_path: str, kind: str) -> str:
+    """Что известно о смерти сеанса: точная причина, когда радар был в аккаунте, тот ли это ключ,
+    кто ещё сидел в аккаунте на последнем снимке. Telegram не называет, кто завершил сеанс."""
+    lines = []
+    if kind in SESSION_ERROR_TEXT:
+        lines.append(f"Точная причина: {kind} — {SESSION_ERROR_TEXT[kind]}")
+    login = _state_json(store, f"account:{account_name}:login")
+    if login.get("last_ok"):
+        lines.append(f"Последний раз радар работал в аккаунте: {_local_stamp(login['last_ok'])}.")
+    info = session_file_info(session_path)
+    worked = _state_json(store, f"account:{account_name}:key")
+    if info["has_key"]:
+        same = ("тот же, что работал до сих пор — значит умер именно он" if worked.get("id") == info["key_id"]
+                else "ДРУГОЙ, не тот, что работал раньше (файл заменён)" if worked.get("id") else "раньше не записывался")
+        lines.append(f"Ключ в файле: {info['key_id']} — {same}.")
+    elif info["exists"]:
+        lines.append("В файле сессии нет ключа входа (файл пустой).")
+    snap = _state_json(store, f"account:{account_name}:auths")
+    items = [i for i in snap.get("items") or [] if isinstance(i, dict)]
+    if items:
+        mine = next((i for i in items if i.get("current")), {})
+        lines.append(f"Сеансы аккаунта на {_local_stamp(snap.get('ts', ''))} (последний снимок, пока радар был жив):")
+        for item in items:
+            fresh = (not item.get("current") and mine.get("created") and item.get("created", "") > mine["created"])
+            lines.append("  • " + format_auth(item) + (" · ПОЯВИЛСЯ ПОСЛЕ ВХОДА РАДАРА" if fresh else ""))
+    else:
+        lines.append("Снимка сеансов нет: радар начал его делать только сейчас, для этой смерти данных нет. "
+                     "Для следующих случаев всё будет сохранено.")
+    lines.append("Telegram не сообщает, кто и откуда завершил сеанс. Незнакомый сеанс в списке — это след; "
+                 "проверь Telegram → Настройки → Устройства. Если подозрения — смени облачный пароль.")
+    return "\n".join(lines)[:2600]
 
 
 def record_account_me(store, account_name: str, me) -> None:
@@ -3417,6 +3540,8 @@ async def async_main(args) -> None:
         prefix = f"[{acc.name}] " if multi else ""
         print(f"[+] {prefix}вошли как {display_name(me)} (id={me.id})", file=sys.stderr)
         record_account_me(store, acc.name, me)
+        record_session_key(store, acc.name, session_file_info(f"{acc.session}.session"))
+        await watch_account_security(service, client, store, acc.name)
         if record_login(store, acc.name, True):
             await service.send(f"✅ Аккаунт «{acc.name}» снова вошёл в Telegram "
                                f"({display_name(me)}, id {me.id}) — чтение его чатов возобновлено.",
@@ -3466,9 +3591,11 @@ async def async_main(args) -> None:
                        f"{sess}.session на Google Диск и задай секрет SESSION_URL_{sess.upper()} со ссылкой "
                        f"(радар заберёт файл сам) — либо загрузи его в R2 (sessions/{sess}.session) "
                        f"при RADAR_ON=0, затем RADAR_ON=1 и GET /restart (см. DEPLOY.md).")
+            diagnosis = login_diagnosis(store, name, f"{sess}.session", kind)
             await service.send(
                 f"⚠️ Аккаунт «{name}» вышел из Telegram / не вошёл: {why}\n"
                 f"Радар работает без него: " + (", ".join(a.name for a, _c, _m in runners) or "никто не вошёл") + ".\n"
+                f"{diagnosis}\n"
                 f"{how} Одну и ту же сессию нельзя держать одновременно на компьютере и в облаке.",
                 key=f"session_broken:{name}")
         print(f"[!] Не вошли аккаунты: {', '.join(failed_accounts)} — проход идёт без них "
