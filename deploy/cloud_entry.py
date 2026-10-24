@@ -318,7 +318,7 @@ class RadarRunner:
     def environment(self) -> dict:
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
-        env.setdefault("TZ", "UTC")
+        env.setdefault("TZ", "MSK-3")        # Москва (UTC+3, без перевода часов); POSIX-запись не требует tzdata
         return env
 
     def _write_log(self, text: str) -> None:

@@ -1443,7 +1443,7 @@ class BotPanel:
                 avg = sum(frees) // len(frees)
                 lines.append(f"  {name}: в среднем свободно {avg} из {limits.get(name)}, "
                              f"лимит выбран {full_days.get(name, 0)} из {len(frees)} дн.")
-        lines += ["", "Сутки считаются так же, как лимит: с 03:00 МСК (полночь по UTC), а не с полуночи МСК."]
+        lines += ["", "Сутки считаются так же, как лимит: с местной полуночи (в облаке — по Москве)."]
         return truncate("\n".join(lines), self.message_limit, hint="/reserve <дней>")
 
     def cmd_boost(self, account: str = "") -> Answer:

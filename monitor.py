@@ -470,7 +470,7 @@ class HitStore:
     def account_daily(self, days: int = 7) -> list[dict]:
         """По суткам и аккаунтам: сколько отправлено, сколько позиций сгорело из очереди и сколько в ней висит.
 
-        Сутки — те же, что у счётчика лимита (местные сутки процесса; в облаке TZ=UTC, то есть с 03:00 МСК).
+        Сутки — те же, что у счётчика лимита (местные сутки процесса; в облаке TZ=MSK-3, то есть с полуночи по Москве).
         Возвращает строки {day, account, sent, expired, queued}, свежие сутки первыми."""
         offset = int(datetime.now().astimezone().utcoffset().total_seconds())
         rows = self.conn.execute(
@@ -2887,7 +2887,9 @@ class ServiceNotify:
                      gap_minutes: float | None = None, expected_minutes: float = 0.0,
                      leftover: list | None = None, seen_before: int | None = None) -> str:
         """Текст сводки прохода. Коротко: чтобы читалось с телефона за пару секунд."""
-        lines = [f"Проход {now.strftime('%d.%m %H:%M')} UTC, {seconds:.0f} с",
+        local = now.astimezone()
+        zone = "МСК" if local.utcoffset() == timedelta(hours=3) else (local.tzname() or "UTC")
+        lines = [f"Проход {local.strftime('%d.%m %H:%M')} {zone}, {seconds:.0f} с",
                  f"• новых сообщений {read}, найдено {found}, переслано {forwarded}"]
         if seen_before:
             lines.append(f"• уже видели {seen_before} — повторно не смотрим")

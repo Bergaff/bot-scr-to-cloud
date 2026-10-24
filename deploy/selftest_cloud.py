@@ -770,6 +770,8 @@ async def main() -> None:
     _now = _dt.now(_tz.utc)
     _fresh = {"finished_at": (_now - _td(minutes=2)).isoformat()}
     _old = {"finished_at": (_now - _td(minutes=12)).isoformat()}
+    checks.append(("часовой пояс Москва: Dockerfile и среда прохода (TZ=MSK-3 — без tzdata)",
+                   "TZ=MSK-3" in repo_text("Dockerfile") and "setdefault(\"TZ\", \"MSK-3\")" in repo_text("deploy", "cloud_entry.py"), ""))
     checks.append(("запасной запуск: свежий проход (2 мин) пропускается, старый (12 мин), пустой и кривой — нет",
                    cloud_entry.skip_if_recent(_fresh, "8", _now) is not None
                    and cloud_entry.skip_if_recent(_old, "8", _now) is None

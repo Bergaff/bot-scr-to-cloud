@@ -2123,7 +2123,8 @@ async def main() -> None:
                        "новых сообщений 30" in seen_text and "уже видели 740" in seen_text,
                        seen_text.splitlines()[2]))
         checks.append(("сводка: в шапке время прохода и длительность",
-                       "28.09 12:40" in text and "44 с" in text, text.splitlines()[0]))
+                       datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc).astimezone().strftime("%d.%m %H:%M") in text
+                       and "44 с" in text, text.splitlines()[0]))
 
         gap_text = monitor_module.ServiceNotify.pass_summary(
             now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
