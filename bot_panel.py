@@ -68,6 +68,7 @@ HELP_LINES = [
     ("export [N]", "stats.csv за N дней документом (+ находки за 24 ч)"),
     ("top", "топ чатов за сутки по находкам"),
     ("limits", "лимиты пересылок и сколько осталось по аккаунтам"),
+    ("reserve [N]", "по дням: сколько не хватило до лимита у каждого аккаунта (свободный запас: пора ли добавлять чаты или аккаунты)"),
     ("boost [аккаунт]", "пробить лимит: обнулить счётчик пересылок, очередь пойдёт ещё на целый лимит"),
     ("why <id|ссылка>", "почему сообщение взяли или не взяли"),
     ("cost", "стоимость работы в облаке: расход и сколько это в деньгах"),
@@ -1405,6 +1406,45 @@ class BotPanel:
         lines.append("Лимит обнулится в местную полночь, добор очереди пойдёт автоматически. "
                      "Раньше срока — /boost (пробить лимит ещё на целый лимит).")
         return "\n".join(lines)
+
+    def cmd_reserve(self, days: str = "") -> str:
+        """Запас до лимита по дням и аккаунтам: сколько сообщений не хватило до лимита к концу суток."""
+        parsed = self._parse_int(days, default=7, low=1, high=30)
+        limits = {state["name"]: int(state["max_per_day"] or 0) for state in self.account_states()}
+        rows = self.store.account_daily(parsed)
+        if not rows:
+            return "Пересылок ещё не было — считать запас не по чему."
+        today = datetime.now().astimezone().strftime("%Y-%m-%d")
+        by_day: dict[str, list[dict]] = {}
+        for row in rows:
+            by_day.setdefault(row["day"], []).append(row)
+        lines = [f"📉 Запас до лимита по дням (последние {len(by_day)} дн.)",
+                 "«Свободно» — сколько сообщений не хватило до лимита к концу суток: чем больше, тем",
+                 "больше места для новых чатов. «Лимит» — дошли до потолка, часть находок ждала в очереди."]
+        free_sum: dict[str, list[int]] = {}
+        full_days: dict[str, int] = {}
+        for day, items in by_day.items():
+            lines += ["", f"{day[8:10]}.{day[5:7]}" + (" (сутки ещё идут)" if day == today else "")]
+            for item in items:
+                name, sent, limit = item["account"], item["sent"], limits.get(item["account"], 0)
+                if not limit:
+                    lines.append(f"  {name}: отправлено {sent}" + ("" if name != "—" else " (аккаунт не записан)"))
+                    continue
+                free = max(0, limit - sent)
+                mark = "лимит" if sent >= limit else f"свободно {free}"
+                extra = f", сгорело из очереди {item['expired']}" if item["expired"] else ""
+                lines.append(f"  {name}: {sent} из {limit} · {mark}{extra}")
+                if day != today:
+                    free_sum.setdefault(name, []).append(free)
+                    full_days[name] = full_days.get(name, 0) + (1 if sent >= limit else 0)
+        if free_sum:
+            lines += ["", "Итого за законченные сутки:"]
+            for name, frees in free_sum.items():
+                avg = sum(frees) // len(frees)
+                lines.append(f"  {name}: в среднем свободно {avg} из {limits.get(name)}, "
+                             f"лимит выбран {full_days.get(name, 0)} из {len(frees)} дн.")
+        lines += ["", "Сутки считаются так же, как лимит: с 03:00 МСК (полночь по UTC), а не с полуночи МСК."]
+        return truncate("\n".join(lines), self.message_limit, hint="/reserve <дней>")
 
     def cmd_boost(self, account: str = "") -> Answer:
         """Пробить дневной лимит: счётчик отправок аккаунта обнуляется, очередь идёт дальше.

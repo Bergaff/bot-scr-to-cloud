@@ -467,6 +467,23 @@ class HitStore:
         row = self.conn.execute(query, (since, account) if account else (since,)).fetchone()
         return int(row[0] if row else 0)
 
+    def account_daily(self, days: int = 7) -> list[dict]:
+        """По суткам и аккаунтам: сколько отправлено, сколько позиций сгорело из очереди и сколько в ней висит.
+
+        Сутки — те же, что у счётчика лимита (местные сутки процесса; в облаке TZ=UTC, то есть с 03:00 МСК).
+        Возвращает строки {day, account, sent, expired, queued}, свежие сутки первыми."""
+        offset = int(datetime.now().astimezone().utcoffset().total_seconds())
+        rows = self.conn.execute(
+            "SELECT date(at, ? || ' seconds') AS day, COALESCE(account, '—') AS acc, "
+            "SUM(CASE WHEN ok=1 AND COALESCE(mode,'') NOT IN ('test','queued','dry-run') THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN mode='expired' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN mode='queued' THEN 1 ELSE 0 END) "
+            "FROM forwarded WHERE at IS NOT NULL GROUP BY day, acc ORDER BY day DESC, acc",
+            (f"{offset:+d}",)).fetchall()
+        wanted = sorted({row[0] for row in rows if row[0]}, reverse=True)[:max(1, int(days))]
+        return [{"day": day, "account": acc, "sent": int(sent or 0), "expired": int(expired or 0),
+                 "queued": int(queued or 0)} for day, acc, sent, expired, queued in rows if day in wanted]
+
     # ---------------- статистика по источникам
 
     def bump_stats(self, chat_key: str, day: str | None = None, account: str | None = None,

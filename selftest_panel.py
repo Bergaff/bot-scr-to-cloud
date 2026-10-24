@@ -510,6 +510,31 @@ async def main() -> None:
     checks.append(("дневной лимит выбран и находки идут -> алерт про лимит",
                    any("дневной лимит" in text for text in limit_panel.limit_alerts()),
                    (limit_panel.limit_alerts() or ["(нет)"])[0][:60]))
+    # /reserve: запас до лимита по дням и аккаунтам
+    res_store = HitStore(":memory:")
+    _now = datetime.now(timezone.utc)
+    for index in range(4):                                   # main: сегодня 4 из 10
+        res_store.mark_forwarded("c1", 1 + index, ok=True, mode="forwarded", account="main")
+    for index in range(10):                                  # second: сегодня лимит выбран
+        res_store.mark_forwarded("c2", 100 + index, ok=True, mode="forwarded", account="second")
+    for index in range(3):                                   # а вчера у main: 7 отправлено, 2 сгорело
+        res_store.mark_forwarded("c1", 500 + index, ok=True, mode="forwarded", account="main")
+    res_store.mark_forwarded("c1", 600, ok=False, mode="expired", error="queue_ttl", account="main")
+    yesterday = (_now - timedelta(days=1)).isoformat(timespec="seconds")
+    res_store.conn.execute("UPDATE forwarded SET at=? WHERE msg_id >= 500", (yesterday,))
+    res_store.conn.commit()
+    res_panel = BotPanel(res_store, transport=object(), accounts=[AccountView(name="main", max_per_day=10),
+                                                                  AccountView(name="second", max_per_day=10)])
+    res_text = res_panel.dispatch("/reserve").text
+    checks.append(("/reserve: свободно 6 у main, «лимит» у second, сгоревшее из очереди видно",
+                   "main: 4 из 10 · свободно 6" in res_text and "second: 10 из 10 · лимит" in res_text
+                   and "main: 3 из 10 · свободно 7, сгорело из очереди 1" in res_text, res_text[:200].replace("\n", " | ")))
+    checks.append(("/reserve без пересылок не падает", BotPanel(HitStore(":memory:"), transport=object(), accounts=[AccountView(name="main", max_per_day=10)]
+                   ).dispatch("/reserve").text.startswith("Пересылок ещё не было"), ""))
+    import chats_by_account
+    if chats_by_account.OUT.exists():              # в образе *.md вырезаны — тогда проверять нечего
+        checks.append(("ACCOUNTS.md соответствует sources.yaml (иначе: python chats_by_account.py)",
+                       chats_by_account.main(["--check"]) == 0, ""))
     checks.append(("штатно остановленный аккаунт не считается «молчащим»",
                    not make_panel(stopped_store, clock, FakeTransport(clock)).silent_alerts(),
                    "остановлен -> алерта нет"))
