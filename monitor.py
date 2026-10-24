@@ -2286,7 +2286,12 @@ async def connect_client(client, account: AccountConfig, args) -> None:
         await client.start()
     except Exception as exc:  # noqa: BLE001
         name = type(exc).__name__
+        if isinstance(exc, EOFError):
+            # Telethon не нашёл рабочий вход в файле сессии и спросил телефон, а в облаке вводить некому
+            name = "SessionNotAuthorized"
         message = {
+            "SessionNotAuthorized": "Сессия не авторизована: аккаунт вышел (сеанс завершён в Telegram) или файл "
+                                    "сессии пустой/сохранён до конца входа. Нужен новый вход.",
             "SessionPasswordNeededError": "Включён облачный пароль (2FA).",
             "PasswordHashInvalidError": "Облачный пароль указан неверно.",
             "PhoneCodeInvalidError": "Код из Telegram неверный или устарел (каждый новый запрос обнуляет предыдущий).",
@@ -2295,7 +2300,8 @@ async def connect_client(client, account: AccountConfig, args) -> None:
         }.get(name, f"{name}: {exc}")
         CONNECT_FAILURES[account.name] = (name, message)
         print(f"[!] Аккаунт «{account.name}» ({account.session}.session): {message}", file=sys.stderr)
-        if name in ("SessionPasswordNeededError", "PasswordHashInvalidError", "PhoneCodeInvalidError"):
+        if name in ("SessionPasswordNeededError", "PasswordHashInvalidError", "PhoneCodeInvalidError",
+                    "SessionNotAuthorized"):
             print("    Надёжный способ войти без кода и SMS:  start.bat --login-qr", file=sys.stderr)
         elif name == "AuthKeyDuplicatedError":
             print(f"    Удали файл {account.session}.session и войди заново: "

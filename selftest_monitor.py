@@ -2469,6 +2469,17 @@ async def main() -> None:
     checks.append(("вход сломанной сессии: причина запоминается (для сообщения в бота)",
                    dead_exit and monitor_module.CONNECT_FAILURES.get("second", ("",))[0] == "AuthKeyDuplicatedError",
                    str(monitor_module.CONNECT_FAILURES)))
+    class EofClient:                        # Telethon спрашивает телефон: сессия не авторизована
+        async def start(self):
+            raise EOFError("EOF when reading a line")
+    try:
+        await monitor_module.connect_client(EofClient(), SimpleNamespace(name="second", session="second_session"),
+                                            SimpleNamespace())
+    except SystemExit:
+        pass
+    eof_kind, eof_text = monitor_module.CONNECT_FAILURES.get("second", ("", ""))
+    checks.append(("EOFError при входе = «сессия не авторизована», а не загадочное EOF",
+                   eof_kind == "SessionNotAuthorized" and "аккаунт вышел" in eof_text, f"{eof_kind}"))
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска
     snap = HitStore(":memory:")
     first = monitor_module.record_login(snap, "second", False, "AuthKeyDuplicatedError", "ключ использован с другого IP")

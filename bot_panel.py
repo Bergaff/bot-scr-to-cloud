@@ -47,7 +47,8 @@ POLL_TIMEOUT = 25               # long polling, сек (ТЗ §14.4)
 HEAVY_COMMANDS = {"usage", "stats", "report", "export"}
 
 # Ошибки сессии, после которых аккаунт сам не оживёт: нужен повторный вход (ТЗ §14.6).
-SESSION_FATAL_KINDS = ("AuthKeyDuplicatedError", "PhoneNumberBannedError", "SessionRevoked",
+SESSION_FATAL_KINDS = ("AuthKeyDuplicatedError", "PhoneNumberBannedError", "SessionRevoked", "SessionNotAuthorized",
+                       "EOFError",
                        "SessionPasswordNeededError", "UserDeactivatedBanError")
 
 HELP_LINES = [
