@@ -91,7 +91,7 @@ async def main() -> None:
 
     store = make_store("metrics")
     store.log_metric(FAKE_ROW)
-    back = store.metrics_recent(hours=24 * 30)
+    back = store.metrics_recent(hours=24 * 3650)
     checks.append(("срез ложится в таблицу metrics и читается обратно",
                    len(back) == 1 and float(back[0]["rss_mb"]) == 62.0
                    and int(back[0]["msgs_total"]) == 3480,
