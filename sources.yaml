@@ -214,33 +214,38 @@ sources:
   # ─── Добавлено 02.10.2026: ещё чаты для second ───────────────────────────────
   # Пять приватных чатов по ссылке-приглашению: радар вступит сам (--auto-join в RADAR_ARGS),
   # но не больше 3 вступлений за проход — остальные дойдут в следующие проходы (раз в 10 минут).
-  # Названия не заданы специально: в статистике и уведомлениях подставится настоящее имя чата.
+  # Названия заданы вручную (страна/город, как подсказал владелец), настоящее имя чата в Telegram может отличаться.
   # Если чат требует одобрения админа, вступление зависнет «на рассмотрении» — смотри /sources-check.
   - target: "https://t.me/joinchat/4gwb980qKeE0OGJi"
+    title: "Грузия (приватный чат)"
     account: second
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "https://t.me/joinchat/GpArF0ipVLllNDUy"
+    title: "Казахстан (приватный чат)"
     account: second
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "https://t.me/joinchat/J8goGqMqtOI4YzBi"
+    title: "Беларусь (приватный чат)"
     account: second
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "https://t.me/joinchat/LIowGvUxfGUwYTcy"
+    title: "Япония (приватный чат)"
     account: second
     profile: chat
     min_score: 5
     catchup: 50
 
   - target: "https://t.me/joinchat/P_Fc6Qu0BF05MDEy"
+    title: "Сиде (приватный чат)"
     account: second
     profile: chat
     min_score: 5
@@ -359,11 +364,49 @@ sources:
     min_score: 5
     catchup: 50
 
+  # ─── Добавлено 24.10.2026 по просьбе владельца (все на main: у second уже 26 чатов и он вступает с трудом) ───
+  - target: "@rus_ge"
+    title: "Грузия (rus_ge)"
+    account: main
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@rfaze"
+    title: "rfaze"
+    account: main
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@granica_polsha"         # канал-новости (раньше был в выключенных примерах)
+    title: "Граница Польша (канал)"
+    account: main
+    profile: news
+    min_score: 6
+
+  - target: "@granicaLtBY"
+    title: "Граница LT-BY"
+    account: main
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@ub_taxi"
+    title: "ub_taxi (такси)"
+    account: main
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@WhoGoBelarus"
+    title: "Кто едет в Беларусь"
+    account: main
+    profile: chat
+    min_score: 5
+    catchup: 50
+
   # ─── Выключенные примеры (раскомментируй, если понадобятся) ─────────────────
-  # - target: "@granica_polsha"        # новостной канал
-  #   profile: news
-  #   account: main
-  #   min_score: 6
   # - target: "@granicaPOST"
   #   profile: news
   #   account: main

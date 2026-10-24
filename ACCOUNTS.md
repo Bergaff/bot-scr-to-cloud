@@ -5,37 +5,43 @@
 
 | аккаунт | чатов | из них приватные ссылки |
 |---|---|---|
-| main | 14 | 1 |
+| main | 20 | 1 |
 | second | 26 | 5 |
 
-## main — 14 чатов
+## main — 20 чатов
 
 | # | чат | ссылка | порог |
 |---|---|---|---|
 | 1 | Приватный чат (приоритетный) 🔑 | https://t.me/+CmQyl50rf-NlODFi | 4 |
 | 2 | Airfellow (попутчики) | https://t.me/airfellow | 5 |
 | 3 | BY-Poland (чат) | https://t.me/ByPoland_chat | 5 |
-| 4 | SkyPtoP (посылки) | https://t.me/SkyPtoP_package | 5 |
-| 5 | Граница (чат) | https://t.me/belgranica | 5 |
-| 6 | Граница BY-PL-LT (очереди) | https://t.me/granica_es | 6 |
-| 7 | Граница BY-ЕС / Брест-Тересполь / Брузги-Кузница | https://t.me/granica_bypl | 6 |
-| 8 | Граница онлайн | https://t.me/granica_online | 5 |
-| 9 | Граница Польша | https://t.me/granica_polska | 5 |
-| 10 | Дубай (передачи) | https://t.me/dubaisend | 5 |
-| 11 | Посылки Таиланд | https://t.me/posylkathai | 5 |
-| 12 | Посылки 📦 Доставки 🧳 Попутчики 🙋 Водители 🚘 | https://t.me/travelersminsk | 4 |
-| 13 | Почта Бразилия | https://t.me/pochta_brazil | 5 |
-| 14 | Россия-Беларусь (граница) | https://t.me/rossia_belarus | 5 |
+| 4 | rfaze | https://t.me/rfaze | 5 |
+| 5 | SkyPtoP (посылки) | https://t.me/SkyPtoP_package | 5 |
+| 6 | ub_taxi (такси) | https://t.me/ub_taxi | 5 |
+| 7 | Граница (чат) | https://t.me/belgranica | 5 |
+| 8 | Граница BY-PL-LT (очереди) | https://t.me/granica_es | 6 |
+| 9 | Граница BY-ЕС / Брест-Тересполь / Брузги-Кузница | https://t.me/granica_bypl | 6 |
+| 10 | Граница LT-BY | https://t.me/granicaLtBY | 5 |
+| 11 | Граница онлайн | https://t.me/granica_online | 5 |
+| 12 | Граница Польша | https://t.me/granica_polska | 5 |
+| 13 | Граница Польша (канал) | https://t.me/granica_polsha | 6 |
+| 14 | Грузия (rus_ge) | https://t.me/rus_ge | 5 |
+| 15 | Дубай (передачи) | https://t.me/dubaisend | 5 |
+| 16 | Кто едет в Беларусь | https://t.me/WhoGoBelarus | 5 |
+| 17 | Посылки Таиланд | https://t.me/posylkathai | 5 |
+| 18 | Посылки 📦 Доставки 🧳 Попутчики 🙋 Водители 🚘 | https://t.me/travelersminsk | 4 |
+| 19 | Почта Бразилия | https://t.me/pochta_brazil | 5 |
+| 20 | Россия-Беларусь (граница) | https://t.me/rossia_belarus | 5 |
 
 ## second — 26 чатов
 
 | # | чат | ссылка | порог |
 |---|---|---|---|
-| 1 | приватный чат (без названия) 🔑 | https://t.me/joinchat/4gwb980qKeE0OGJi | 5 |
-| 2 | приватный чат (без названия) 🔑 | https://t.me/joinchat/GpArF0ipVLllNDUy | 5 |
-| 3 | приватный чат (без названия) 🔑 | https://t.me/joinchat/J8goGqMqtOI4YzBi | 5 |
-| 4 | приватный чат (без названия) 🔑 | https://t.me/joinchat/LIowGvUxfGUwYTcy | 5 |
-| 5 | приватный чат (без названия) 🔑 | https://t.me/joinchat/P_Fc6Qu0BF05MDEy | 5 |
+| 1 | Беларусь (приватный чат) 🔑 | https://t.me/joinchat/J8goGqMqtOI4YzBi | 5 |
+| 2 | Грузия (приватный чат) 🔑 | https://t.me/joinchat/4gwb980qKeE0OGJi | 5 |
+| 3 | Казахстан (приватный чат) 🔑 | https://t.me/joinchat/GpArF0ipVLllNDUy | 5 |
+| 4 | Сиде (приватный чат) 🔑 | https://t.me/joinchat/P_Fc6Qu0BF05MDEy | 5 |
+| 5 | Япония (приватный чат) 🔑 | https://t.me/joinchat/LIowGvUxfGUwYTcy | 5 |
 | 6 | @pkhuket2 | https://t.me/pkhuket2 | 5 |
 | 7 | @thailand_sng | https://t.me/thailand_sng | 5 |
 | 8 | Армения (чат) | https://t.me/armeniarus_chat | 5 |

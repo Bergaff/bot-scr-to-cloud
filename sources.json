@@ -190,6 +190,7 @@
     },
     {
       "target": "https://t.me/joinchat/4gwb980qKeE0OGJi",
+      "title": "Грузия (приватный чат)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,
@@ -197,6 +198,7 @@
     },
     {
       "target": "https://t.me/joinchat/GpArF0ipVLllNDUy",
+      "title": "Казахстан (приватный чат)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,
@@ -204,6 +206,7 @@
     },
     {
       "target": "https://t.me/joinchat/J8goGqMqtOI4YzBi",
+      "title": "Беларусь (приватный чат)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,
@@ -211,6 +214,7 @@
     },
     {
       "target": "https://t.me/joinchat/LIowGvUxfGUwYTcy",
+      "title": "Япония (приватный чат)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,
@@ -218,6 +222,7 @@
     },
     {
       "target": "https://t.me/joinchat/P_Fc6Qu0BF05MDEy",
+      "title": "Сиде (приватный чат)",
       "account": "second",
       "profile": "chat",
       "min_score": 5,
@@ -345,6 +350,53 @@
       "target": "@refugees_in_Germany",
       "title": "Германия (беженцы)",
       "account": "second",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@rus_ge",
+      "title": "Грузия (rus_ge)",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@rfaze",
+      "title": "rfaze",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@granica_polsha",
+      "title": "Граница Польша (канал)",
+      "account": "main",
+      "profile": "news",
+      "min_score": 6
+    },
+    {
+      "target": "@granicaLtBY",
+      "title": "Граница LT-BY",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@ub_taxi",
+      "title": "ub_taxi (такси)",
+      "account": "main",
+      "profile": "chat",
+      "min_score": 5,
+      "catchup": 50
+    },
+    {
+      "target": "@WhoGoBelarus",
+      "title": "Кто едет в Беларусь",
+      "account": "main",
       "profile": "chat",
       "min_score": 5,
       "catchup": 50

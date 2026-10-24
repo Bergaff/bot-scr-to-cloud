@@ -447,7 +447,8 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
                 elif recent:
                     status = ("error", REJOIN_TEXT) if recent[0] == "joined" else (recent[0], recent[1])
                     if recent[0] == "joined":
-                        proof = ("Telegram подтверждает: аккаунт не участник (GetParticipant)" if member is False
+                        proof = ("Telegram подтверждает: аккаунт не участник (GetParticipant); публичный чат при этом "
+                                 "читается без вступления" if member is False
                                  else "Telegram не считает аккаунт участником сразу после вступления "
                                       "(проверить запросом GetParticipant не вышло)")
                         _note_failure(account, target, "flap", "NotMemberAfterJoin", proof, entity=entity)
