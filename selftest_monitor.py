@@ -671,11 +671,15 @@ async def main() -> None:
 
     class PublicClient:
         """get_entity отдаёт канал; JoinChannelRequest ведёт себя по сценарию."""
-        def __init__(self, left=True, join_error=None):
-            self.left, self.join_error, self.joins = left, join_error, []
+        def __init__(self, left=True, join_error=None, member=None):
+            self.left, self.join_error, self.joins, self.member = left, join_error, [], member
         async def get_entity(self, target):
             return Channel(-100500, "Публичный чат " + target, target.lstrip("@"), left=self.left)
         async def __call__(self, request):
+            if type(request).__name__ == "GetParticipantRequest":      # проверка «я участник?»
+                if self.member:
+                    return SimpleNamespace(participant=object())
+                raise type("UserNotParticipantError", (Exception,), {})("not in")
             self.joins.append(request)
             if self.join_error:
                 raise type(self.join_error, (Exception,), {})("boom")
@@ -797,6 +801,51 @@ async def main() -> None:
     await resolve_targets(PublicClient(left=True, join_error="InviteRequestSentError"), ["@req2"], Paced(0),
                           auto_join=True, report={}, memory=HitStore(":memory:"), account="main")
     checks.append(("заявка админу — не неудача: снимок не нужен", take_join_failures("main") == {}, ""))
+
+    # признак left устарел: Telegram подтверждает, что аккаунт участник, — тревоги нет
+    mem_store = HitStore(":memory:")
+    mem_client = PublicClient(member=True)
+    take_join_failures("second")
+    await resolve_targets(mem_client, ["@memb"], Paced(0), auto_join=True, report={}, memory=mem_store, account="second")
+    mem_rep: dict = {}
+    mem_res = await resolve_targets(mem_client, ["@memb"], Paced(0), auto_join=True, report=mem_rep,
+                                    memory=mem_store, account="second")
+    checks.append(("«left» есть, но GetParticipant подтверждает членство: чат читается, снимка и повторных вступлений нет",
+                   mem_rep["@memb"][0] == "ok" and "@memb" in mem_res and len(mem_client.joins) == 1
+                   and take_join_failures("second") == {}, str(mem_rep)))
+    not_store = HitStore(":memory:")
+    not_client = PublicClient(member=False)
+    await resolve_targets(not_client, ["@nomemb"], Paced(0), auto_join=True, report={}, memory=not_store, account="second")
+    await resolve_targets(not_client, ["@nomemb"], Paced(0), auto_join=True, report={}, memory=not_store, account="second")
+    not_fail = take_join_failures("second")
+    checks.append(("Telegram подтверждает «не участник»: тревога с этим доказательством",
+                   "подтверждает" in not_fail.get("@nomemb", {}).get("detail", ""), str(not_fail)[:120]))
+
+    # много неудач сразу: одно сводное сообщение + подробный снимок первого чата, остальным — отметка
+    class DigestService:
+        def __init__(self):
+            self.store, self.texts = HitStore(":memory:"), []
+        def _due(self, key):
+            return not self.store.bot_state_get("service:" + key)
+        async def send(self, text, key="", force=False):
+            self.texts.append((key, text))
+            self.store.bot_state_set("service:" + key, "now")
+            return True
+    digest_service = DigestService()
+    many_fail = {f"@c{i}": {"stage": "flap", "kind": "NotMemberAfterJoin", "detail": "не участник", "entity": None, "hash": ""}
+                 for i in range(5)}
+    digest_sources = [Source(target=f"@c{i}", title=f"Чат {i}") for i in range(5)]
+    await monitor_module.announce_join_failures(digest_service, snap_client, Paced(0), "second", digest_sources, many_fail)
+    await monitor_module.announce_join_failures(digest_service, snap_client, Paced(0), "second", digest_sources, many_fail)
+    checks.append(("5 неудач за проход: сводка и один подробный снимок, повтор в тот же срок молчит",
+                   len(digest_service.texts) == 2 and "5 чатов" in digest_service.texts[0][1]
+                   and "Чат 4" in digest_service.texts[0][1] and "Снимок" in digest_service.texts[1][1],
+                   str([k for k, _ in digest_service.texts])))
+    two_service = DigestService()
+    await monitor_module.announce_join_failures(two_service, snap_client, Paced(0), "second", digest_sources,
+                                                {k: many_fail[k] for k in list(many_fail)[:2]})
+    checks.append(("две неудачи — обычные отдельные снимки", len(two_service.texts) == 2
+                   and all("Снимок" in t for _, t in two_service.texts), ""))
 
     checks.append(("нет файла сессии в проходе: аккаунт пропускается, а не ждёт телефон и код",
                    (lambda src: "SessionFileMissing" in src and 'Path(f"{acc.session}.session").exists()' in src)(

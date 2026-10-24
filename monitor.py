@@ -2198,15 +2198,47 @@ CONNECT_FAILURES: dict[str, tuple[str, str]] = {}
 
 async def announce_join_failures(service, client, paced, account_name: str, sources, failures: dict) -> None:
     """«Снимок» в бот, когда вступить или найти чат не вышло: ответ Telegram, сведения о чате,
-    последние сообщения (там обычно видна капча). Раз в несколько часов на чат, не каждый проход."""
+    последние сообщения (там обычно видна капча). Раз в несколько часов на чат, не каждый проход.
+    Если неудач сразу много (3 и больше) — одно сводное сообщение и подробный снимок первого чата:
+    иначе пришлось бы читать полтора десятка одинаковых сообщений."""
     titles = {src.target: (src.title or src.target) for src in sources}
-    for target, info in failures.items():
+    due_check = getattr(service, "_due", None)
+    pending = {t: info for t, info in failures.items()
+               if due_check is None or due_check(f"join_fail:{account_name}:{t}")}
+    if not pending:
+        return
+
+    async def one(target: str, info: dict) -> None:
         try:
             snap = await join_snapshot(client, info, paced)
         except Exception as exc:  # noqa: BLE001 - снимок не должен ронять проход
             snap = {"facts": [], "messages": [], "notes": [f"снимок не собрался: {type(exc).__name__}"]}
         await service.send(format_join_snapshot(account_name, titles.get(target) or target, info, snap),
                            key=f"join_fail:{account_name}:{target}")
+
+    if len(pending) < 3:
+        for target, info in pending.items():
+            await one(target, info)
+        return
+    from collections import Counter
+    from html import escape
+    common = Counter(info.get("detail") or info.get("kind") or "?" for info in pending.values()).most_common(1)[0]
+    names = ", ".join(escape(str(titles.get(t) or t)) for t in pending)
+    text = (f"📸 Аккаунт «{escape(account_name)}»: не вышло войти или проверить {len(pending)} чатов за один проход.\n"
+            f"Чаще всего: {escape(common[0])} ({common[1]} из {len(pending)}).\n"
+            f"Чаты: {names}\n"
+            "Когда так сразу во многих чатах, дело обычно не в каждом чате, а в самом аккаунте "
+            "(новая сессия, ограничения Telegram — проверь аккаунт через @SpamBot). "
+            "Подробный снимок первого чата — следующим сообщением.")
+    first = next(iter(pending))
+    await service.send(text[:3900], key=f"join_fail_digest:{account_name}")
+    await one(first, pending[first])
+    store = getattr(service, "store", None)
+    if store is not None:                      # остальным чатам отдельных сообщений не нужно: ставим отметку
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for target in pending:
+            if target != first:
+                store.bot_state_set(f"service:join_fail:{account_name}:{target}", stamp)
 
 
 async def announce_joins(service, account_name: str, sources, resolved: dict, report: dict,

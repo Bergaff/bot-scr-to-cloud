@@ -242,6 +242,23 @@ def take_join_failures(account: str) -> dict[str, dict]:
     return taken
 
 
+async def is_member(client, entity, paced: Paced):
+    """Состоит ли аккаунт в канале/группе на самом деле: запрос GetParticipant о самом себе.
+
+    True — участник (признак left в данных чата устарел или врёт), False — Telegram прямо говорит
+    «не участник», None — проверить не вышло (ошибка/флуд): тогда верим признаку left."""
+    try:
+        from telethon.tl.functions.channels import GetParticipantRequest
+        from telethon.tl.types import InputPeerSelf
+        await call(lambda: client(GetParticipantRequest(entity, InputPeerSelf())), paced, retries=1,
+                   label="get_participant(me)")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ in ("UserNotParticipantError", "ChannelPrivateError"):
+            return False
+        return None
+
+
 JOIN_STAGE_TEXT = {"join": "вступление в публичный чат", "invite": "вступление по ссылке-приглашению",
                    "flap": "проверка после вступления", "resolve": "поиск чата по адресу"}
 JOIN_ERROR_HINT = {
@@ -424,11 +441,16 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
             # Чат разрешился, но аккаунт может в нём не состоять (публичный канал/группа).
             if auto_join and _needs_join(entity):
                 recent = _memo_recent(memory, account, target)
-                if recent:
+                member = await is_member(client, entity, paced) if (recent and recent[0] == "joined") else False
+                if member is True:
+                    status = ("ok", "аккаунт участник (признак «вышел» в данных чата устарел)")
+                elif recent:
                     status = ("error", REJOIN_TEXT) if recent[0] == "joined" else (recent[0], recent[1])
                     if recent[0] == "joined":
-                        _note_failure(account, target, "flap", "NotMemberAfterJoin",
-                                      "Telegram не считает аккаунт участником сразу после вступления", entity=entity)
+                        proof = ("Telegram подтверждает: аккаунт не участник (GetParticipant)" if member is False
+                                 else "Telegram не считает аккаунт участником сразу после вступления "
+                                      "(проверить запросом GetParticipant не вышло)")
+                        _note_failure(account, target, "flap", "NotMemberAfterJoin", proof, entity=entity)
                 elif max_joins and joins_done >= max_joins:
                     status = ("deferred", f"вступление отложено (не больше {max_joins} за проход), дойдёт позже")
                 else:
