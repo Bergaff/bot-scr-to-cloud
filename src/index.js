@@ -22,6 +22,9 @@ import { Container, getContainer } from '@cloudflare/containers';
 /** Один и тот же экземпляр контейнера на весь радар: состояние (сессия, база) одно. */
 const CONTAINER_ID = 'radar-main';
 const CONTAINER_PORT = 8080;
+/** Запасной cron (должен совпадать с wrangler.jsonc) и «возраст» последнего прохода, после которого он запускает свой. */
+const BACKUP_CRON = '5-55/10 * * * *';
+const BACKUP_GAP_MIN = 8;
 /** Сколько ждём готовности порта: холодный старт образа + импорт Telethon. */
 const PORT_READY_TIMEOUT_MS = 60_000;
 
@@ -100,10 +103,12 @@ async function ready(env) {
 }
 
 /** Один проход радара: ответ контейнера отдаём как есть (JSON с итогом). */
-async function runPass(env) {
+async function runPass(env, minGapMin = 0) {
 	const started = Date.now();
 	const container = await ready(env);
-	const response = await container.containerFetch('http://localhost/run', {
+	// min_gap: запасной cron просит контейнер пропустить проход, если свежий проход уже был.
+	const query = minGapMin > 0 ? `?min_gap=${minGapMin}` : '';
+	const response = await container.containerFetch(`http://localhost/run${query}`, {
 		method: 'POST',
 		headers: authHeaders(env),
 	});
@@ -181,8 +186,11 @@ export default {
 			console.log(`[radar] ${OFF_NOTE}`);
 			return;
 		}
+		// Основной cron — каждые 10 минут. Запасной (сдвиг на 5 минут) нужен на случай, когда Cloudflare
+		// не доставил основной тик: он запускает проход, только если последний был больше BACKUP_GAP_MIN назад.
+		const backup = event?.cron === BACKUP_CRON;
 		try {
-			await runPass(env);
+			await runPass(env, backup ? BACKUP_GAP_MIN : 0);
 		} catch (error) {
 			// Aлерт уйдёт и в Telegram (бот-панель следит за пульсом), но лог cron тоже важен.
 			console.error('[radar] проход по расписанию не удался:', error?.message ?? error);

@@ -763,9 +763,24 @@ async def main() -> None:
                    and bindings[0]["class_name"] == "RadarContainer"
                    and migrations and migrations[0]["new_sqlite_classes"] == ["RadarContainer"],
                    str(migrations[0] if migrations else None)))
-    checks.append(("cron раз в 10 минут (схема B)",
-                   (config.get("triggers") or {}).get("crons") == ["*/10 * * * *"],
+    checks.append(("cron раз в 10 минут (схема B) и запасной cron со сдвигом на 5 минут",
+                   (config.get("triggers") or {}).get("crons") == ["*/10 * * * *", "5-55/10 * * * *"],
                    str((config.get("triggers") or {}).get("crons"))))
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    _now = _dt.now(_tz.utc)
+    _fresh = {"finished_at": (_now - _td(minutes=2)).isoformat()}
+    _old = {"finished_at": (_now - _td(minutes=12)).isoformat()}
+    checks.append(("запасной запуск: свежий проход (2 мин) пропускается, старый (12 мин), пустой и кривой — нет",
+                   cloud_entry.skip_if_recent(_fresh, "8", _now) is not None
+                   and cloud_entry.skip_if_recent(_old, "8", _now) is None
+                   and cloud_entry.skip_if_recent({"finished_at": None}, "8", _now) is None
+                   and cloud_entry.skip_if_recent(_fresh, "", _now) is None
+                   and cloud_entry.skip_if_recent(_fresh, "abc", _now) is None,
+                   ""))
+    _index = repo_text("src", "index.js")
+    checks.append(("Worker знает запасной cron из wrangler.jsonc и просит min_gap только для него",
+                   "const BACKUP_CRON = '5-55/10 * * * *'" in _index and "event?.cron === BACKUP_CRON" in _index
+                   and "min_gap" in _index, ""))
     secrets = ("TG_API_HASH", "TG_BOT_TOKEN", "R2_SECRET_ACCESS_KEY", "RADAR_TOKEN")
     checks.append(("секретов в wrangler.jsonc нет — только несекретные vars",
                    not any(f'"{name}"' in plain for name in secrets), ", ".join(secrets)))

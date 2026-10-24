@@ -109,6 +109,22 @@ def allowed_run_args(args: str) -> tuple[bool, str]:
     return True, ""
 
 
+def skip_if_recent(last: dict, min_gap: str, now: datetime | None = None) -> float | None:
+    """Сколько минут назад закончился последний проход, если это меньше min_gap (тогда запасной запуск не нужен).
+    None — запускать: параметр не задан/кривой, проходов ещё не было или они давно."""
+    try:
+        gap = float(min_gap)
+        finished = datetime.fromisoformat(str((last or {}).get("finished_at")))
+    except (TypeError, ValueError):
+        return None
+    if gap <= 0:
+        return None
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    age = ((now or datetime.now(timezone.utc)) - finished).total_seconds() / 60
+    return age if 0 <= age < gap else None
+
+
 class RadarRunner:
     """Один проход радара: состояние из R2 -> monitor.py -> состояние обратно в R2."""
 
@@ -672,6 +688,13 @@ class Handler(BaseHTTPRequestHandler):
         # диагностику чатов или один проход втихую — не пересобирая контейнер.
         extra = self._query().get("args", [""])[0].strip()
         runner = self.runner
+        # Запасной cron: не запускать проход, если свежий уже был (min_gap — минуты).
+        gap = skip_if_recent(self.runner.last, self._query().get("min_gap", [""])[0])
+        if gap is not None:
+            self._send(200, json.dumps({"ok": True, "skipped": True, "last_finished_at": self.runner.last.get("finished_at"),
+                                        "note": f"последний проход был {gap:.0f} мин назад — запасной запуск не нужен"},
+                                       ensure_ascii=False), "application/json; charset=utf-8")
+            return
         if extra:
             ok, why = allowed_run_args(extra)
             if not ok:
