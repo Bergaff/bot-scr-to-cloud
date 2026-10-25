@@ -1078,6 +1078,7 @@ async def main() -> None:
         def __init__(self, entity, corpus, restricted_ids=()):
             super().__init__(entity, corpus)
             self.forwarded, self.sent, self.restricted = [], [], set(restricted_ids)
+            self.replies, self.fail_reply = [], False          # ответы-ссылки после настоящей пересылки
 
         async def get_entity(self, target):
             if isinstance(target, str) and target.startswith("@"):
@@ -1093,6 +1094,11 @@ async def main() -> None:
             return message
 
         async def send_message(self, peer, text, **kwargs):
+            if kwargs.get("reply_to") is not None:
+                if self.fail_reply:
+                    raise RuntimeError("reply failed")
+                self.replies.append((text, kwargs["reply_to"]))
+                return None
             self.sent.append(text)
             return None
 
@@ -1111,6 +1117,27 @@ async def main() -> None:
     await fwd_monitor.process_message(
         fake_message(1010, "Нужно передать документы в Вильнюс, кто едет?"), source)   # чат с запретом
     copied_1001 = [text for text in fwd_client.sent if "t.me/travelersminsk/1001" in text]
+    checks.append(("после пересылки уходит ответ только со ссылкой на оригинал (для сайта)",
+                   fwd_client.replies == [("https://t.me/travelersminsk/1001", 1001)], str(fwd_client.replies)))
+    from core_telegram import message_link as _ml
+    checks.append(("ссылка с темой форума: /user/тема/сообщение; у первого сообщения темы — короткая; /c/ — тоже с темой",
+                   _ml("chat", 1, 153048, 153043) == "https://t.me/chat/153043/153048"
+                   and _ml("chat", 1, 153043, 153043) == "https://t.me/chat/153043"
+                   and _ml(None, -1001234, 9, 5) == "https://t.me/c/1234/5/9" and _ml("chat", 1, 7) == "https://t.me/chat/7", ""))
+    off_client = FwdClient(entity, [])
+    off_forwarder = Forwarder(off_client, "@parcel_transfer_bot", HitStore(":memory:"), Paced(0),
+                              mode="forward", max_per_day=5, link_reply=False)
+    await off_forwarder.prepare()
+    off_status = await off_forwarder.send(fake_message(2001, "Возьму посылку"), {"chat_key": "x", "msg_id": 2001,
+                                          "link": "https://t.me/x/2001", "text": "t"})
+    bad_client = FwdClient(entity, [])
+    bad_client.fail_reply = True
+    bad_forwarder = Forwarder(bad_client, "@parcel_transfer_bot", HitStore(":memory:"), Paced(0), mode="forward", max_per_day=5)
+    await bad_forwarder.prepare()
+    bad_status = await bad_forwarder.send(fake_message(2002, "Возьму посылку"), {"chat_key": "x", "msg_id": 2002,
+                                          "link": "https://t.me/x/2002", "text": "t"})
+    checks.append(("link_reply: false — ответа нет; сбой ответа не портит пересылку",
+                   off_status == "forwarded" and off_client.replies == [] and bad_status == "forwarded", f"{off_status} {bad_status}"))
     checks.append(("пересылка выполнена как forward (не копия)",
                    1001 in fwd_client.forwarded and not copied_1001, str(fwd_client.forwarded)))
     checks.append(("в чате с запретом пересылки ушёл текст со ссылкой",

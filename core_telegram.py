@@ -567,17 +567,22 @@ def peer_id(entity) -> int | None:
         return int(value) if value is not None else None
 
 
-def message_link(chat_username: str | None, chat_id: int | None, msg_id: int) -> str:
-    """Ссылка на сообщение: для публичных чатов — /username/id, для приватных — /c/id/id."""
+def message_link(chat_username: str | None, chat_id: int | None, msg_id: int,
+                 topic_id: int | None = None) -> str:
+    """Ссылка на сообщение: для публичных чатов — /username/id, для приватных — /c/id/id.
+
+    Для форума с темами добавляется id темы: /username/тема/id (/c/id/тема/id); у первого сообщения темы
+    (id совпадает с темой) ссылка остаётся короткой."""
+    thread = f"{topic_id}/" if topic_id and int(topic_id) != int(msg_id) else ""
     if chat_username:
-        return f"https://t.me/{chat_username}/{msg_id}"
+        return f"https://t.me/{chat_username}/{thread}{msg_id}"
     if chat_id:
         internal = str(chat_id)
         if internal.startswith("-100"):
             internal = internal[4:]
         elif internal.startswith("-"):
             internal = internal[1:]
-        return f"https://t.me/c/{internal}/{msg_id}"
+        return f"https://t.me/c/{internal}/{thread}{msg_id}"
     return ""
 
 

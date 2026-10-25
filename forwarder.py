@@ -37,7 +37,8 @@ class Forwarder:
 
     def __init__(self, client, target: str, store, paced, mode: str = "forward",
                  max_per_day: int = 100, fallback: str = "link", dry_run: bool = False,
-                 account: str = "", queue_ttl_hours: float = 24.0):
+                 account: str = "", queue_ttl_hours: float = 24.0, link_reply: bool = True):
+        self.link_reply = link_reply                # после настоящей пересылки — ответ со ссылкой на оригинал (для сайта)
         self.queue_ttl_hours = queue_ttl_hours      # дольше — позиция устарела и уходит из очереди (0 — не чистить)
         self.client, self.target_name, self.store = client, target, store
         self.account = account          # чей аккаунт отправляет: у каждого свой дневной лимит
@@ -104,7 +105,8 @@ class Forwarder:
                 raise ChatForwardsRestrictedError(None)   # Telegram сам пометил: пересылка запрещена — не стучимся зря
             if self.mode == "forward":
                 await self.paced.wait()
-                await self.client.forward_messages(self.target, messages=[message])
+                sent = await self.client.forward_messages(self.target, messages=[message])
+                await self._link_reply(sent, hit, mode_override)
                 status, error = "forwarded", ""
             else:
                 await self.paced.wait()
@@ -140,7 +142,8 @@ class Forwarder:
             import asyncio
             await asyncio.sleep(wait)
             try:
-                await self.client.forward_messages(self.target, messages=[message])
+                sent = await self.client.forward_messages(self.target, messages=[message])
+                await self._link_reply(sent, hit, mode_override)
                 status, error = "forwarded", "after_flood"
             except RPCError as retry_exc:
                 status, error = "failed", f"{type(retry_exc).__name__}: {retry_exc}"
@@ -266,6 +269,21 @@ class Forwarder:
                     username = item.username
                     break
         return f"@{username}" if username else ""
+
+    async def _link_reply(self, sent, hit: dict, mode_override: str | None = None) -> None:
+        """Пересылка не несёт ни темы форума, ни ссылки (в приватных чатах — вообще никакого источника), а сайту
+        нужно открыть исходное сообщение. Поэтому сразу после пересылки идёт ответ на неё: только ссылка
+        (чат/тема/номер). Не вышло — пересылка всё равно засчитана."""
+        link = str(hit.get("link") or "").strip()
+        if not self.link_reply or not link or mode_override == "test":
+            return
+        first = sent[0] if isinstance(sent, (list, tuple)) and sent else sent
+        reply_id = getattr(first, "id", None)
+        try:
+            await self.paced.wait()
+            await self.client.send_message(self.target, link, reply_to=reply_id, link_preview=False)
+        except Exception as exc:  # noqa: BLE001 - ссылка вторична, пересылка уже ушла
+            print(f"[!] ссылка на сообщение не отправлена ({type(exc).__name__}): {exc}", file=sys.stderr)
 
     @staticmethod
     def _text_with_link(hit: dict, note: bool = False) -> str:

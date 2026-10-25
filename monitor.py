@@ -1674,7 +1674,7 @@ class Monitor:
             "direction": match.direction,
             "countries": match.countries,
             "hits": match.hit_labels,
-            "link": message_link(username, chat_id, message.id),
+            "link": message_link(username, chat_id, message.id, topic_id),
             "found_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "topic_id": topic_id,
             "topic_name": (self.topic_names.get(topic_id) if topic_id else "") or "",
@@ -2207,7 +2207,8 @@ def build_forwarder(client, account: AccountConfig, store, paced, args):
                      fallback=fwd.get("fallback", "link"),
                      dry_run=args.forward_dry_run,
                      account=account.name,
-                     queue_ttl_hours=float(fwd.get("queue_ttl_hours", 24) or 0))
+                     queue_ttl_hours=float(fwd.get("queue_ttl_hours", 24) or 0),
+                     link_reply=bool(fwd.get("link_reply", True)))
 
 
 # Почему аккаунт не вошёл: {имя аккаунта: (тип ошибки, текст)}. Нужно, чтобы проход мог пропустить
