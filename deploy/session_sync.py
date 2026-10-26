@@ -448,6 +448,36 @@ def sync_sessions(client, workdir: str | Path, sessions: tuple[str, ...], urls: 
     return report
 
 
+# --- запасные аккаунты: файлы сессий в той же папке Диска, которые не заняты ни одним аккаунтом --------
+
+def claimed_names(listing: dict[str, str], accounts: dict[str, str], files: dict | None = None) -> set[str]:
+    """Имена файлов папки, которые «заняты» аккаунтами: SESSION_FILE_<ИМЯ> (с поиском по id Pyrogram)
+    и точные имена <сессия>.session / <аккаунт>.session. Всё остальное — кандидаты в запасные."""
+    claimed: set[str] = set()
+    exact = {name.lower(): name for name in listing}
+    for acc, sess in accounts.items():
+        for key in (acc, sess):
+            if files and norm_name(key) in files:
+                hit = pick_file(listing, files[norm_name(key)])
+                if hit:
+                    claimed.add(hit[0])
+        for wanted in (f"{sess}.session", sess, f"{acc}.session", acc):
+            if wanted.lower() in exact:
+                claimed.add(exact[wanted.lower()])
+    return claimed
+
+
+def spare_candidates(listing: dict[str, str], claimed: set[str]) -> list[tuple[str, str]]:
+    """Свободные файлы .session из папки: (имя, id), по имени. Telethon и Pyrogram — без разницы."""
+    return [(name, fid) for name, fid in sorted(listing.items(), key=lambda item: item[0].lower())
+            if name not in claimed and name.lower().endswith(".session")]
+
+
+def session_digest(data: bytes) -> str:
+    """Короткий отпечаток скачанного файла (чтобы помнить «уже пробовали»): 16 символов sha256."""
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
 def _known(entry: dict) -> dict:
     """Что помним про последнюю импортированную версию (для бота)."""
     out = {}

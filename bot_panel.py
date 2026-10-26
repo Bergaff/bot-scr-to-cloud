@@ -70,6 +70,7 @@ HELP_LINES = [
     ("top", "топ чатов за сутки по находкам"),
     ("limits", "лимиты пересылок и сколько осталось по аккаунтам"),
     ("security [аккаунт]", "кто сидит в аккаунте: сеансы с устройством, IP и страной; ключ сессии; последний вход радара"),
+    ("spares", "запасные аккаунты на Google Диске: сколько свободных, какие уже использованы или не подошли"),
     ("reserve [N]", "по дням: сколько не хватило до лимита у каждого аккаунта (свободный запас: пора ли добавлять чаты или аккаунты)"),
     ("boost [аккаунт]", "пробить лимит: обнулить счётчик пересылок, очередь пойдёт ещё на целый лимит"),
     ("why <id|ссылка>", "почему сообщение взяли или не взяли"),
@@ -1145,6 +1146,33 @@ class BotPanel:
             lines += ["  • " + format_auth(item) for item in items]
         lines += ["", "Незнакомый сеанс — Telegram → Настройки → Устройства → завершить. Новые чужие входы бот присылает сам (🚨)."]
         return truncate("\n".join(lines), self.message_limit, hint="/security <аккаунт>")
+
+    def cmd_spares(self) -> str:
+        """Запасные файлы сессий в папке Диска: свободные, уже поставленные вместо умерших, отбракованные."""
+        scan = self._state_json("spare:scan")
+        used = self._state_json("spare:used")
+        bad = self._state_json("spare:bad")
+        lines = ["🧰 Запасные аккаунты (Google Диск)"]
+        if not scan:
+            lines.append("Папка Диска ещё не проверялась (или SESSION_DRIVE_URL не задан). Проверка — раз в полчаса в проходе.")
+        else:
+            free = [name for name in scan.get("free", []) if name not in {v.get("name") for v in used.values()}
+                    and name not in {v.get("name") for v in bad.values()}]
+            lines.append(f"Проверено {local_stamp(scan.get('ts'))}: свободных файлов {len(free)}"
+                         + (f" — {', '.join(free[:10])}" if free else ""))
+            if scan.get("error"):
+                lines.append(f"  ⚠️ папка не открылась: {scan['error']}")
+        if used:
+            lines += ["", "Уже поставлены вместо умерших:"]
+            lines += [f"  • {v.get('name')} → «{v.get('account')}» · {v.get('tg_name') or '?'} (id {v.get('tg_id')}) · "
+                      f"{local_stamp(v.get('at'))}" for v in used.values()]
+        if bad:
+            lines += ["", "Отбракованы (повторно не пробуются, пока файл не заменён):"]
+            lines += [f"  • {v.get('name')}: {v.get('why')}" for v in bad.values()]
+        lines += ["", "Как добавить запасной: положи файл .session (Telethon или Pyrogram) в ту же папку Диска под любым "
+                      "именем, не совпадающим с рабочими аккаунтами. Когда рабочий аккаунт выйдет, радар сам подберёт "
+                      "первый годный и поставит на его место. Один и тот же аккаунт не должен лежать в двух местах."]
+        return truncate("\n".join(lines), self.message_limit)
 
     def cmd_protected(self) -> str:
         """Подписки аккаунтов, где отключено сохранение контента: пересылка оттуда невозможна."""

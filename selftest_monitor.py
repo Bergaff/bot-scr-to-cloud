@@ -2578,6 +2578,126 @@ async def main() -> None:
     sec_panel = BotPanel(sec_store, transport=object(), accounts=[AccountView(name="second", max_per_day=10)])
     sec_answer = sec_panel.dispatch("/security").text
     checks.append(("/security показывает сеансы с IP и состояние входа", "203.0.113.9" in sec_answer and "second" in sec_answer, sec_answer[:80]))
+    # ---------- запасные аккаунты на Диске
+    import hashlib as _hl
+    import os as _os
+    spare_dir = Path(_tmpx.mkdtemp())
+    def _tele_bytes(key):
+        path = spare_dir / "mk.session"
+        path.unlink(missing_ok=True)
+        c = _sq3x.connect(path)
+        c.execute("CREATE TABLE sessions (dc_id integer primary key, server_address text, port integer, auth_key blob, takeout_id integer)")
+        c.execute("INSERT INTO sessions VALUES (2, '1.2.3.4', 443, ?, NULL)", (key,))
+        c.commit()
+        c.close()
+        return path.read_bytes()
+    def _pyro_bytes(key):
+        path = spare_dir / "mp.session"
+        path.unlink(missing_ok=True)
+        c = _sq3x.connect(path)
+        c.execute("CREATE TABLE version (number integer primary key)")
+        c.execute("INSERT INTO version VALUES (3)")
+        c.execute("CREATE TABLE peers (id integer primary key, access_hash integer, type integer, username text, phone_number text, last_update_on integer)")
+        c.execute("CREATE TABLE sessions (dc_id integer primary key, test_mode integer, auth_key blob, date integer, user_id integer, is_bot integer)")
+        c.execute("INSERT INTO sessions VALUES (2, 0, ?, 1700000000, 555, 0)", (key,))
+        c.commit()
+        c.close()
+        return path.read_bytes()
+    ID_A, ID_B, ID_C, ID_D, ID_S, ID_M = ("A" * 20, "B" * 20, "C" * 20, "D" * 20, "S" * 20, "M" * 20)
+    drive_files = {ID_A: _tele_bytes(b"a" * 256), ID_B: _pyro_bytes(b"b" * 256), ID_C: _tele_bytes(b"x" * 256),
+                   ID_D: _tele_bytes(b"d" * 256)}
+    folder_html = "".join(f'<div id="entry-{fid}"><div class="flip-entry-title">{name}</div></div>' for name, fid in (
+        ("second_session.session", ID_S), ("monitor_session.session", ID_M), ("notes.txt", "N" * 20),
+        ("spareA.session", ID_A), ("spareB_pyrogram.session", ID_B), ("spareC.session", ID_C), ("spareD.session", ID_D)))
+    def drive_fetch(url, timeout=25.0):
+        if "embeddedfolderview" in url:
+            return folder_html.encode()
+        for fid, data in drive_files.items():
+            if fid in url:
+                return data
+        raise OSError("404")
+    good_keys = {}                            # отпечаток ключа -> Telegram-id (кто «авторизован»)
+    class SpareClient:
+        def __init__(self, base):
+            self.base = base
+        async def connect(self):
+            self.who = good_keys.get(monitor_module.session_file_info(self.base + ".session")["key_id"])
+        async def is_user_authorized(self):
+            return self.who is not None
+        async def get_me(self):
+            return SimpleNamespace(id=self.who, first_name="Запасной", last_name="", username="spare_user")
+        async def disconnect(self):
+            pass
+    class _Svc(SecService):
+        pass
+    cwd_before = _os.getcwd()
+    _os.chdir(spare_dir)
+    try:
+        dead_file = spare_dir / "second_session.session"
+        dead_file.write_bytes(_tele_bytes(b"x" * 256))               # умерший ключ x (спарка C — тот же ключ)
+        main_file = spare_dir / "monitor_session.session"
+        main_file.write_bytes(_tele_bytes(b"m" * 256))
+        accs = [SimpleNamespace(name="main", session="monitor_session", proxy=None),
+                SimpleNamespace(name="second", session="second_session", proxy=None)]
+        spare_store, spare_svc = HitStore(":memory:"), _Svc()
+        spare_store.bot_state_set("account:main:me", json.dumps({"id": 111}))
+        for_args = SimpleNamespace(delay=0, proxy=None)
+        # A не авторизован, B (Pyrogram) годен, D — тот же Telegram-аккаунт, что main
+        probe = spare_dir / "probe.session"
+        probe.write_bytes(drive_files[ID_A])
+        key_b = monitor_module._drive_session_sync().prepare_session(drive_files[ID_B])[3]
+        probe.write_bytes(key_b)
+        good_keys[monitor_module.session_file_info(probe)["key_id"]] = 777
+        probe.write_bytes(drive_files[ID_D])
+        good_keys[monitor_module.session_file_info(probe)["key_id"]] = 111          # = main
+        probe.write_bytes(drive_files[ID_C])
+        good_keys[monitor_module.session_file_info(probe)["key_id"]] = 999          # ключ умершей: должен отсеяться раньше
+        probe.unlink()
+        folder = "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+        adopted = await monitor_module.adopt_spare_session(
+            spare_store, spare_svc, accs[1], accs, for_args, 1, "h", fetcher=drive_fetch,
+            client_factory=SpareClient, folder=folder)
+        now_key = monitor_module.session_file_info(dead_file)["key_id"]
+        used_state = json.loads(spare_store.bot_state_get("spare:used"))
+        bad_state = json.loads(spare_store.bot_state_get("spare:bad"))
+        checks.append(("умер second: подобран первый годный запасной (Pyrogram, сконвертирован) и встал на его место",
+                       adopted and now_key != monitor_module.session_file_info(main_file)["key_id"]
+                       and len(used_state) == 1 and list(used_state.values())[0]["tg_id"] == 777
+                       and any("🔄" in t and "spare_user" in t for _k, t in spare_svc.sent), str(used_state)[:100]))
+        checks.append(("негодный запасной (A, не авторизован) отбракован до B с причиной",
+                       any("не признаёт" in v["why"] for v in bad_state.values()), str(bad_state)[:100]))
+        # занятые аккаунтами файлы и посторонние файлы в кандидаты не попадают
+        listing_names = {n for n, _i in monitor_module._drive_session_sync().spare_candidates(
+            monitor_module._drive_session_sync().parse_folder_html(folder_html),
+            monitor_module._drive_session_sync().claimed_names(
+                monitor_module._drive_session_sync().parse_folder_html(folder_html),
+                {"main": "monitor_session", "second": "second_session"}, {}))}
+        checks.append(("в запасные не попадают файлы аккаунтов и не-.session файлы",
+                       listing_names == {"spareA.session", "spareB_pyrogram.session", "spareC.session", "spareD.session"},
+                       str(sorted(listing_names))))
+        # второй раз: A, C, D в браке, B использован — годных нет, понятная записка
+        dead_file.write_bytes(_tele_bytes(b"x" * 256))
+        again = await monitor_module.adopt_spare_session(
+            spare_store, spare_svc, accs[1], accs, for_args, 1, "h", fetcher=drive_fetch,
+            client_factory=SpareClient, folder=folder)
+        bad_state = json.loads(spare_store.bot_state_get("spare:bad"))
+        whys = " | ".join(v["why"] for v in bad_state.values())
+        checks.append(("отбракованы: тот же ключ, что у умершей, и тот же Telegram-аккаунт, что main",
+                       "тот же ключ" in whys and "тот же Telegram-аккаунт" in whys, whys[:160]))
+        checks.append(("повторно использованный и брак не берутся; в записке — что годных нет",
+                       not again and "годных нет" in monitor_module.SPARE_NOTES.get("second", ""),
+                       monitor_module.SPARE_NOTES.get("second", "")))
+        none_ok = await monitor_module.adopt_spare_session(spare_store, spare_svc, accs[1], accs, for_args, 1, "h",
+                                                           fetcher=drive_fetch, client_factory=SpareClient, folder="")
+        checks.append(("папка Диска не задана: запасные искать негде, без падения",
+                       not none_ok and "SESSION_DRIVE_URL" in monitor_module.SPARE_NOTES.get("second", ""), ""))
+        await monitor_module.scan_spares(spare_store, accs, fetcher=drive_fetch, folder=folder, every_minutes=0)
+        from bot_panel import AccountView as _AV, BotPanel as _BP
+        spares_text = _BP(spare_store, transport=object(), accounts=[_AV(name="main", max_per_day=1)]).dispatch("/spares").text
+        checks.append(("/spares: видно использованный запасной и отбракованные с причинами",
+                       "spareB_pyrogram.session" in spares_text and "Отбракованы" in spares_text, spares_text[:100]))
+    finally:
+        _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска
     snap = HitStore(":memory:")
     first = monitor_module.record_login(snap, "second", False, "AuthKeyDuplicatedError", "ключ использован с другого IP")

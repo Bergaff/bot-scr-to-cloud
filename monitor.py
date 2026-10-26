@@ -2477,6 +2477,170 @@ def login_diagnosis(store, account_name: str, session_path: str, kind: str) -> s
     return "\n".join(lines)[:2600]
 
 
+# --- запасные аккаунты с Google Диска ---------------------------------------------------------------
+# Файл сессии, лежащий в папке Диска и не названный ни под один аккаунт, — запасной. Умер рабочий аккаунт
+# (ключ отозван, бан, сеанс завершён) — радар в этом же проходе берёт первый годный запасной (Telethon или
+# Pyrogram), проверяет вход и ставит его на место умершего. Использованный запасной больше не берётся.
+
+DEAD_SESSION_KINDS = {"AuthKeyUnregisteredError", "SessionRevokedError", "SessionExpiredError",
+                      "AuthKeyDuplicatedError", "UserDeactivatedError", "UserDeactivatedBanError",
+                      "PhoneNumberBannedError", "SessionNotAuthorized", "SessionFileEmpty",
+                      "SessionFileMissing"}
+SPARE_TRIES_PER_PASS = 3
+SPARE_NOTES: dict[str, str] = {}          # {аккаунт: чем кончился поиск запасного} — для сообщения в бот
+
+
+def _drive_session_sync():
+    """deploy/session_sync.py: лежит рядом с обёрткой облака, в модуль монитора не входит."""
+    deploy = str(Path(__file__).resolve().parent / "deploy")
+    if deploy not in sys.path:
+        sys.path.insert(0, deploy)
+    import session_sync
+    return session_sync
+
+
+def _spare_context(store, accounts, exclude: str):
+    """(занятые чужими аккаунтами Telegram-id, отпечатки ключей чужих сессий)."""
+    ids, keys = set(), set()
+    for other in accounts:
+        if other.name == exclude:
+            continue
+        me_id = _state_json(store, f"account:{other.name}:me").get("id")
+        if me_id:
+            ids.add(int(me_id))
+        key_id = session_file_info(f"{other.session}.session").get("key_id")
+        if key_id:
+            keys.add(key_id)
+    return ids, keys
+
+
+async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_hash, fetcher=None,
+                              client_factory=None, folder: str | None = None) -> bool:
+    """Подобрать запасной аккаунт вместо умершего acc. True — файл acc.session заменён рабочим запасным."""
+    SPARE_NOTES.pop(acc.name, None)
+    folder = (os.environ.get("SESSION_DRIVE_URL", "") if folder is None else folder).strip()
+    if not folder:
+        SPARE_NOTES[acc.name] = "запасные искать негде: не задана SESSION_DRIVE_URL (ссылка на папку Диска)"
+        return False
+    ss = _drive_session_sync()
+    fetch = fetcher or ss.fetch
+    try:
+        listing = ss.list_folder(ss.folder_id(folder), os.environ.get("GOOGLE_API_KEY", ""), fetcher=fetch)
+    except Exception as exc:  # noqa: BLE001
+        SPARE_NOTES[acc.name] = f"папка Диска не открылась ({type(exc).__name__})"
+        return False
+    mapping = {a.name: session_base(a.session) for a in accounts}
+    claimed = ss.claimed_names(listing, mapping, ss.file_names_from_env(dict(os.environ)))
+    candidates = ss.spare_candidates(listing, claimed)
+    bad, used = _state_json(store, "spare:bad"), _state_json(store, "spare:used")
+    other_ids, other_keys = _spare_context(store, accounts, acc.name)
+    dead_path = f"{acc.session}.session"
+    dead_key = session_file_info(dead_path).get("key_id")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    tried, skipped = 0, 0
+    tmp_base = f"spare_try_{os.getpid()}"
+    tmp_path = Path(f"{tmp_base}.session")
+    make = client_factory or (lambda base: make_client(base, api_id, api_hash, delay=args.delay,
+                                                       proxy=acc.proxy or args.proxy))
+    for name, file_id in candidates:
+        if tried >= SPARE_TRIES_PER_PASS:
+            break
+        try:
+            data = fetch(ss.direct_url(file_id))
+        except Exception as exc:  # noqa: BLE001 - сеть: не клеймим файл негодным
+            print(f"[!] запасной «{name}»: не скачался ({type(exc).__name__})", file=sys.stderr)
+            continue
+        digest = ss.session_digest(data)
+        if digest in bad or digest in used:
+            skipped += 1
+            continue
+        ok, why, info, final = ss.prepare_session(data)
+        if not ok:
+            bad[digest] = {"name": name, "why": why[:120], "at": now}
+            continue
+        ss._install(tmp_path, final)
+        key_id = session_file_info(tmp_path).get("key_id")
+        if key_id and (key_id == dead_key or key_id in other_keys):
+            bad[digest] = {"name": name, "at": now,
+                           "why": "тот же ключ, что у умершей или у работающей сессии"}
+            tmp_path.unlink(missing_ok=True)
+            continue
+        tried += 1
+        client, me, reason = make(tmp_base), None, ""
+        try:
+            await client.connect()
+            if await client.is_user_authorized():
+                me = await client.get_me()
+            else:
+                reason = "Telegram не признаёт этот вход (сеанс завершён или файл не авторизован)"
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{type(exc).__name__}"
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+        tmp_path.unlink(missing_ok=True)
+        for suffix in ("-journal", "-wal", "-shm"):
+            Path(f"{tmp_base}.session{suffix}").unlink(missing_ok=True)
+        if me is None:
+            bad[digest] = {"name": name, "why": reason or "не вошёл", "at": now}
+            print(f"[!] запасной «{name}» не подошёл: {bad[digest]['why']}", file=sys.stderr)
+            continue
+        if getattr(me, "id", None) in other_ids:
+            bad[digest] = {"name": name, "at": now, "why": "это тот же Telegram-аккаунт, что уже работает под другим именем"}
+            continue
+        ss._install(Path(dead_path), final)
+        used[digest] = {"name": name, "account": acc.name, "at": now, "tg_id": getattr(me, "id", None),
+                        "tg_name": display_name(me), "format": info.get("format", "telethon")}
+        _state_put(store, "spare:used", used)
+        _state_put(store, "spare:bad", bad)
+        left = max(0, len(candidates) - len(used) - len(bad))
+        username = getattr(me, "username", None)
+        await service.send(
+            f"🔄 Аккаунт «{acc.name}» вышел — подобран запасной аккаунт с Диска: файл «{name}» → "
+            f"{display_name(me)}" + (f" @{username}" if username else "") + f" (id {me.id}). "
+            f"Он не состоит в прежних чатах «{acc.name}»: публичные чаты радар читает сразу и вступает в них "
+            f"сам (не больше 3 за проход), в приватные нужны заявки/приглашения. Запасных на Диске осталось: {left}.",
+            key=f"spare_used:{acc.name}:{digest}", force=True)
+        SPARE_NOTES[acc.name] = f"заменён запасным «{name}»"
+        print(f"[+] «{acc.name}»: поставлен запасной аккаунт «{name}» ({display_name(me)}, id {me.id})",
+              file=sys.stderr)
+        return True
+    _state_put(store, "spare:bad", bad)
+    if not candidates:
+        SPARE_NOTES[acc.name] = ("запасных сессий на Диске нет: положи в ту же папку любой файл .session "
+                                 "(Telethon или Pyrogram) под другим именем — радар подберёт его сам")
+    else:
+        SPARE_NOTES[acc.name] = (f"запасные на Диске есть ({len(candidates)}), но годных нет: проверено в этот проход "
+                                 f"{tried}, раньше отбракованы {skipped}; причины — в /spares")
+    return False
+
+
+async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, every_minutes: float = 30.0) -> None:
+    """Раз в полчаса: сколько свободных файлов-запасных лежит на Диске (для /spares). Ошибки проход не роняют."""
+    folder = (os.environ.get("SESSION_DRIVE_URL", "") if folder is None else folder).strip()
+    if not folder:
+        return
+    state = _state_json(store, "spare:scan")
+    try:
+        if (datetime.now(timezone.utc) - datetime.fromisoformat(state.get("ts") or "")).total_seconds() < every_minutes * 60:
+            return
+    except (TypeError, ValueError):
+        pass
+    result = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "free": [], "error": ""}
+    try:
+        ss = _drive_session_sync()
+        listing = ss.list_folder(ss.folder_id(folder), os.environ.get("GOOGLE_API_KEY", ""), fetcher=fetcher or ss.fetch)
+        mapping = {a.name: session_base(a.session) for a in accounts}
+        claimed = ss.claimed_names(listing, mapping, ss.file_names_from_env(dict(os.environ)))
+        result["free"] = [name for name, _id in ss.spare_candidates(listing, claimed)]
+        result["claimed"] = sorted(claimed)
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
+    _state_put(store, "spare:scan", result)
+
+
 def record_account_me(store, account_name: str, me) -> None:
     """Telegram-аккаунт под этим именем: id, имя, @username — чтобы в боте не гадать, кто это."""
     _state_put(store, f"account:{account_name}:me", {
@@ -3476,6 +3640,7 @@ async def async_main(args) -> None:
     # Сессии, подгруженные облачной обёрткой по ссылке (Google Диск): запоминаем для /accounts
     # и сообщаем в бот, когда поставлена новая версия или ссылка перестала работать.
     synced = import_session_sync(store, accounts)
+    await scan_spares(store, accounts)
     for acc_name, entry in synced.items():
         if entry.get("status") == "imported":
             await service.send(
@@ -3524,7 +3689,17 @@ async def async_main(args) -> None:
                                               f"нет файла сессии {acc.session}.session (ни в R2, ни на Диске)")
                 print(f"[!] Аккаунт «{acc.name}»: нет файла {acc.session}.session — пропускаю", file=sys.stderr)
                 sys.exit(1)
-            await connect_client(client, acc, args)
+            try:
+                await connect_client(client, acc, args)
+            except SystemExit:
+                # Рабочий аккаунт умер: в облаке пробуем поставить на его место запасной с Диска и войти снова
+                if not (args.once and not args.test_forward and not args.no_spare_sessions
+                        and CONNECT_FAILURES.get(acc.name, ("",))[0] in DEAD_SESSION_KINDS
+                        and await adopt_spare_session(store, service, acc, accounts, args, api_id, api_hash)):
+                    raise
+                client = make_client(acc.session, api_id, api_hash, delay=args.delay, proxy=acc.proxy or args.proxy)
+                CONNECT_FAILURES.pop(acc.name, None)
+                await connect_client(client, acc, args)
         except SystemExit:
             # Бот должен ВИДЕТЬ, что аккаунт не вошёл (/accounts, /status), даже если проход
             # дальше упадёт: пишем состояние до любых решений ниже.
@@ -3597,7 +3772,8 @@ async def async_main(args) -> None:
                 f"⚠️ Аккаунт «{name}» вышел из Telegram / не вошёл: {why}\n"
                 f"Радар работает без него: " + (", ".join(a.name for a, _c, _m in runners) or "никто не вошёл") + ".\n"
                 f"{diagnosis}\n"
-                f"{how} Одну и ту же сессию нельзя держать одновременно на компьютере и в облаке.",
+                + (f"Запасной аккаунт: {SPARE_NOTES[name]}.\n" if SPARE_NOTES.get(name) else "")
+                + f"{how} Одну и ту же сессию нельзя держать одновременно на компьютере и в облаке.",
                 key=f"session_broken:{name}")
         print(f"[!] Не вошли аккаунты: {', '.join(failed_accounts)} — проход идёт без них "
               f"(причина и что делать — выше и в сообщении бота)", file=sys.stderr)
@@ -3942,6 +4118,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--only-intent", help="показывать только: offer,request (через запятую)")
     ap.add_argument("--only-direction", help="показывать только направления: BY->PL,PL->BY,?->PL (через запятую)")
     ap.add_argument("--delay", type=float, default=2.0, help="пауза между вызовами API, сек")
+    ap.add_argument("--no-spare-sessions", action="store_true",
+                    help="не подбирать запасной аккаунт с Диска, когда рабочий вышел")
     ap.add_argument("--auto-join", action="store_true",
                     help="автоматически вступать в чаты по ссылкам-приглашениям (t.me/+...)")
     ap.add_argument("--proxy", help="socks5://user:pass@host:port")
