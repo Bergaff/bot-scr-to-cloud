@@ -3728,11 +3728,14 @@ async def async_main(args) -> None:
             await client.disconnect()
             sys.exit(code)
 
-        forwarder = build_forwarder(client, acc, store, paced, args)
+        # у каждого аккаунта свой тормоз: Telegram считает лимиты на аккаунт, а общий тормоз
+        # заставлял второй аккаунт ждать паузы после вызовов первого (проход выходил вдвое длиннее)
+        acc_paced = paced.clone() if multi else paced
+        forwarder = build_forwarder(client, acc, store, acc_paced, args)
         if forwarder is not None and not await forwarder.prepare():
             forwarder = None
 
-        monitor = Monitor(client, store, acc_sources, notifier, paced,
+        monitor = Monitor(client, store, acc_sources, notifier, acc_paced,
                           explain=args.explain, skip_out=not args.include_own,
                           dedup_window=args.dedup_window, dedup_scope=args.dedup_scope,
                           max_age=args.max_age,
@@ -3809,26 +3812,33 @@ async def async_main(args) -> None:
 
     if args.once:
         try:
-            for acc, client, monitor in runners:
+            async def read_account(acc, client, monitor):
                 prefix = f"[{acc.name}] " if multi else ""
                 chat_report: dict = {}
-                resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], paced,
+                resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], monitor.paced,
                                                  auto_join=args.auto_join, report=chat_report,
                                                  memory=store, account=acc.name)
                 newly_protected = record_account_chats(store, acc.name, monitor.sources, resolved, chat_report)
                 join_failures = take_join_failures(acc.name)
                 await announce_joins(service, acc.name, monitor.sources, resolved, chat_report, join_failures)
-                await announce_join_failures(service, client, paced, acc.name, monitor.sources, join_failures)
+                await announce_join_failures(service, client, monitor.paced, acc.name, monitor.sources, join_failures)
                 await announce_protected(service, acc.name, newly_protected)
-                await scan_protected_dialogs(client, store, acc.name, paced)
+                await scan_protected_dialogs(client, store, acc.name, monitor.paced)
                 monitor.entities = resolved
                 monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
                 if multi:
                     print(f"[i] {prefix}чатов разрешено: {len(resolved)} из {len(monitor.sources)}",
                           file=sys.stderr)
-            for acc, client, monitor in runners:
                 await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
                 await monitor.catch_up(list(monitor.meta.values()))
+
+            # аккаунты читают СВОИ чаты одновременно: у каждого свой тормоз и свои лимиты, а общий
+            # бюджет прохода один — последовательно второй аккаунт не успевал дочитать (14 чатов)
+            outcomes = await asyncio.gather(*(read_account(a, c, m) for a, c, m in runners),
+                                            return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
             run_read = sum(int(getattr(monitor, "counter", {}).get("scanned", 0) or 0)
                            for _a, _c, monitor in runners)
             for acc, client, monitor in runners:

@@ -66,9 +66,15 @@ class FloodWaitTooLong(RuntimeError):
 class Paced:
     """Гарантирует паузу между вызовами API + джиттер (ровный робот-ритм тоже палится)."""
 
-    def __init__(self, base_delay: float = 2.0, jitter: float = 0.7):
+    def __init__(self, base_delay: float = 2.0, jitter: float = 0.7, parent: "Paced | None" = None):
         self.base, self.jitter, self._last = base_delay, jitter, 0.0
         self.calls = 0          # сколько раз сходили в Telegram: метрика расхода (ТЗ §15.1)
+        self._parent = parent   # у «дочернего» тормоза вызовы считаются и в общем счётчике
+
+    def clone(self) -> "Paced":
+        """Свой тормоз для аккаунта: пауза нужна между вызовами ОДНОГО аккаунта (лимиты Telegram
+        считаются на аккаунт), а не между вызовами разных. Общий счётчик calls остаётся общим."""
+        return Paced(self.base, self.jitter, parent=self)
 
     async def wait(self) -> None:
         gap = self.base + random.uniform(0, self.jitter)
@@ -78,6 +84,8 @@ class Paced:
             await asyncio.sleep(gap - elapsed)
         self._last = loop.time()
         self.calls += 1         # каждый вызов API проходит через тормоз, поэтому счёт здесь точен
+        if self._parent is not None:
+            self._parent.calls += 1
 
 
 # Наблюдатели FloodWait: радар подключает сюда запись в базу, чтобы бот-панель показывала

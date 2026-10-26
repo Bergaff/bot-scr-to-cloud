@@ -242,6 +242,23 @@ async def main() -> None:
     await two_calls()
     checks.append(("каждый вызов API увеличивает счётчик (метрика «API-вызовов»)",
                    paced.calls == 2, str(paced.calls)))
+    # у каждого аккаунта свой тормоз: два аккаунта ждут паузы одновременно, а не по очереди,
+    # и при этом общий счётчик API-вызовов остаётся общим
+    import time as _tm
+    shared = Paced(0.3, 0.0)
+    pace_a, pace_b = shared.clone(), shared.clone()
+
+    async def burst(p):
+        for _ in range(3):
+            await p.wait()
+
+    t0 = _tm.monotonic()
+    await asyncio.gather(burst(pace_a), burst(pace_b))
+    took = _tm.monotonic() - t0
+    checks.append(("два аккаунта с отдельными тормозами не ждут друг друга (≈0.6 с, а не ≈1.8 с)",
+                   took < 1.2, f"{took:.2f} с"))
+    checks.append(("вызовы дочерних тормозов считаются и в общем счётчике",
+                   shared.calls == 6 and pace_a.calls == 3, f"{shared.calls}/{pace_a.calls}"))
     collector_with_paced = MetricsCollector(make_store("api"), paced=paced,
                                             csv_path=WORKDIR / "api.csv",
                                             msgs_provider=lambda: (100, 10))
