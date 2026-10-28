@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core_telegram import BOT_TOKEN_HINT, format_auth
+from core_telegram import BOT_TOKEN_HINT, format_auth, format_sessions_summary, sessions_summary
 import metrics as metrics_module
 import release as release_module
 
@@ -1010,6 +1010,11 @@ class BotPanel:
             mark = "" if state["alive"] else " ⚠️"
             lines.append(f"{index}) {state['name']} · {state['status']}{mark}")
             lines += self._login_lines(state)
+            snap = self._state_json(f"account:{state['name']}:auths")
+            snap_items = [i for i in snap.get("items", []) if isinstance(i, dict)]
+            if snap_items:
+                lines.append(f"   👁 {format_sessions_summary(sessions_summary(snap_items, snap.get('ts')))}"
+                             f" (на {local_stamp(snap.get('ts'))}; подробности — /security {state['name']})")
             lines.append(self._account_pulse_line(state))
             event = state["event"]
             chats_note = f"чатов {state['chats']}" if state["chats"] else "чатов н/д"
@@ -1142,6 +1147,7 @@ class BotPanel:
             if not items:
                 lines.append("  список сеансов ещё не снимался (первый снимок — в ближайший проход вошедшего аккаунта)")
                 continue
+            lines.append(f"  👁 {format_sessions_summary(sessions_summary(items, snap.get('ts')))}")
             lines.append(f"  сеансов {len(items)} на {local_stamp(snap.get('ts'))}:")
             lines += ["  • " + format_auth(item) for item in items]
         lines += ["", "Незнакомый сеанс — Telegram → Настройки → Устройства → завершить. Новые чужие входы бот присылает сам (🚨)."]

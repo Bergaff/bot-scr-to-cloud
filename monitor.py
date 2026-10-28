@@ -34,7 +34,8 @@ from pathlib import Path
 
 from core_telegram import (BOT_TOKEN_HINT, SESSION_ERROR_TEXT, FloodWaitTooLong, Paced, add_flood_hook,
                            build_notifier, call, diff_authorizations, fetch_authorizations,
-                           fetch_login_notices, format_auth, format_join_snapshot, join_snapshot,
+                           fetch_login_notices, format_auth, format_join_snapshot, format_sessions_summary,
+                           join_snapshot, sessions_summary,
                            session_file_info, take_join_failures,
                            collect_topics, display_name, format_hit, hidden_author_reason,
                            invite_hash, load_dotenv, make_client, message_link, peer_id,
@@ -2420,6 +2421,7 @@ async def watch_account_security(service, client, store, account_name: str, ever
         if item.get("current"):
             continue
         await service.send(f"🚨 Новый вход в аккаунт «{account_name}»:\n{format_auth(item)}\n"
+                           f"Сейчас в аккаунте: {format_sessions_summary(sessions_summary(items, datetime.now(timezone.utc)))}.\n"
                            "Если это не ты — Telegram → Настройки → Устройства → завершить этот сеанс и сменить "
                            "облачный пароль. Радар (его сеанс помечен «ЭТО РАДАР») здесь ни при чём.",
                            key=f"new_login:{account_name}:{item.get('hash')}", force=True)

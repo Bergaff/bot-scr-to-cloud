@@ -2578,6 +2578,25 @@ async def main() -> None:
     sec_panel = BotPanel(sec_store, transport=object(), accounts=[AccountView(name="second", max_per_day=10)])
     sec_answer = sec_panel.dispatch("/security").text
     checks.append(("/security показывает сеансы с IP и состояние входа", "203.0.113.9" in sec_answer and "second" in sec_answer, sec_answer[:80]))
+    checks.append(("в 🚨 про новый вход есть сводка «сейчас в аккаунте»", "Сейчас в аккаунте: других сеансов" in texts, texts[:60]))
+    checks.append(("/security: строка про других сеансов (сколько и откуда)",
+                   "👁 других сеансов 1" in sec_answer and "работали 0" in sec_answer and "Tbilisi" in sec_answer, sec_answer[:200]))
+    sec_accounts = BotPanel(sec_store, transport=object(), accounts=[AccountView(name="second", max_per_day=10)]).dispatch("/accounts").text
+    checks.append(("/accounts: строка про других сеансов со ссылкой на /security",
+                   "👁 других сеансов 1" in sec_accounts and "/security second" in sec_accounts, sec_accounts[:200]))
+    from core_telegram import format_sessions_summary as _fss, sessions_summary as _ss
+    ref = "2026-10-28T12:00:00+00:00"
+    sample = [{"current": True, "active": ref, "created": ref},
+              {"current": False, "country": "São Paulo", "region": "Brazil", "created": "2026-10-26T15:21:00+00:00", "active": "2026-10-28T11:45:00+00:00"},
+              {"current": False, "country": "Mauá", "region": "Brazil", "created": "2026-10-28T02:28:00+00:00", "active": "2026-10-28T02:34:00+00:00"},
+              {"current": False, "country": "Mauá", "region": "Brazil", "created": "2026-10-27T20:37:00+00:00", "active": "bad"}]
+    got = _ss(sample, ref)
+    checks.append(("сводка сеансов: радар не считается, за час работал 1 из 3, места сгруппированы",
+                   got["others"] == 3 and got["recent"] == 1 and got["places"] == {"São Paulo, Brazil": 1, "Mauá, Brazil": 2},
+                   str(got)))
+    checks.append(("сводка сеансов: текст и случай «только радар»",
+                   "других сеансов 3, за последний час работали 1" in _fss(got) and "Mauá, Brazil ×2" in _fss(got)
+                   and "только радар" in _fss(_ss([{"current": True}], ref)), _fss(got)[:100]))
     # ---------- запасные аккаунты на Диске
     import hashlib as _hl
     import os as _os

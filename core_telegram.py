@@ -979,6 +979,47 @@ def format_auth(item: dict) -> str:
             f"активен {_local(item.get('active', ''))}" + (" · ЭТО РАДАР" if item.get("current") else ""))
 
 
+def sessions_summary(items: list, reference: str | datetime | None = None, window_minutes: float = 60.0) -> dict:
+    """Сводка по снимку сеансов: сколько там НЕ радара, сколько из них работали недавно, где они.
+
+    reference — момент снимка (по умолчанию «сейчас»): активность считается от него, потому что
+    снимок снимается раз в 30 минут и к моменту чтения уже слегка устарел."""
+    if isinstance(reference, str):
+        try:
+            reference = datetime.fromisoformat(reference)
+        except ValueError:
+            reference = None
+    if not isinstance(reference, datetime):
+        reference = datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    others = [i for i in items or [] if isinstance(i, dict) and not i.get("current")]
+    recent, places = [], {}
+    for item in others:
+        try:
+            active = datetime.fromisoformat(item.get("active") or "")
+            if active.tzinfo is None:
+                active = active.replace(tzinfo=timezone.utc)
+            if (reference - active).total_seconds() <= window_minutes * 60:
+                recent.append(item)
+        except (TypeError, ValueError):
+            pass
+        place = ", ".join(p for p in (item.get("country"), item.get("region")) if p) or "место неизвестно"
+        places[place] = places.get(place, 0) + 1
+    newest = max((i.get("created") or "" for i in others), default="")
+    return {"others": len(others), "recent": len(recent), "places": places, "newest_login": newest,
+            "window": int(window_minutes)}
+
+
+def format_sessions_summary(summary: dict) -> str:
+    """Одна строка: «других сеансов 4, за последний час работали 1 · места: …»."""
+    if not summary.get("others"):
+        return "других сеансов нет — в аккаунте только радар"
+    places = ", ".join(f"{place} ×{count}" if count > 1 else place for place, count in summary["places"].items())
+    return (f"других сеансов {summary['others']}, за последний час работали {summary['recent']} · места: {places}"
+            + (f" · последний вход {_local(summary['newest_login'])}" if summary.get("newest_login") else ""))
+
+
 def mask_login_code(text: str) -> str:
     """Код входа из сообщения Telegram прячем: в бот он попадать не должен."""
     return re.sub(r"(?<!\d)\d{5,6}(?!\d)|(?<=\d)-(?=\d)", lambda m: "•" * len(m.group(0)), text or "")
