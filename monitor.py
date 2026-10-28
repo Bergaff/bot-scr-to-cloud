@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import hashlib
 import json
 import os
 import random
@@ -1162,6 +1163,7 @@ class AccountConfig:
     forward: dict
     proxy: str | None = None
     enabled: bool = True
+    profile_name: object = None      # auto | "Имя Фамилия" | [список имён] | пусто = имя не трогать
 
 
 def resolve_accounts(args, defaults: dict) -> list[AccountConfig]:
@@ -1185,6 +1187,7 @@ def resolve_accounts(args, defaults: dict) -> list[AccountConfig]:
                 session=str(item.get("session") or f"{name}_session"),
                 forward=forward,
                 proxy=item.get("proxy"),
+                profile_name=item.get("profile_name"),
             ))
     else:
         # старый конфиг без accounts: один аккаунт, название main — к нему относится история
@@ -2643,6 +2646,88 @@ async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, 
     _state_put(store, "spare:scan", result)
 
 
+def wanted_profile_name(acc, me, store, accounts) -> tuple[str, str] | None:
+    """Какое имя профиля нужно аккаунту по настройке profile_name (None — не трогать)."""
+    from profile_names import pick_name, split_name
+    setting = getattr(acc, "profile_name", None)
+    if not setting or setting is False:
+        return None
+    taken = set()
+    for other in accounts:
+        if other.name == acc.name:
+            continue
+        done = _state_json(store, f"account:{other.name}:profile")
+        if done.get("first"):
+            taken.add(f"{done['first']} {done.get('last', '')}".strip())
+    if isinstance(setting, (list, tuple)):
+        options = [str(x) for x in setting if str(x).strip()]
+        options = [x for x in options if x.strip().lower() not in {t.lower() for t in taken}] or options
+        if not options:
+            return None
+        index = int(hashlib.sha256(f"{acc.name}|{getattr(me, 'id', '')}".encode()).hexdigest(), 16) % len(options)
+        return split_name(options[index])
+    if isinstance(setting, str) and setting.strip().lower() not in ("auto", "авто", "true", "1", "yes"):
+        return split_name(setting)
+    return pick_name(f"{acc.name}|{getattr(me, 'id', '')}", taken)
+
+
+async def apply_profile_name(client, store, service, acc, me, accounts, paced=None, retry_hours: float = 6.0) -> bool:
+    """Ставит имя профиля аккаунта, если так настроено (profile_name). Один раз на Telegram-аккаунт.
+
+    Не воюем с владельцем: если имя уже ставили этому id (или настройка не менялась), повторно не трогаем.
+    Сбой не роняет проход: повтор не чаще раза в retry_hours."""
+    want = wanted_profile_name(acc, me, store, accounts)
+    if want is None:
+        return False
+    first, last = want
+    key = f"account:{acc.name}:profile"
+    state = _state_json(store, key)
+    signature = f"{first} {last}".strip()
+    same_id = state.get("tg_id") == getattr(me, "id", None)
+    if same_id and state.get("first") is not None and not state.get("error") and state.get("setting") == _profile_setting_key(acc):
+        return False
+    if state.get("error") and same_id:
+        try:
+            if (datetime.now(timezone.utc) - datetime.fromisoformat(state.get("at") or "")).total_seconds() < retry_hours * 3600:
+                return False
+        except (TypeError, ValueError):
+            pass
+    if (getattr(me, "first_name", "") or "", getattr(me, "last_name", "") or "") == (first, last):
+        _state_put(store, key, {"tg_id": me.id, "first": first, "last": last, "setting": _profile_setting_key(acc),
+                                "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+        return False
+    from telethon.tl.functions.account import UpdateProfileRequest
+    old = f"{getattr(me, 'first_name', '') or ''} {getattr(me, 'last_name', '') or ''}".strip() or "без имени"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        if paced is not None:
+            await call(lambda: client(UpdateProfileRequest(first_name=first, last_name=last)), paced,
+                       label=f"profile_name({acc.name})")
+        else:
+            await client(UpdateProfileRequest(first_name=first, last_name=last))
+    except Exception as exc:  # noqa: BLE001
+        _state_put(store, key, {"tg_id": getattr(me, "id", None), "first": state.get("first"), "last": state.get("last", ""),
+                                "setting": _profile_setting_key(acc), "error": type(exc).__name__, "at": now})
+        print(f"[!] [{acc.name}] имя профиля не изменено: {type(exc).__name__}", file=sys.stderr)
+        return False
+    _state_put(store, key, {"tg_id": me.id, "first": first, "last": last, "was": old,
+                            "setting": _profile_setting_key(acc), "at": now})
+    try:
+        me.first_name, me.last_name = first, last
+    except Exception:  # noqa: BLE001
+        pass
+    await service.send(f"✏️ Имя аккаунта «{acc.name}» изменено: {old} → {signature}. "
+                       f"Ставится один раз на аккаунт; @username и телефон не менялись.",
+                       key=f"profile_name:{acc.name}:{getattr(me, 'id', '')}", force=True)
+    print(f"[+] [{acc.name}] имя профиля: {old} → {signature}", file=sys.stderr)
+    return True
+
+
+def _profile_setting_key(acc) -> str:
+    return hashlib.sha256(json.dumps(getattr(acc, "profile_name", None), ensure_ascii=False,
+                                     sort_keys=True, default=str).encode()).hexdigest()[:8]
+
+
 def record_account_me(store, account_name: str, me) -> None:
     """Telegram-аккаунт под этим именем: id, имя, @username — чтобы в боте не гадать, кто это."""
     _state_put(store, f"account:{account_name}:me", {
@@ -3717,6 +3802,8 @@ async def async_main(args) -> None:
         me = await client.get_me()
         prefix = f"[{acc.name}] " if multi else ""
         print(f"[+] {prefix}вошли как {display_name(me)} (id={me.id})", file=sys.stderr)
+        if not args.test_forward:
+            await apply_profile_name(client, store, service, acc, me, accounts, paced)
         record_account_me(store, acc.name, me)
         record_session_key(store, acc.name, session_file_info(f"{acc.session}.session"))
         await watch_account_security(service, client, store, acc.name)

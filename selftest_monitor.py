@@ -2597,6 +2597,66 @@ async def main() -> None:
     checks.append(("сводка сеансов: текст и случай «только радар»",
                    "других сеансов 3, за последний час работали 1" in _fss(got) and "Mauá, Brazil ×2" in _fss(got)
                    and "только радар" in _fss(_ss([{"current": True}], ref)), _fss(got)[:100]))
+    # ---------- имя профиля аккаунта
+    from profile_names import FEMALE as _FEM, MALE as _MAL, SURNAMES as _SUR, pick_name as _pick
+    pn_a, pn_b = _pick("second|1"), _pick("second|1")
+    checks.append(("имя профиля: выбор детерминирован, пол и фамилия согласованы",
+                   pn_a == pn_b and ((pn_a[0] in _FEM and pn_a[1] in [f for _m, f in _SUR])
+                                     or (pn_a[0] in _MAL and pn_a[1] in [m for m, _f in _SUR])), str(pn_a)))
+    seen_names = {" ".join(_pick(f"acc|{i}", set())) for i in range(40)}
+    checks.append(("имя профиля: разные аккаунты получают разные имена (≥30 разных из 40)", len(seen_names) >= 30, str(len(seen_names))))
+    taken_name = " ".join(_pick("x|1"))
+    checks.append(("имя профиля: занятое другим аккаунтом имя не повторяется", " ".join(_pick("x|1", {taken_name})) != taken_name, ""))
+
+    class ProfileClient:
+        def __init__(self):
+            self.requests = []
+            self.fail = None
+        async def __call__(self, request):
+            if self.fail:
+                raise self.fail
+            self.requests.append((type(request).__name__, request.first_name, request.last_name))
+    class ProfileService:
+        def __init__(self):
+            self.sent = []
+        async def send(self, text, key="", force=False):
+            self.sent.append(text)
+            return True
+    pn_store, pn_service, pn_client = HitStore(":memory:"), ProfileService(), ProfileClient()
+    pn_off = SimpleNamespace(name="main", session="m", profile_name=None)
+    pn_acc = SimpleNamespace(name="third", session="t", profile_name="auto")
+    pn_me = SimpleNamespace(id=4242, first_name="Ji", last_name="")
+    done_off = await monitor_module.apply_profile_name(pn_client, pn_store, pn_service, pn_off, pn_me, [pn_off, pn_acc])
+    checks.append(("имя профиля: без настройки аккаунт не трогается", not done_off and not pn_client.requests, ""))
+    done_on = await monitor_module.apply_profile_name(pn_client, pn_store, pn_service, pn_acc, pn_me, [pn_off, pn_acc])
+    checks.append(("имя профиля: auto — один запрос UpdateProfile и одно сообщение в бот",
+                   done_on and len(pn_client.requests) == 1 and pn_client.requests[0][0] == "UpdateProfileRequest"
+                   and pn_client.requests[0][1] and len(pn_service.sent) == 1 and "Ji →" in pn_service.sent[0],
+                   str(pn_client.requests)))
+    again = await monitor_module.apply_profile_name(pn_client, pn_store, pn_service, pn_acc,
+                                                    SimpleNamespace(id=4242, first_name="Кто-то", last_name=""), [pn_off, pn_acc])
+    checks.append(("имя профиля: повторно на тот же аккаунт не ставится (не воюем, если имя сменили)",
+                   not again and len(pn_client.requests) == 1, ""))
+    new_acc = await monitor_module.apply_profile_name(pn_client, pn_store, pn_service, pn_acc,
+                                                      SimpleNamespace(id=777, first_name="Ji", last_name=""), [pn_off, pn_acc])
+    checks.append(("имя профиля: аккаунт заменили (новый Telegram-id) — имя ставится заново", new_acc and len(pn_client.requests) == 2, ""))
+    pn_acc.profile_name = "Анна Ковалёва"
+    explicit = await monitor_module.apply_profile_name(pn_client, pn_store, pn_service, pn_acc,
+                                                       SimpleNamespace(id=777, first_name="Ji", last_name=""), [pn_off, pn_acc])
+    checks.append(("имя профиля: настройку поменяли на конкретное имя — применяется «Анна Ковалёва»",
+                   explicit and pn_client.requests[-1][1:] == ("Анна", "Ковалёва"), str(pn_client.requests[-1])))
+    pn_fail_client = ProfileClient()
+    pn_fail_client.fail = RuntimeError("flood")
+    pn_store2, pn_acc2 = HitStore(":memory:"), SimpleNamespace(name="x", session="x", profile_name="auto")
+    failed_try = await monitor_module.apply_profile_name(pn_fail_client, pn_store2, pn_service, pn_acc2, pn_me, [pn_acc2])
+    retry_soon = await monitor_module.apply_profile_name(pn_client, pn_store2, pn_service, pn_acc2, pn_me, [pn_acc2])
+    checks.append(("имя профиля: сбой не роняет проход, повтор не раньше чем через 6 ч",
+                   not failed_try and not retry_soon and len(pn_client.requests) == 3,
+                   str(len(pn_client.requests))))
+    same_already = await monitor_module.apply_profile_name(
+        ProfileClient(), HitStore(":memory:"), pn_service, SimpleNamespace(name="z", session="z", profile_name="Анна Ковалёва"),
+        SimpleNamespace(id=9, first_name="Анна", last_name="Ковалёва"), [])
+    checks.append(("имя профиля: имя уже такое — запроса нет", not same_already, ""))
     # ---------- запасные аккаунты на Диске
     import hashlib as _hl
     import os as _os

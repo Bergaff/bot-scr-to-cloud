@@ -18,10 +18,11 @@ import hashlib
 import os
 from pathlib import Path
 
-RELEASE = "2026.10.28-1"
+RELEASE = "2026.10.28-2"
 
 # Новое — сверху. Одна строка на релиз: что изменилось для пользователя.
 CHANGELOG = [
+    ("2026.10.28-2", "имя профиля аккаунта: profile_name в accounts (auto / «Имя Фамилия» / список), ставится один раз на аккаунт"),
     ("2026.10.28-1", "сводка по сеансам аккаунта: сколько других сеансов, кто работал за час и откуда (/accounts, /security, 🚨)"),
     ("2026.10.25-3", "аккаунты читают свои чаты одновременно, у каждого свой тормоз: проход не обрывается на «не успел прочитать N чатов»"),
     ("2026.10.25-2", "запасные аккаунты: умерший аккаунт заменяется годным файлом .session из папки Диска, /spares"),
@@ -60,7 +61,7 @@ CHANGELOG = [
 # Файлы, от которых зависит поведение радара в контейнере.
 CODE_FILES = (
     "monitor.py", "matcher.py", "forwarder.py", "core_telegram.py", "bot_panel.py", "metrics.py",
-    "release.py", "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/session_sync.py",
+    "profile_names.py", "release.py", "deploy/cloud_entry.py", "deploy/r2_state.py", "deploy/session_sync.py",
 )
 CONFIG_FILE = "sources.yaml"
 COMMIT_ENV = ("RADAR_COMMIT", "WORKERS_CI_COMMIT_SHA", "GIT_COMMIT", "SOURCE_COMMIT")
