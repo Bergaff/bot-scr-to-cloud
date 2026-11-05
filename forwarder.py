@@ -249,9 +249,12 @@ class Forwarder:
         phone = self.phone_in(hit.get("text") or "")
         if phone:
             return phone
-        mention = MENTION_RE.search(hit.get("text") or "")
-        if mention:
-            return mention.group(0)
+        # свои же адреса контактом не бывают: сам чат (подпись «пишите в @чат», сообщение от имени чата),
+        # получатель (бот) и аккаунт радара — иначе на сайте «топ заявок» возглавил бы сам чат
+        excluded = await self._own_usernames(message, hit)
+        for mention in MENTION_RE.finditer(hit.get("text") or ""):
+            if mention.group(0).lstrip("@").lower() not in excluded:
+                return mention.group(0)
         sender = getattr(message, "sender", None)
         try:
             if sender is None and hasattr(message, "get_sender"):
@@ -262,13 +265,53 @@ class Forwarder:
                 sender = await self.client.get_entity(sender_id)
         except Exception:  # noqa: BLE001 - контакт не стоит сорванной отправки
             sender = None
+        if not self.is_person(sender):
+            return ""                         # написал сам чат/канал, админ «от имени группы» или бот: связаться не с кем
         username = getattr(sender, "username", None)
         if not username:
             for item in (getattr(sender, "usernames", None) or []):
                 if getattr(item, "active", True) and getattr(item, "username", None):
                     username = item.username
                     break
+        if username and username.lower() in excluded:
+            return ""
         return f"@{username}" if username else ""
+
+    @staticmethod
+    def is_person(entity) -> bool:
+        """Автор — человек, с которым можно связаться: не чат/канал (сообщение «от имени группы») и не бот."""
+        if entity is None:
+            return True
+        if type(entity).__name__ in ("Channel", "Chat", "ChannelForbidden", "ChatForbidden"):
+            return False
+        return not (getattr(entity, "broadcast", False) is True or getattr(entity, "megagroup", False) is True
+                    or getattr(entity, "bot", False) is True)
+
+    async def _own_usernames(self, message, hit: dict) -> set[str]:
+        """@username, которые контактом автора быть не могут (строчными, без @): чат, получатель, аккаунт радара."""
+        names: set[str] = set()
+
+        def add(value) -> None:
+            value = str(value or "").strip().lstrip("@").lower()
+            if value and not value.startswith("+"):
+                names.add(value)
+
+        add(hit.get("chat_key"))
+        chat = getattr(message, "chat", None)
+        add(getattr(chat, "username", None))
+        for item in (getattr(chat, "usernames", None) or []):
+            add(getattr(item, "username", None))
+        add(getattr(self.target, "username", None))
+        add(self.target_name if isinstance(self.target_name, str) else "")
+        if getattr(self, "_me_username", None) is None:
+            self._me_username = ""
+            try:
+                me = await self.client.get_me()
+                self._me_username = str(getattr(me, "username", "") or "")
+            except Exception:  # noqa: BLE001 - без своего ника обойдёмся
+                pass
+        add(self._me_username)
+        return names
 
     async def _link_reply(self, sent, hit: dict, mode_override: str | None = None) -> None:
         """Пересылка не несёт ни темы форума, ни ссылки (в приватных чатах — вообще никакого источника), а сайту

@@ -1201,6 +1201,46 @@ async def main() -> None:
                    and "Анна" not in noname_client.sent[0]
                    and noname_client.sent[0].splitlines()[-1].startswith("https://t.me/"),
                    str(noname_client.sent)[:160]))
+    # контакт не должен быть адресом самого чата: сообщение «от имени группы» и подпись «пишите в @чат»
+    ChannelLike = type("Channel", (), {})
+    class ChatSenderClient(FwdClient):
+        async def get_entity(self, target):
+            if isinstance(target, int) and target == 790:
+                chan = ChannelLike()
+                chan.id, chan.username, chan.title, chan.broadcast, chan.megagroup = 790, "granica_chat_as_sender", "Чат", False, True
+                return chan
+            if isinstance(target, int) and target == 791:
+                return SimpleNamespace(id=791, first_name="Бот", last_name=None, username="some_helper_bot", bot=True)
+            return await super().get_entity(target)
+    cs_client = ChatSenderClient(entity, [])
+    cs_fwd = Forwarder(cs_client, "@parcel_transfer_bot", HitStore(":memory:"), Paced(0), mode="forward",
+                       max_per_day=10, fallback="link")
+    await cs_fwd.prepare()
+    cs_mon = Monitor(cs_client, cs_fwd.store, [source], silent, Paced(0), forwarder=cs_fwd,
+                     dedup_scope="chat", dedup_window=0)
+    cs_mon.entities = {source.target: entity}
+    cs_mon.meta = {source.target: source}
+    as_chat = fake_message(1301, "Еду Брест-Варшава завтра в 7.00, возьму посылки и попутчиков", sender_id=790)
+    as_chat.noforwards = True
+    as_bot = fake_message(1302, "Нужно передать документы в Вильнюс, кто едет?", sender_id=791)
+    as_bot.noforwards = True
+    own_sign = fake_message(1303, "Нужно передать документы в Вильнюс, кто едет? Группа: @travelersminsk", sender_id=792)
+    own_sign.noforwards = True
+    mixed = fake_message(1304, "Нужно передать посылку в Варшаву, пишите @travelersminsk или @real_person77", sender_id=793)
+    mixed.noforwards = True
+    for msg in (as_chat, as_bot, own_sign, mixed):
+        await cs_mon.process_message(msg, source)
+    cs_state = cs_fwd.store.conn.execute("SELECT error FROM forwarded WHERE msg_id=1301").fetchone()
+    cs_text = {m: next((t for t in cs_client.sent if f"/{m}" in t), "") for m in (1301, 1302, 1303, 1304)}
+    checks.append(("контакт: сообщение от имени группы (не человек) — предложение пропущено, ник группы контактом не стал",
+                   not cs_text[1301] and cs_state is not None and cs_state[0] == "no_contact_offer", str(cs_text[1301])[:80]))
+    checks.append(("контакт: автор-бот — без контакта; подпись «@сам чат» не берётся, контакт — автор сообщения",
+                   cs_text[1302] and "@some_helper_bot" not in cs_text[1302]
+                   and cs_text[1302].splitlines()[-1].startswith("https://t.me/")
+                   and cs_text[1303].splitlines()[-3:-2] == ["@ivan_test"], str(cs_text[1303])[-80:]))
+    checks.append(("контакт: среди упоминаний выбран человек, а не сам чат",
+                   "@real_person77" in cs_text[1304].replace("пишите @travelersminsk или @real_person77", "")
+                   or cs_text[1304].splitlines()[-2:-1] == ["@real_person77"], str(cs_text[1304])[-90:]))
     checks.append(("телефон ищется в разных записях и не путается с датами и ценами",
                    Forwarder.phone_in("8 029 123 45 67 звоните") == "8 029 123 45 67"
                    and Forwarder.phone_in("пишите +48(500)123-456") == "+48(500)123-456"
