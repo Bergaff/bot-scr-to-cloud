@@ -50,6 +50,12 @@ accounts:
     forward:
       to: "@parcel_transfer_bot"
       max_per_day: 180            # как у main: на нём самый шумный чат (было 120)
+  third:
+    session: third_session        # third_session.session — файл кладётся в папку Диска под этим именем
+    profile_name: auto            # имя профиля ставится один раз (см. DEPLOY.md, «Имя профиля аккаунта»)
+    forward:
+      to: "@parcel_transfer_bot"
+      max_per_day: 180            # как у main/second; три аккаунта по ~120 в сутки вместо двух по 180
 
 # Пересылка найденных сообщений (именно forward, не копия) твоим аккаунтом.
 # Получатель — твой бот @parcel_transfer_bot: открой с этого же аккаунта чат с ботом
@@ -408,6 +414,13 @@ sources:
   - target: "@WhoGoBelarus"
     title: "Кто едет в Беларусь"
     account: main
+    profile: chat
+    min_score: 5
+    catchup: 50
+
+  - target: "@otvezut"
+    title: "Отвезут (водители, попутчики, посылки)"
+    account: third
     profile: chat
     min_score: 5
     catchup: 50
