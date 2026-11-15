@@ -1020,6 +1020,15 @@ def format_sessions_summary(summary: dict) -> str:
             + (f" · последний вход {_local(summary['newest_login'])}" if summary.get("newest_login") else ""))
 
 
+def reading_stalled(today: int, average: float, hour: int, min_average: float = 10.0, from_hour: int = 8) -> bool:
+    """Аккаунт вошёл, но сегодня не прочитал ни одного нового сообщения, хотя обычно читает много.
+
+    Пульс говорит только «аккаунт на связи» — он идёт и у аккаунта, который не может прочитать ни одного
+    чата (новый аккаунт без членства, заморозка, отозванные права). Поэтому смотрим на прочитанное:
+    ноль к утру (после from_hour по местному времени) при среднем от min_average в день."""
+    return int(today or 0) == 0 and float(average or 0) >= min_average and int(hour) >= from_hour
+
+
 def mask_login_code(text: str) -> str:
     """Код входа из сообщения Telegram прячем: в бот он попадать не должен."""
     return re.sub(r"(?<!\d)\d{5,6}(?!\d)|(?<=\d)-(?=\d)", lambda m: "•" * len(m.group(0)), text or "")

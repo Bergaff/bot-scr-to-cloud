@@ -2637,6 +2637,51 @@ async def main() -> None:
     checks.append(("сводка сеансов: текст и случай «только радар»",
                    "других сеансов 3, за последний час работали 1" in _fss(got) and "Mauá, Brazil ×2" in _fss(got)
                    and "только радар" in _fss(_ss([{"current": True}], ref)), _fss(got)[:100]))
+    # ---------- чтение аккаунта: пульс «на связи» не значит «читает»
+    from core_telegram import reading_stalled as _rs
+    checks.append(("чтение: ноль прочитанного к утру при обычных 100/день — тревога; ночью или при тихом аккаунте — нет",
+                   _rs(0, 100, 12) and not _rs(0, 100, 5) and not _rs(0, 3, 12) and not _rs(7, 100, 12), ""))
+    rd_store = HitStore(":memory:")
+    from datetime import date as _date, timedelta as _td
+    today_s = datetime.now().astimezone().strftime("%Y-%m-%d")
+    for back, amount in ((1, 120), (2, 80), (3, 100)):
+        rd_store.bump_stats("granica_x", day=(datetime.now().astimezone() - _td(days=back)).strftime("%Y-%m-%d"),
+                            account="second", scanned=amount)
+    rd_store.bump_stats("other", day=(datetime.now().astimezone() - _td(days=1)).strftime("%Y-%m-%d"), account="main", scanned=500)
+    r_today, r_avg = rd_store.account_reads("second")
+    checks.append(("чтение: сегодня 0, среднее за прошлые дни 100 (чужие аккаунты не примешиваются)",
+                   r_today == 0 and abs(r_avg - 100) < 0.01, f"{r_today} {r_avg}"))
+    class RdService:
+        def __init__(self):
+            self.sent = []
+        async def send(self, text, key="", force=False):
+            self.sent.append((key, text))
+            return True
+    rd_service = RdService()
+    rd_monitor = SimpleNamespace(read_failures=[("@a", "FrozenMethodInvalidError"), ("@b", "FrozenMethodInvalidError")],
+                                 meta={"@a": 1, "@b": 2}, sources=[1, 2, 3], catchup_left=[])
+    health = monitor_module.record_read_health(rd_store, "second", rd_monitor)
+    sent_night = await monitor_module.check_reading_stalled(rd_service, rd_store, "second", hour=5)
+    sent_day = await monitor_module.check_reading_stalled(rd_service, rd_store, "second", hour=12)
+    checks.append(("чтение: здоровье прохода записано (доступно 2 из 3, 2 сбоя FrozenMethodInvalidError)",
+                   health["resolved"] == 2 and health["unresolved"] == 1 and health["failed"] == 2
+                   and health["kinds"] == {"FrozenMethodInvalidError": 2}, str(health)))
+    checks.append(("чтение: тревога в бот — днём, с причинами и подсказкой /chats; ночью молчит",
+                   not sent_night and sent_day and "не прочитал ни одного" in rd_service.sent[0][1]
+                   and "FrozenMethodInvalidError ×2" in rd_service.sent[0][1] and "/chats" in rd_service.sent[0][1],
+                   str(rd_service.sent)[:160]))
+    rd_store.log_heartbeat("pulse", account="second", detail="прочитано 1, найдено 0")
+    from bot_panel import AccountView as _AV2, BotPanel as _BP2
+    rd_panel = _BP2(rd_store, transport=object(), accounts=[_AV2(name="second", max_per_day=180)])
+    rd_panel._hour = lambda: 12
+    rd_text = rd_panel.dispatch("/accounts").text
+    checks.append(("/accounts: «на связи, но не читает», прочитано сегодня 0 при обычных ≈100, сбои чтения видны",
+                   "на связи, но не читает ⚠️" in rd_text and "прочитано сегодня 0 (обычно ≈100 в день)" in rd_text
+                   and "чатов доступно 2 из 3" in rd_text and "FrozenMethodInvalidError ×2" in rd_text, rd_text[:260]))
+    rd_panel._hour = lambda: 4
+    checks.append(("/accounts: ночью 0 прочитанного — не тревога",
+                   "на связи, но не читает" not in rd_panel.dispatch("/accounts").text, ""))
+
     # ---------- имя профиля аккаунта
     from profile_names import FEMALE as _FEM, MALE as _MAL, SURNAMES as _SUR, pick_name as _pick
     pn_a, pn_b = _pick("second|1"), _pick("second|1")

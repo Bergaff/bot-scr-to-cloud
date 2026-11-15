@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core_telegram import BOT_TOKEN_HINT, format_auth, format_sessions_summary, sessions_summary
+from core_telegram import BOT_TOKEN_HINT, format_auth, format_sessions_summary, reading_stalled, sessions_summary
 import metrics as metrics_module
 import release as release_module
 
@@ -835,7 +835,20 @@ class BotPanel:
         else:
             status, alive = f"молчит {int(age)} мин", False
 
+        # пульс = «на связи»; читает ли аккаунт на самом деле, видно только по прочитанному
+        try:
+            read_today, read_avg = self.store.account_reads(name)
+        except Exception:                                     # noqa: BLE001
+            read_today, read_avg = 0, 0.0
+        stalled = alive and reading_stalled(read_today, read_avg, self._hour())
+        if stalled:
+            status = "на связи, но не читает"
+
         return {
+            "read_today": read_today,
+            "read_avg": read_avg,
+            "stalled": stalled,
+            "read_health": self._state_json(f"account:{name}:reads"),
             "name": name,
             "me": self._state_json(f"account:{name}:me"),
             "login": self._state_json(f"account:{name}:login"),
@@ -858,6 +871,9 @@ class BotPanel:
             "resets_today": self.store.limit_resets_today(name),
             "queue": self.store.deferred_count(name),
         }
+
+    def _hour(self) -> int:
+        return datetime.now().astimezone().hour
 
     def _state_json(self, key: str) -> dict:
         """JSON-запись из bot_state (её кладёт монитор). Нет записи или мусор — пустой словарь."""
@@ -1007,7 +1023,7 @@ class BotPanel:
         lines = [f"👥 Аккаунты ({len(states)})"]
         for index, state in enumerate(states, start=1):
             lines.append("")
-            mark = "" if state["alive"] else " ⚠️"
+            mark = "" if state["alive"] and not state.get("stalled") else " ⚠️"
             lines.append(f"{index}) {state['name']} · {state['status']}{mark}")
             lines += self._login_lines(state)
             snap = self._state_json(f"account:{state['name']}:auths")
@@ -1023,6 +1039,7 @@ class BotPanel:
                 chat = self._chat_label(event.get("chat_key"))
                 event_note = f" · последнее событие {local_time(event['ts'])} ({chat})"
             lines.append(f"   {chats_note}{event_note}")
+            lines.append(self._read_line(state))
             limit = state["max_per_day"]
             lines.append(f"   переслано сегодня {state['forwarded_today']}"
                          + (f"/{limit}" if limit else "") + f" · в очереди {state['queue']}")
@@ -1031,6 +1048,22 @@ class BotPanel:
         lines.append("Молчание = нет пульса. Проверить сессии вручную (радар должен быть "
                      "остановлен): monitor.py --check-sessions")
         return "\n".join(lines)
+
+    def _read_line(self, state: dict) -> str:
+        """Чтение: сколько прочитано сегодня против обычного и как прошёл последний проход по чатам."""
+        average = float(state.get("read_avg") or 0)
+        line = f"   📖 прочитано сегодня {state.get('read_today', 0)}" + (f" (обычно ≈{average:.0f} в день)" if average else "")
+        health = state.get("read_health") or {}
+        if health:
+            line += f" · чатов доступно {health.get('resolved', 0)} из {health.get('chats', 0)}"
+            if health.get("failed"):
+                kinds = ", ".join(f"{kind} ×{count}" for kind, count in (health.get("kinds") or {}).items())
+                line += f" · ⚠️ не прочиталось {health['failed']} ({kinds})"
+            if health.get("left"):
+                line += f" · не дошли до {health['left']} (время вышло)"
+        if state.get("stalled"):
+            line += "\n   ⚠️ аккаунт на связи, но читает 0: новый аккаунт без членства в чатах, заморозка или недоступные чаты — смотри /chats"
+        return line
 
     def _account_pulse_line(self, state: dict) -> str:
         pulse = state["pulse"]

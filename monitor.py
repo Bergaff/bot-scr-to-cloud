@@ -36,7 +36,7 @@ from pathlib import Path
 from core_telegram import (BOT_TOKEN_HINT, SESSION_ERROR_TEXT, FloodWaitTooLong, Paced, add_flood_hook,
                            build_notifier, call, diff_authorizations, fetch_authorizations,
                            fetch_login_notices, format_auth, format_join_snapshot, format_sessions_summary,
-                           join_snapshot, sessions_summary,
+                           join_snapshot, reading_stalled, sessions_summary,
                            session_file_info, take_join_failures,
                            collect_topics, display_name, format_hit, hidden_author_reason,
                            invite_hash, load_dotenv, make_client, message_link, peer_id,
@@ -1061,6 +1061,19 @@ class HitStore:
         row = self.conn.execute("SELECT COUNT(*) FROM hits").fetchone()
         return int(row[0] if row else 0)
 
+    def account_reads(self, account: str, days: int = 8) -> tuple[int, float]:
+        """(прочитано сегодня, среднее за прошлые закрытые сутки) по чатам аккаунта — из статистики.
+
+        Сутки — местные (в облаке по Москве), как у остальной статистики. Среднее считается по дням,
+        в которые что-то читалось: пустые дни (аккаунта не было) его не занижают."""
+        today = datetime.now().astimezone().strftime("%Y-%m-%d")
+        rows = self.conn.execute(
+            "SELECT day, COALESCE(SUM(scanned), 0) FROM stats WHERE account=? GROUP BY day "
+            "ORDER BY day DESC LIMIT ?", (account, max(2, int(days)))).fetchall()
+        today_read = sum(int(n or 0) for day, n in rows if day == today)
+        past = [int(n or 0) for day, n in rows if day != today and int(n or 0) > 0]
+        return today_read, (sum(past) / len(past) if past else 0.0)
+
     def totals_for_chats(self, chat_keys: list[str]) -> tuple[int, int]:
         """(прочитано, найдено) за всё время по указанным чатам.
 
@@ -1440,6 +1453,7 @@ class Monitor:
         self._queued_cache: dict = {}         # пачка сообщений очереди, прочитанная одним запросом
         self.flood_wait_limit = float(flood_wait_limit or 0.0)
         self.catchup_left: list[str] = []          # чаты, до которых не дошли в этот проход
+        self.read_failures: list[tuple[str, str]] = []   # (чат, тип ошибки): чтение не удалось в этот проход
         self.paced.max_wait = self.flood_budget    # подсказка для call(): сколько можно спать
 
     # --- бюджет прохода: чтобы его не обрывал таймаут
@@ -1740,6 +1754,7 @@ class Monitor:
                         )
                     except Exception as exc:  # noqa: BLE001
                         print(f"[!] catch-up {source.target}, тема {topic_id}: {exc}", file=sys.stderr)
+                        self.read_failures.append((source.target, type(exc).__name__))
                         continue
                     collected.extend(part or [])
                 messages = collected
@@ -1751,6 +1766,7 @@ class Monitor:
                     )
                 except Exception as exc:  # noqa: BLE001
                     print(f"[!] catch-up {source.target}: {exc}", file=sys.stderr)
+                    self.read_failures.append((source.target, type(exc).__name__))
                     continue
             scanned_before = self.counter["scanned"]
             too_old_before = self.counter["too_old"]
@@ -2726,6 +2742,53 @@ async def apply_profile_name(client, store, service, acc, me, accounts, paced=No
 def _profile_setting_key(acc) -> str:
     return hashlib.sha256(json.dumps(getattr(acc, "profile_name", None), ensure_ascii=False,
                                      sort_keys=True, default=str).encode()).hexdigest()[:8]
+
+
+def record_read_health(store, account_name: str, monitor) -> dict:
+    """Как прошло чтение чатов аккаунта в этот проход: сколько чатов в работе, сколько не прочиталось и почему.
+
+    Раньше такие сбои шли только в лог, а «ошибок за сутки 0» и пульс говорили, что всё хорошо."""
+    kinds: dict[str, int] = {}
+    for _target, kind in getattr(monitor, "read_failures", []):
+        kinds[kind] = kinds.get(kind, 0) + 1
+    resolved = len(getattr(monitor, "meta", {}) or {})
+    total = len(getattr(monitor, "sources", []) or [])
+    left = len(getattr(monitor, "catchup_left", []) or [])
+    failed = len(getattr(monitor, "read_failures", []) or [])
+    data = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "chats": total, "resolved": resolved,
+            "unresolved": max(0, total - resolved), "failed": failed, "left": left, "kinds": kinds,
+            "example": (getattr(monitor, "read_failures", None) or [("", "")])[0][0]}
+    _state_put(store, f"account:{account_name}:reads", data)
+    return data
+
+
+def read_health_text(health: dict, today: int, average: float) -> str:
+    """Короткий текст для тревоги и /accounts: что известно про чтение."""
+    parts = [f"сегодня прочитано {today}" + (f" (обычно ≈{average:.0f} в день)" if average else "")]
+    if health:
+        parts.append(f"чатов в конфиге {health.get('chats', 0)}, доступно аккаунту {health.get('resolved', 0)}")
+        if health.get("failed"):
+            kinds = ", ".join(f"{kind} ×{count}" for kind, count in (health.get("kinds") or {}).items())
+            parts.append(f"не прочиталось {health['failed']}: {kinds}")
+    return "; ".join(parts)
+
+
+async def check_reading_stalled(service, store, account_name: str, hour: int | None = None) -> bool:
+    """Тревога в бот: аккаунт вошёл, но ничего не читает (раз в сутки на аккаунт)."""
+    today, average = store.account_reads(account_name)
+    hour = datetime.now().astimezone().hour if hour is None else hour
+    if not reading_stalled(today, average, hour):
+        return False
+    health = _state_json(store, f"account:{account_name}:reads")
+    day = datetime.now().astimezone().strftime("%Y-%m-%d")
+    await service.send(
+        f"⚠️ Аккаунт «{account_name}» на связи, но сегодня не прочитал ни одного нового сообщения: "
+        f"{read_health_text(health, today, average)}.\n"
+        "Так бывает, если аккаунт новый и не состоит в чатах, Telegram ограничил (заморозил) его или чаты "
+        "стали недоступны. Что смотреть: /chats (статус каждого чата), /security (кто ещё в аккаунте), "
+        "в Telegram — Настройки → Устройства и сообщения от @Telegram/@SpamBot.",
+        key=f"read_stalled:{account_name}:{day}", force=True)
+    return True
 
 
 def record_account_me(store, account_name: str, me) -> None:
@@ -3920,6 +3983,9 @@ async def async_main(args) -> None:
                           file=sys.stderr)
                 await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
                 await monitor.catch_up(list(monitor.meta.values()))
+                monitor.flush_stats()
+                record_read_health(store, acc.name, monitor)
+                await check_reading_stalled(service, store, acc.name)
 
             # аккаунты читают СВОИ чаты одновременно: у каждого свой тормоз и свои лимиты, а общий
             # бюджет прохода один — последовательно второй аккаунт не успевал дочитать (14 чатов)
