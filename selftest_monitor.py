@@ -2682,6 +2682,15 @@ async def main() -> None:
     checks.append(("/accounts: ночью 0 прочитанного — не тревога",
                    "на связи, но не читает" not in rd_panel.dispatch("/accounts").text, ""))
 
+    from core_telegram import format_join_snapshot as _fjs
+    pub_snap = {"facts": ["супергруппа", "публичный @otvezut"], "notes": [],
+                "messages": [{"date": None, "text": "#водитель Еду в Минск", "buttons": []}]}
+    priv_snap = {"facts": ["приватный чат по приглашению"], "notes": [], "messages": []}
+    info_flap = {"kind": "NotMemberAfterJoin", "stage": "flap", "detail": "x"}
+    checks.append(("снимок вступления: публичный чат читается без вступления — «ничего делать не нужно», без «пройди проверку»",
+                   "ничего делать не нужно" in _fjs("third", "otvezut", info_flap, pub_snap)
+                   and "пройди проверку" not in _fjs("third", "otvezut", info_flap, pub_snap)
+                   and "пройди проверку" in _fjs("third", "x", info_flap, priv_snap), ""))
     # ---------- имя профиля аккаунта
     from profile_names import FEMALE as _FEM, MALE as _MAL, SURNAMES as _SUR, pick_name as _pick
     pn_a, pn_b = _pick("second|1"), _pick("second|1")

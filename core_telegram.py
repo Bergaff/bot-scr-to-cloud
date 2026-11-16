@@ -364,6 +364,11 @@ def format_join_snapshot(account: str, label: str, info: dict, snap: dict) -> st
     for note in snap.get("notes", []):
         lines.append(escape(note))
     hint = JOIN_ERROR_HINT.get(kind)
+    readable_public = bool(snap.get("messages")) and any(str(f).startswith("публичный @") for f in snap.get("facts", []))
+    if kind == "NotMemberAfterJoin" and readable_public:
+        hint = ("ничего делать не нужно: чат публичный, и радар читает его без вступления (сообщения выше — "
+                "оттуда). Проверку чата (кнопка, бот-капча) нужно проходить, только если хочешь писать в этом "
+                "чате с аккаунта; на чтение это не влияет.")
     if hint:
         lines.append("Что делать: " + escape(hint))
     lines.append("Это текстовый снимок: у аккаунта нет экрана, а сообщения и кнопки взяты из самого чата.")
