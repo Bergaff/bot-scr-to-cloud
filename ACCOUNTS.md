@@ -7,7 +7,7 @@
 |---|---|---|
 | main | 20 | 1 |
 | second | 26 | 5 |
-| third | 5 | 0 |
+| third | 52 | 0 |
 
 ## main — 20 чатов
 
@@ -65,14 +65,61 @@
 | 25 | Чехия (инфо-чат) | https://t.me/czech_info_chat2 | 5 |
 | 26 | Япония (чат) | https://t.me/wrenjapanchat | 5 |
 
-## third — 5 чатов
+## third — 52 чатов
 
 | # | чат | ссылка | порог |
 |---|---|---|---|
-| 1 | В Краснодар (юг России, попутчики; канал) | https://t.me/sssro2 | 5 |
-| 2 | Вам Крым (поездки, попутчики; канал) | https://t.me/vamkrm | 5 |
-| 3 | Грузия и Армения (поездки, попутчики; канал) | https://t.me/vgruzii | 5 |
-| 4 | К Москве (поездки, водители, попутчики; канал) | https://t.me/kmoskve | 5 |
-| 5 | Отвезут (водители, попутчики, посылки) | https://t.me/otvezut | 5 |
+| 1 | Австрия | https://t.me/austria_granitsa | 5 |
+| 2 | Авто-базар Польши | https://t.me/auto_bazar_poland | 5 |
+| 3 | Англия | https://t.me/anglia_granitsa | 5 |
+| 4 | Бали (Убуд, Чангу) | https://t.me/bali_ubud_changu | 5 |
+| 5 | Бангкок | https://t.me/bangkok111 | 5 |
+| 6 | В Краснодар (юг России, попутчики; канал) | https://t.me/sssro2 | 5 |
+| 7 | Вам Крым (поездки, попутчики; канал) | https://t.me/vamkrm | 5 |
+| 8 | Варшава | https://t.me/warshawa_vchate | 5 |
+| 9 | Вроцлав | https://t.me/wroclaw_vchate | 5 |
+| 10 | Вьетнам (Нячанг, Дананг, Фукуок) | https://t.me/Nyachang_Danang_Fukuok | 5 |
+| 11 | Германия | https://t.me/germany_granitsa | 5 |
+| 12 | Германия (Берлин) | https://t.me/germany_berlin_vchate | 5 |
+| 13 | Гоа (Арамболь) | https://t.me/Goa_arambol1 | 5 |
+| 14 | Гожув-Велькопольски | https://t.me/gorzow_welkopol | 5 |
+| 15 | Грузия и Армения (поездки, попутчики; канал) | https://t.me/vgruzii | 5 |
+| 16 | Дубай (OFFMAP) | https://t.me/dubai_OFFMAP | 5 |
+| 17 | Египет (Хургада) | https://t.me/egypt_hurgada | 5 |
+| 18 | Жешув | https://t.me/rzeshuw_ua | 5 |
+| 19 | Занзибар | https://t.me/zanzibar4 | 5 |
+| 20 | Зелёна-Гура | https://t.me/zelena_gora_nashi | 5 |
+| 21 | Испания | https://t.me/spain_granitsa | 5 |
+| 22 | К Москве (поездки, водители, попутчики; канал) | https://t.me/kmoskve | 5 |
+| 23 | Канада (Оттава) | https://t.me/kanada_ottawa_chat | 5 |
+| 24 | Катовице | https://t.me/katowice_chatik | 5 |
+| 25 | Кейптаун (OFFMAP) | https://t.me/Capetown_OFFMAP | 5 |
+| 26 | Кипр (Пафос, Ларнака) | https://t.me/Kipr_Pafos_Larnaka | 5 |
+| 27 | Китай (OFFMAP) | https://t.me/China_OFFMAP | 5 |
+| 28 | Краков | https://t.me/krakow_nash | 5 |
+| 29 | Литва | https://t.me/lithuania_granitsa | 5 |
+| 30 | Лодзь | https://t.me/lodz_vchate | 5 |
+| 31 | Люблин | https://t.me/lublin_nashi | 5 |
+| 32 | Норвегия (Осло) | https://t.me/norway_oslo_chat | 5 |
+| 33 | Ольштын | https://t.me/olshtyn_nashi | 5 |
+| 34 | Ополе | https://t.me/opole_ua | 5 |
+| 35 | Отвезут (водители, попутчики, посылки) | https://t.me/otvezut | 5 |
+| 36 | Познань | https://t.me/poznan_nashi | 5 |
+| 37 | Польша (в чате) | https://t.me/poland_vchate | 5 |
+| 38 | Польша (чат 1) | https://t.me/polsha_chat1 | 5 |
+| 39 | Португалия | https://t.me/portugal_granitsa | 5 |
+| 40 | Работа в Польше | https://t.me/uainpoll | 5 |
+| 41 | Руда-Слёнска | https://t.me/ruda_slask | 5 |
+| 42 | Сербия | https://t.me/serbia_granitsa | 5 |
+| 43 | Торунь / Быдгощ | https://t.me/bydgosz_torun | 5 |
+| 44 | Труймясто (Гданьск, Сопот) | https://t.me/gdansk_sopot | 5 |
+| 45 | Турция (OFFMAP) | https://t.me/turtsia_OFFMAP | 5 |
+| 46 | Турция (Стамбул, Анталья) | https://t.me/turkey_stambul_antalia | 5 |
+| 47 | Услуги / реклама, Польша | https://t.me/uslugi_reklama_polska | 5 |
+| 48 | Черногория (Бар) | https://t.me/montenegro_bar1 | 5 |
+| 49 | Чехия | https://t.me/czech_granitsa | 5 |
+| 50 | Чехия (Прага) | https://t.me/praga_rabota_fushki | 5 |
+| 51 | Шри-Ланка (Унаватуна) | https://t.me/shri_lanka_Unavatuna | 5 |
+| 52 | Щецин | https://t.me/szezcin | 5 |
 
 🔑 — приватная ссылка-приглашение: заходить только по ней, по имени чат не найдётся.

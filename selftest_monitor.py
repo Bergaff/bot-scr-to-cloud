@@ -2896,6 +2896,87 @@ async def main() -> None:
         spares_text = _BP(spare_store, transport=object(), accounts=[_AV(name="main", max_per_day=1)]).dispatch("/spares").text
         checks.append(("/spares: видно использованный запасной и отбракованные с причинами",
                        "spareB_pyrogram.session" in spares_text and "Отбракованы" in spares_text, spares_text[:100]))
+        # --- несколько запасных и два умерших аккаунта: один запасной не достаётся двум аккаунтам ---
+        ss_mod = monitor_module._drive_session_sync()
+        two_ids = {k: k * 20 for k in "EFGHTS"}
+        def _two_run(spares, dead_names=("second", "third")):
+            """spares: {имя файла: (байты, Telegram-id или None)}. Возвращает (store, accs, результаты, svc)."""
+            files = {}
+            rows = [("monitor_session.session", "M" * 20), ("second_session.session", two_ids["S"]),
+                    ("third_session.session", two_ids["T"])]
+            for i, (fname, (data, _tid)) in enumerate(spares.items()):
+                fid = chr(ord("a") + i) * 20
+                files[fid] = data
+                rows.append((fname, fid))
+            html = "".join(f'<div id="entry-{fid}"><div class="flip-entry-title">{n}</div></div>' for n, fid in rows)
+            def fetch2(url, timeout=25.0):
+                if "embeddedfolderview" in url:
+                    return html.encode()
+                for fid, data in files.items():
+                    if fid in url:
+                        return data
+                raise OSError("404")
+            for data, tid in spares.values():
+                probe.write_bytes(ss_mod.prepare_session(data)[3])
+                good_keys[monitor_module.session_file_info(probe)["key_id"]] = tid
+            probe.unlink()
+            for n, k in (("monitor_session", b"m"), ("second_session", b"s"), ("third_session", b"t")):
+                (spare_dir / f"{n}.session").write_bytes(_tele_bytes(k * 256))
+            accs3 = [SimpleNamespace(name="main", session="monitor_session", proxy=None),
+                     SimpleNamespace(name="second", session="second_session", proxy=None),
+                     SimpleNamespace(name="third", session="third_session", proxy=None)]
+            st, sv = HitStore(":memory:"), _Svc()
+            st.bot_state_set("account:main:me", json.dumps({"id": 111}))
+            return st, accs3, fetch2, sv
+        async def _take_turns(st, accs3, fetch2, sv):
+            res = {}
+            for acc in accs3[1:]:                      # как в проходе: по очереди, пока вошёл — me записан
+                res[acc.name] = await monitor_module.adopt_spare_session(
+                    st, sv, acc, accs3, for_args, 1, "h", fetcher=fetch2, client_factory=SpareClient, folder=folder)
+                if res[acc.name]:
+                    probe2 = monitor_module.session_file_info(spare_dir / f"{acc.session}.session")["key_id"]
+                    st.bot_state_set(f"account:{acc.name}:me", json.dumps({"id": good_keys[probe2]}))
+            return res
+        probe = spare_dir / "probe.session"
+        # 1) три запасных: два годных (разные Telegram-аккаунты) и один не авторизован
+        st3, accs3, fetch3, sv3 = _two_run({"spE.session": (_tele_bytes(b"e" * 256), 501),
+                                            "spF.session": (_tele_bytes(b"f" * 256), 502),
+                                            "spG.session": (_tele_bytes(b"g" * 256), None)})
+        m_key = monitor_module.session_file_info(spare_dir / "monitor_session.session")["key_id"]
+        r3 = await _take_turns(st3, accs3, fetch3, sv3)
+        used3 = json.loads(st3.bot_state_get("spare:used"))
+        k_sec = monitor_module.session_file_info(spare_dir / "second_session.session")["key_id"]
+        k_thr = monitor_module.session_file_info(spare_dir / "third_session.session")["key_id"]
+        checks.append(("два умерших аккаунта, три запасных: каждый получил свой запасной, разные ключи и Telegram-аккаунты",
+                       r3 == {"second": True, "third": True} and k_sec != k_thr
+                       and sorted(v["account"] for v in used3.values()) == ["second", "third"]
+                       and len({v["tg_id"] for v in used3.values()}) == 2, str(used3)[:140]))
+        checks.append(("живой аккаунт (main) запасной не трогает: его файл прежний",
+                       monitor_module.session_file_info(spare_dir / "monitor_session.session")["key_id"] == m_key
+                       and k_sec != m_key and k_thr != m_key, ""))
+        # 2) годный запасной один: достаётся первому, второй аккаунт остаётся без него (файл не меняется)
+        st1, accs1, fetch1, sv1 = _two_run({"spE.session": (_tele_bytes(b"e" * 256), 501)})
+        thr_before = monitor_module.session_file_info(spare_dir / "third_session.session")["key_id"]
+        r1 = await _take_turns(st1, accs1, fetch1, sv1)
+        used1 = json.loads(st1.bot_state_get("spare:used"))
+        checks.append(("один годный запасной на два умерших аккаунта: достался только second, у third файл прежний",
+                       r1 == {"second": True, "third": False} and len(used1) == 1
+                       and list(used1.values())[0]["account"] == "second"
+                       and monitor_module.session_file_info(spare_dir / "third_session.session")["key_id"] == thr_before
+                       and "годных нет" in monitor_module.SPARE_NOTES.get("third", ""),
+                       monitor_module.SPARE_NOTES.get("third", "")))
+        # 3) два файла одного Telegram-аккаунта (разные ключи): второй аккаунт его не берёт
+        stT, accsT, fetchT, svT = _two_run({"spE.session": (_tele_bytes(b"e" * 256), 501),
+                                            "spH.session": (_tele_bytes(b"h" * 256), 501)})
+        rT = await _take_turns(stT, accsT, fetchT, svT)
+        badT = json.loads(stT.bot_state_get("spare:bad") or "{}")
+        checks.append(("два файла одного Telegram-аккаунта: второй умерший его не берёт («тот же Telegram-аккаунт»)",
+                       rT == {"second": True, "third": False}
+                       and any("тот же Telegram-аккаунт" in v["why"] for v in badT.values()), str(badT)[:120]))
+        # 4) второй проход после замены: использованные файлы не берутся снова
+        again3 = await _take_turns(st3, accs3, fetch3, sv3)
+        checks.append(("запасной, уже поставленный на аккаунт, повторно никому не достаётся",
+                       not any(again3.values()) and len(json.loads(st3.bot_state_get("spare:used"))) == 2, str(again3)))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска
