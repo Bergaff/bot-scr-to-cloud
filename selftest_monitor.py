@@ -2855,6 +2855,33 @@ async def main() -> None:
                                                            fetcher=drive_fetch, client_factory=SpareClient, folder="")
         checks.append(("папка Диска не задана: запасные искать негде, без падения",
                        not none_ok and "SESSION_DRIVE_URL" in monitor_module.SPARE_NOTES.get("second", ""), ""))
+        # сетевой сбой при проверке не клеймит файл негодным; неизвестная ошибка — отбраковка с повтором через 6 ч
+        class NetFailClient(SpareClient):
+            async def connect(self):
+                raise TimeoutError("net")
+        class OddFailClient(SpareClient):
+            async def connect(self):
+                raise ValueError("странный ответ")
+        retry_store = HitStore(":memory:")
+        retry_store.bot_state_set("account:main:me", json.dumps({"id": 111}))
+        dead_file.write_bytes(_tele_bytes(b"x" * 256))
+        await monitor_module.adopt_spare_session(retry_store, spare_svc, accs[1], accs, for_args, 1, "h",
+                                                 fetcher=drive_fetch, client_factory=NetFailClient, folder=folder)
+        net_bad = json.loads(retry_store.bot_state_get("spare:bad") or "{}")
+        checks.append(("запасные: сетевой сбой при проверке — файл не отбракован навсегда",
+                       not any(v["name"] in ("spareA.session", "spareB_pyrogram.session") for v in net_bad.values()), str(net_bad)[:100]))
+        await monitor_module.adopt_spare_session(retry_store, spare_svc, accs[1], accs, for_args, 1, "h",
+                                                 fetcher=drive_fetch, client_factory=OddFailClient, folder=folder)
+        odd_bad = json.loads(retry_store.bot_state_get("spare:bad") or "{}")
+        odd_retry = [k for k, v in odd_bad.items() if v.get("retry")]
+        checks.append(("запасные: неизвестная ошибка — отбраковка помечена «повторить позже»", len(odd_retry) >= 1, str(odd_bad)[:100]))
+        for k in odd_retry:
+            odd_bad[k]["at"] = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat(timespec="seconds")
+        retry_store.bot_state_set("spare:bad", json.dumps(odd_bad))
+        dead_file.write_bytes(_tele_bytes(b"x" * 256))
+        retried = await monitor_module.adopt_spare_session(retry_store, spare_svc, accs[1], accs, for_args, 1, "h",
+                                                           fetcher=drive_fetch, client_factory=SpareClient, folder=folder)
+        checks.append(("запасные: через 6+ часов отбракованный «по ошибке» файл пробуется снова и подходит", retried, ""))
         await monitor_module.scan_spares(spare_store, accs, fetcher=drive_fetch, folder=folder, every_minutes=0)
         from bot_panel import AccountView as _AV, BotPanel as _BP
         spares_text = _BP(spare_store, transport=object(), accounts=[_AV(name="main", max_per_day=1)]).dispatch("/spares").text

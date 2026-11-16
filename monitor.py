@@ -2508,6 +2508,7 @@ DEAD_SESSION_KINDS = {"AuthKeyUnregisteredError", "SessionRevokedError", "Sessio
                       "PhoneNumberBannedError", "SessionNotAuthorized", "SessionFileEmpty",
                       "SessionFileMissing"}
 SPARE_TRIES_PER_PASS = 3
+SPARE_RETRY_HOURS = 6.0
 SPARE_NOTES: dict[str, str] = {}          # {аккаунт: чем кончился поиск запасного} — для сообщения в бот
 
 
@@ -2554,6 +2555,16 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
     claimed = ss.claimed_names(listing, mapping, ss.file_names_from_env(dict(os.environ)))
     candidates = ss.spare_candidates(listing, claimed)
     bad, used = _state_json(store, "spare:bad"), _state_json(store, "spare:used")
+    # отбраковка «по ошибке неизвестного типа» не вечная: через SPARE_RETRY_HOURS файл пробуют снова
+    # (сеть, временный сбой Telegram); вечны только понятные причины — не авторизован, тот же ключ/аккаунт
+    for key_, item_ in list(bad.items()):
+        if isinstance(item_, dict) and item_.get("retry"):
+            try:
+                age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(item_.get("at") or "")).total_seconds() / 3600
+            except (TypeError, ValueError):
+                age_h = SPARE_RETRY_HOURS + 1
+            if age_h >= SPARE_RETRY_HOURS:
+                bad.pop(key_)
     other_ids, other_keys = _spare_context(store, accounts, acc.name)
     dead_path = f"{acc.session}.session"
     dead_key = session_file_info(dead_path).get("key_id")
@@ -2587,15 +2598,18 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
             tmp_path.unlink(missing_ok=True)
             continue
         tried += 1
-        client, me, reason = make(tmp_base), None, ""
+        client, me, reason, retry_later = make(tmp_base), None, "", False
         try:
             await client.connect()
             if await client.is_user_authorized():
                 me = await client.get_me()
             else:
                 reason = "Telegram не признаёт этот вход (сеанс завершён или файл не авторизован)"
+        except (OSError, asyncio.TimeoutError) as exc:         # сеть/таймаут: файл ни в чём не виноват
+            reason = f"transient:{type(exc).__name__}"
         except Exception as exc:  # noqa: BLE001
-            reason = f"{type(exc).__name__}"
+            reason = f"{type(exc).__name__}: {str(exc)[:80]}"
+            retry_later = True
         finally:
             try:
                 await client.disconnect()
@@ -2604,8 +2618,14 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
         tmp_path.unlink(missing_ok=True)
         for suffix in ("-journal", "-wal", "-shm"):
             Path(f"{tmp_base}.session{suffix}").unlink(missing_ok=True)
+        if me is None and reason.startswith("transient:"):
+            print(f"[!] запасной «{name}»: сеть не дала проверить ({reason[10:]}) — попробуем в следующий проход",
+                  file=sys.stderr)
+            continue
         if me is None:
             bad[digest] = {"name": name, "why": reason or "не вошёл", "at": now}
+            if retry_later:
+                bad[digest]["retry"] = True
             print(f"[!] запасной «{name}» не подошёл: {bad[digest]['why']}", file=sys.stderr)
             continue
         if getattr(me, "id", None) in other_ids:
