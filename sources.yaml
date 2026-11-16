@@ -12,7 +12,7 @@
 #             Большое значение нужно только при первом запуске: дальше всё берётся по таблице seen.
 #
 # Аккаунты. Два аккаунта читают РАЗНЫЕ чаты: у каждого свой список ниже (account: main /
-# account: second). Файлы сессий: monitor_session.session и second_session.session.
+# account: second). Файлы сессий: monitor_session.session и second_account.session.
 # Ключи приложения (TG_API_ID/TG_API_HASH) у них общие — это ключи приложения, а не аккаунта.
 #
 # Проверить, что всё читается и куда надо вступить:
@@ -40,7 +40,7 @@ accounts:
       to: "@parcel_transfer_bot"
       max_per_day: 180            # лимит на этот аккаунт (общий — ниже, он же по умолчанию)
   second:
-    session: second_session       # second_session.session
+    session: second_account       # second_account.session (файл на Диске называется так)
     # profile_name — имя профиля аккаунта в Telegram (по умолчанию имя не трогаем). Ставится ОДИН раз
     # на Telegram-аккаунт и больше не перебивается, даже если кто-то его сменил:
     #   profile_name: auto                      # обычное русское имя и фамилия, у разных аккаунтов разные

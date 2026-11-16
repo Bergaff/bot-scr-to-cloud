@@ -676,9 +676,9 @@ async def main() -> None:
 
     # два аккаунта читают разные чаты: это видно прямо в конфиге
     config_raw = repo_text("sources.yaml")
-    checks.append(("в sources.yaml два аккаунта: monitor_session и second_session",
+    checks.append(("в sources.yaml аккаунты: monitor_session, second_account (файл на Диске) и third_session",
                    "session: monitor_session" in config_raw
-                   and "session: second_session" in config_raw, ""))
+                   and "session: second_account" in config_raw and "session: third_session" in config_raw, ""))
 
 
     # схема B читает сообщения ТОЛЬКО в catch-up: «--catchup 0» перекрывает catchup у каждого
@@ -1181,7 +1181,7 @@ async def main() -> None:
                    == {"SECOND": "s2.session"}, ""))
     acc_map = session_sync.account_sessions(ROOT)
     checks.append(("имена аккаунтов main/second сопоставляются с сессиями из sources.yaml",
-                   acc_map.get("main") == "monitor_session" and acc_map.get("second") == "second_session", str(acc_map)))
+                   acc_map.get("main") == "monitor_session" and acc_map.get("second") == "second_account" and acc_map.get("third") == "third_session", str(acc_map)))
 
     folder_sessions = {main_id: good_v1, second_id: good_v2}
     folder_calls: list[str] = []
@@ -1195,6 +1195,8 @@ async def main() -> None:
     fdir = WORKDIR / "folder"
     shutil.rmtree(fdir, ignore_errors=True)
     fdir.mkdir(parents=True, exist_ok=True)
+    (fdir / "sources.yaml").write_text("accounts:\n  main:\n    session: monitor_session\n  second:\n    session: second_session\n",
+                                       encoding="utf-8")   # имена сессий фиксированы, не зависят от репозитория
     for key in ("sessions/monitor_session.session", "sessions/second_session.session", "state/session_sources.json"):
         OBJECTS.pop(key, None)
     folder_runner = cloud_entry.RadarRunner(

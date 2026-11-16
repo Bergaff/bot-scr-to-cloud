@@ -22,7 +22,7 @@
 	// RADAR_TOKEN) сюда НЕ пишем — только `npx wrangler secret put <ИМЯ>`.
 	"vars": {
 		"R2_BUCKET": "radar-state",
-		"TG_SESSION": "monitor_session,second_session",
+		"TG_SESSION": "monitor_session,second_account",
 		"RADAR_ARGS": "--once --notify console --mode B --auto-join --service-notify bot",
 		"RADAR_TIMEOUT": "420"
 		// Выключатели RADAR_ON и TG_COMMANDS (1 — вкл, 0 — выкл) здесь НЕ заданы нарочно: они
