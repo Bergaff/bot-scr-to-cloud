@@ -425,6 +425,34 @@ sources:
     min_score: 5
     catchup: 50
 
+  - target: "@kmoskve"
+    title: "К Москве (поездки, водители, попутчики; канал)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@vgruzii"
+    title: "Грузия и Армения (поездки, попутчики; канал)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@sssro2"
+    title: "В Краснодар (юг России, попутчики; канал)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@vamkrm"
+    title: "Вам Крым (поездки, попутчики; канал)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
   # ─── Выключенные примеры (раскомментируй, если понадобятся) ─────────────────
   # - target: "@granicaPOST"
   #   profile: news
