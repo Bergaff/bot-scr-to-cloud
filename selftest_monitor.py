@@ -3055,6 +3055,41 @@ async def main() -> None:
         new_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         checks.append(("время последней ошибки: сегодняшняя — «ЧЧ:ММ», старше — с датой (чтобы вчерашнюю не принять за будущее время)",
                        len(_lw(new_ts)) == 5 and len(_lw(old_ts)) == 11, f"{_lw(new_ts)} | {_lw(old_ts)}"))
+        # --- /spares не пишет про файлы, которых уже нет на Диске (удалены или заменены новым под тем же именем) ---
+        keep_data, new_data = _tele_bytes(b"k" * 256), _tele_bytes(b"n" * 256)
+        gl = {"monitor_session.session": "M" * 20, "second_session.session": "S" * 20, "keep.session": "k" * 20,
+              "same.session": "n" * 20, "free.session": "f" * 20}
+        gfiles = {"k" * 20: keep_data, "n" * 20: new_data, "f" * 20: _tele_bytes(b"f" * 256)}
+        ghtml = "".join(f'<div id="entry-{fid}"><div class="flip-entry-title">{n}</div></div>' for n, fid in gl.items())
+        def gfetch(url, timeout=25.0):
+            if "embeddedfolderview" in url:
+                return ghtml.encode()
+            for fid, data in gfiles.items():
+                if fid in url:
+                    return data
+            raise OSError("404")
+        st_g = HitStore(":memory:")
+        keep_digest = ss_mod.session_digest(keep_data)
+        st_g.bot_state_set("spare:bad", json.dumps({
+            keep_digest: {"name": "keep.session", "why": "не вошёл", "at": _stamp(0)},
+            "olddigest": {"name": "same.session", "why": "не вошёл", "at": _stamp(0)},
+            "gonedigest": {"name": "deleted.session", "why": "не вошёл", "at": _stamp(0)}}))
+        st_g.bot_state_set("spare:used", json.dumps({
+            "u1": {"name": "gone2.session", "account": "second", "at": _stamp(0), "died_at": _stamp(2), "tg_id": 5, "tg_name": "Z"},
+            "u2": {"name": "alive_removed.session", "account": "third", "at": _stamp(3), "tg_id": 6, "tg_name": "W"}}))
+        st_g.bot_state_set("account:third:me", json.dumps({"id": 6}))
+        st_g.bot_state_set("account:third:login", json.dumps({"ok": True, "since": _stamp(3)}))
+        await monitor_module.scan_spares(st_g, accs, fetcher=gfetch, folder=folder, every_minutes=0)
+        g_bad = json.loads(st_g.bot_state_get("spare:bad"))
+        g_text = _BP2(st_g, transport=object(), accounts=[_AV2(name="main", max_per_day=1)]).dispatch("/spares").text
+        g_bad_part = g_text.split("Не подошли")[1].split("Как добавить")[0] if "Не подошли" in g_text else ""
+        checks.append(("/spares: файл на Диске остался — запись есть (id запомнен); заменён новым под тем же именем — запись скрыта",
+                       g_bad[keep_digest].get("fid") == "k" * 20 and g_bad["olddigest"].get("gone") is True
+                       and "keep.session" in g_bad_part and "same.session" not in g_bad_part, g_text[:300]))
+        checks.append(("/spares: удалённых с Диска файлов нет ни в «Отработали», ни в «Не подошли»; сказано, сколько скрыто; "
+                       "работающий запасной не скрывается; новый файл с прежним именем виден как свободный",
+                       "deleted.session" not in g_text and "gone2.session" not in g_text and "скрыто 3" in g_text
+                       and "alive_removed.session" in g_text and "same.session" in g_text.split("\n")[1], g_text[:300]))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска

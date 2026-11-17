@@ -1209,11 +1209,20 @@ class BotPanel:
         used = self._state_json("spare:used")
         bad = self._state_json("spare:bad")
         lines = ["🧰 Запасные аккаунты (Google Диск)"]
+        names, ids = set(scan.get("names") or []), set(scan.get("ids") or [])
+
+        def on_drive(rec: dict) -> bool:
+            """Файл ещё лежит на Диске (нет данных о папке — считаем, что лежит; заменённый новым — нет)."""
+            if rec.get("gone"):
+                return False
+            if not (names or ids) or scan.get("error"):
+                return True
+            return (rec.get("fid") in ids) if rec.get("fid") else (rec.get("name") in names)
+        taken = {v.get("name") for table in (used, bad) for v in table.values() if isinstance(v, dict) and on_drive(v)}
         if not scan:
             lines.append("Папка Диска ещё не проверялась (или SESSION_DRIVE_URL не задан). Проверка — раз в полчаса в проходе.")
         else:
-            free = [name for name in scan.get("free", []) if name not in {v.get("name") for v in used.values()}
-                    and name not in {v.get("name") for v in bad.values()}]
+            free = [name for name in scan.get("free", []) if name not in taken]
             lines.append(f"Проверено {local_stamp(scan.get('ts'))}: свободных файлов {len(free)}"
                          + (f" — {', '.join(free[:10])}" if free else ""))
             if scan.get("error"):
@@ -1222,6 +1231,10 @@ class BotPanel:
                   for v in used.values() if isinstance(v, dict)}
         mes = {a: self._state_json(f"account:{a}:me") for a in logins}
         dead, alive = classify_spares(used, logins, mes)
+        # файлы, которых на Диске уже нет, в списке не показываем (работающих запасных это не касается)
+        hidden = len([v for v in dead if not on_drive(v)]) + len([v for v in bad.values() if isinstance(v, dict) and not on_drive(v)])
+        dead = [v for v in dead if on_drive(v)]
+        bad = {k: v for k, v in bad.items() if not isinstance(v, dict) or on_drive(v)}
         need = len(dead) + len(bad)
         if need:
             lines.append(f"♻️ Надо убрать с Диска и заменить новыми: {need} (отработали {len(dead)}, не подошли {len(bad)})")
@@ -1244,6 +1257,8 @@ class BotPanel:
         if bad:
             lines += ["", "Не подошли — тоже можно удалить с Диска (повторно не пробуются, пока файл не заменён):"]
             lines += [f"  • {v.get('name')}: {v.get('why')}" for v in bad.values()]
+        if hidden:
+            lines += ["", f"(скрыто {hidden}: этих файлов уже нет на Диске)"]
         lines += ["", "Как добавить запасной: положи файл .session (Telethon или Pyrogram) в ту же папку Диска под любым "
                       "именем, не совпадающим с рабочими аккаунтами. Когда рабочий аккаунт выйдет, радар сам подберёт "
                       "первый годный и поставит на его место. Один и тот же аккаунт не должен лежать в двух местах."]

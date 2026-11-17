@@ -2570,6 +2570,13 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
     dead_key = session_file_info(dead_path).get("key_id")
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     tried, skipped = 0, 0
+    fids: dict[str, str] = {}                 # отпечаток -> id файла на Диске (бот скрывает записи об удалённых файлах)
+
+    def _stamp_fids() -> None:
+        for table in (used, bad):
+            for key_, rec_ in table.items():
+                if isinstance(rec_, dict) and key_ in fids:
+                    rec_.setdefault("fid", fids[key_])
     tmp_base = f"spare_try_{os.getpid()}"
     tmp_path = Path(f"{tmp_base}.session")
     make = client_factory or (lambda base: make_client(base, api_id, api_hash, delay=args.delay,
@@ -2583,6 +2590,7 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
             print(f"[!] запасной «{name}»: не скачался ({type(exc).__name__})", file=sys.stderr)
             continue
         digest = ss.session_digest(data)
+        fids[digest] = file_id
         if digest in bad or digest in used:
             skipped += 1
             continue
@@ -2635,6 +2643,7 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
         used[digest] = {"name": name, "account": acc.name, "at": now, "tg_id": getattr(me, "id", None),
                         "tg_name": display_name(me), "format": info.get("format", "telethon"),
                         "key": session_file_info(dead_path).get("key_id")}
+        _stamp_fids()
         _state_put(store, "spare:used", used)
         _state_put(store, "spare:bad", bad)
         left = max(0, len(candidates) - len(used) - len(bad))
@@ -2649,6 +2658,7 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
         print(f"[+] «{acc.name}»: поставлен запасной аккаунт «{name}» ({display_name(me)}, id {me.id})",
               file=sys.stderr)
         return True
+    _stamp_fids()
     _state_put(store, "spare:bad", bad)
     if not candidates:
         SPARE_NOTES[acc.name] = ("запасных сессий на Диске нет: положи в ту же папку любой файл .session "
@@ -2721,6 +2731,38 @@ async def mark_spare_dead(store, service, acc_name: str, kind: str, session_path
     return [str(i.get("name")) for _d, i, _da, _dk in marked]
 
 
+def _reconcile_spare_files(store, ss, listing: dict[str, str], fetch, max_downloads: int = 8) -> None:
+    """Записи о запасных (spare:used/bad) без id файла: найти файл по имени и сверить отпечаток.
+
+    Тот же отпечаток — запоминаем id; другой — под этим именем уже лежит новый файл, старый удалён (gone).
+    Нужно, чтобы /spares не писал про аккаунты, которых на Диске уже нет."""
+    changed, cache, downloads = False, {}, 0
+    for table_key in ("spare:used", "spare:bad"):
+        table = _state_json(store, table_key)
+        for digest, rec in table.items():
+            if not isinstance(rec, dict) or rec.get("fid") or rec.get("gone"):
+                continue
+            name = rec.get("name")
+            if name not in listing:
+                continue                          # файла нет вовсе — бот скроет по имени
+            if name not in cache:
+                if downloads >= max_downloads:
+                    continue
+                downloads += 1
+                try:
+                    cache[name] = ss.session_digest(fetch(ss.direct_url(listing[name])))
+                except Exception:  # noqa: BLE001 - сеть: проверим в следующий раз
+                    continue
+            if cache[name] == digest:
+                rec["fid"] = listing[name]
+            else:
+                rec["gone"] = True
+            changed = True
+        if changed:
+            _state_put(store, table_key, table)
+        changed = False
+
+
 async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, every_minutes: float = 30.0) -> None:
     """Раз в полчаса: сколько свободных файлов-запасных лежит на Диске (для /spares). Ошибки проход не роняют."""
     folder = (os.environ.get("SESSION_DRIVE_URL", "") if folder is None else folder).strip()
@@ -2740,6 +2782,10 @@ async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, 
         claimed = ss.claimed_names(listing, mapping, ss.file_names_from_env(dict(os.environ)))
         result["free"] = [name for name, _id in ss.spare_candidates(listing, claimed)]
         result["claimed"] = sorted(claimed)
+        if listing:         # пустой ответ — это и «папка пуста», и «доступ закрыт»: по нему ничего не скрываем
+            result["names"] = sorted(listing)
+            result["ids"] = sorted(listing.values())
+            _reconcile_spare_files(store, ss, listing, fetcher or ss.fetch)
     except Exception as exc:  # noqa: BLE001
         result["error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
     _state_put(store, "spare:scan", result)
