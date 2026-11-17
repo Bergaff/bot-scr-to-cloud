@@ -3483,7 +3483,8 @@ class ServiceNotify:
     def pass_summary(now: datetime, seconds: float, read: int, found: int, forwarded: int,
                      per_account: list, errors: int, db_total: str,
                      gap_minutes: float | None = None, expected_minutes: float = 0.0,
-                     leftover: list | None = None, seen_before: int | None = None) -> str:
+                     leftover: list | None = None, seen_before: int | None = None,
+                     leftover_by: list | None = None) -> str:
         """Текст сводки прохода. Коротко: чтобы читалось с телефона за пару секунд."""
         local = now.astimezone()
         zone = "МСК" if local.utcoffset() == timedelta(hours=3) else (local.tzname() or "UTC")
@@ -3499,8 +3500,9 @@ class ServiceNotify:
             lines.append(f"• предыдущий проход был {gap_minutes:.0f} мин назад "
                          f"(обычно {expected_minutes:.0f}) — радар простаивал")
         if leftover:
-            lines.append(f"• не успел прочитать {len(leftover)} чатов: время прохода вышло — "
-                         f"дойдут в следующий раз (порядок чатов случайный)")
+            by = ", ".join(f"{name} {left} из {total}" for name, left, total in (leftover_by or []) if left)
+            lines.append(f"• не успел прочитать {len(leftover)} чатов" + (f" ({by})" if by else "")
+                         + ": время прохода вышло — дойдут в следующий раз (порядок чатов случайный)")
         return "\n".join(lines)
 
     @staticmethod
@@ -4202,7 +4204,9 @@ async def async_main(args) -> None:
             seen_before=seen_before,
             errors=store.errors_count(since_hours=24.0), db_total=store.stats(),
             gap_minutes=gap_before, expected_minutes=args.service_gap,
-            leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])])
+            leftover=[t for _a, _c, m in runners for t in getattr(m, "catchup_left", [])],
+            leftover_by=[(a2.name, len(getattr(m, "catchup_left", []) or []), len(getattr(m, "sources", []) or []))
+                         for a2, _c2, m in runners])
         await service.send(text, key="summary", force=bool(found or forwarded or not read))
 
     # длительность прохода пригодится для /cost: стоимость считаем от фактического расхода

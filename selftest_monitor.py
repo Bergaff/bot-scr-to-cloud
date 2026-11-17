@@ -2335,6 +2335,14 @@ async def main() -> None:
     checks.append(("сводка честно говорит, сколько чатов не успел",
                    "не успел прочитать 2 чатов" in text_left and "в следующий раз" in text_left,
                    text_left.splitlines()[-1]))
+    text_by = monitor_module.ServiceNotify.pass_summary(
+        now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=287.0,
+        read=99, found=6, forwarded=6, per_account=[("main", 14, 2), ("third", 16, 2)], errors=0,
+        db_total="0 совпадений", leftover=["@a", "@b", "@c"],
+        leftover_by=[("main", 0, 20), ("second", 1, 26), ("third", 2, 52)])
+    checks.append(("сводка: сколько не прочитано у каждого аккаунта (из скольких чатов); у кого нуль — не пишется",
+                   "не успел прочитать 3 чатов (second 1 из 26, third 2 из 52)" in text_by and "main 0" not in text_by,
+                   text_by.splitlines()[-1]))
     checks.append(("сводка без отложенных чатов не пугает",
                    "не успел" not in monitor_module.ServiceNotify.pass_summary(
                        now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=10.0,
