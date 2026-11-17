@@ -1211,9 +1211,12 @@ class BotPanel:
         lines = ["🧰 Запасные аккаунты (Google Диск)"]
         names, ids = set(scan.get("names") or []), set(scan.get("ids") or [])
 
+        pinned = scan.get("pinned") or {}
+
         def on_drive(rec: dict) -> bool:
-            """Файл ещё лежит на Диске (нет данных о папке — считаем, что лежит; заменённый новым — нет)."""
-            if rec.get("gone"):
+            """Файл ещё лежит на Диске (нет данных о папке — считаем, что лежит; заменённый новым — нет).
+            Файлы, закреплённые за аккаунтом (по его Telegram-id в имени), в запасных не числятся вовсе."""
+            if rec.get("gone") or rec.get("name") in pinned:
                 return False
             if not (names or ids) or scan.get("error"):
                 return True
@@ -1232,7 +1235,8 @@ class BotPanel:
         mes = {a: self._state_json(f"account:{a}:me") for a in logins}
         dead, alive = classify_spares(used, logins, mes)
         # файлы, которых на Диске уже нет, в списке не показываем (работающих запасных это не касается)
-        hidden = len([v for v in dead if not on_drive(v)]) + len([v for v in bad.values() if isinstance(v, dict) and not on_drive(v)])
+        hidden = (len([v for v in dead if not on_drive(v) and v.get("name") not in pinned])
+                  + len([v for v in bad.values() if isinstance(v, dict) and not on_drive(v) and v.get("name") not in pinned]))
         dead = [v for v in dead if on_drive(v)]
         bad = {k: v for k, v in bad.items() if not isinstance(v, dict) or on_drive(v)}
         need = len(dead) + len(bad)
@@ -1257,6 +1261,9 @@ class BotPanel:
         if bad:
             lines += ["", "Не подошли — тоже можно удалить с Диска (повторно не пробуются, пока файл не заменён):"]
             lines += [f"  • {v.get('name')}: {v.get('why')}" for v in bad.values()]
+        if pinned:
+            lines += ["", "🔒 Закреплены за аккаунтами — это не запасные, не удалять и не переименовывать:"]
+            lines += [f"  • {name} → «{acc}»" for name, acc in sorted(pinned.items())]
         if hidden:
             lines += ["", f"(скрыто {hidden}: этих файлов уже нет на Диске)"]
         lines += ["", "Как добавить запасной: положи файл .session (Telethon или Pyrogram) в ту же папку Диска под любым "

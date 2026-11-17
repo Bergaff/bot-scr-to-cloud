@@ -3058,12 +3058,16 @@ async def main() -> None:
         # --- /spares не пишет про файлы, которых уже нет на Диске (удалены или заменены новым под тем же именем) ---
         keep_data, new_data = _tele_bytes(b"k" * 256), _tele_bytes(b"n" * 256)
         gl = {"monitor_session.session": "M" * 20, "second_session.session": "S" * 20, "keep.session": "k" * 20,
-              "same.session": "n" * 20, "free.session": "f" * 20}
-        gfiles = {"k" * 20: keep_data, "n" * 20: new_data, "f" * 20: _tele_bytes(b"f" * 256)}
+              "same.session": "n" * 20, "free.session": "f" * 20, "1115550_pyrogram.session": "p" * 20}
+        gfiles = {"k" * 20: keep_data, "n" * 20: new_data, "f" * 20: _tele_bytes(b"f" * 256),
+                  "p" * 20: _pyro_bytes(b"p" * 256)}
+        pin_downloads = []
         ghtml = "".join(f'<div id="entry-{fid}"><div class="flip-entry-title">{n}</div></div>' for n, fid in gl.items())
         def gfetch(url, timeout=25.0):
             if "embeddedfolderview" in url:
                 return ghtml.encode()
+            if "p" * 20 in url:
+                pin_downloads.append(url)
             for fid, data in gfiles.items():
                 if fid in url:
                     return data
@@ -3073,13 +3077,16 @@ async def main() -> None:
         st_g.bot_state_set("spare:bad", json.dumps({
             keep_digest: {"name": "keep.session", "why": "не вошёл", "at": _stamp(0)},
             "olddigest": {"name": "same.session", "why": "не вошёл", "at": _stamp(0)},
-            "gonedigest": {"name": "deleted.session", "why": "не вошёл", "at": _stamp(0)}}))
+            "gonedigest": {"name": "deleted.session", "why": "не вошёл", "at": _stamp(0)},
+            "pindigest": {"name": "1115550_pyrogram.session", "why": "это тот же Telegram-аккаунт", "at": _stamp(0)}}))
         st_g.bot_state_set("spare:used", json.dumps({
             "u1": {"name": "gone2.session", "account": "second", "at": _stamp(0), "died_at": _stamp(2), "tg_id": 5, "tg_name": "Z"},
             "u2": {"name": "alive_removed.session", "account": "third", "at": _stamp(3), "tg_id": 6, "tg_name": "W"}}))
         st_g.bot_state_set("account:third:me", json.dumps({"id": 6}))
         st_g.bot_state_set("account:third:login", json.dumps({"ok": True, "since": _stamp(3)}))
+        st_g.bot_state_set("account:main:me", json.dumps({"id": 1115550}))      # main = 1115550: файл «1115550_pyrogram.session» его
         await monitor_module.scan_spares(st_g, accs, fetcher=gfetch, folder=folder, every_minutes=0)
+        g_scan = json.loads(st_g.bot_state_get("spare:scan"))
         g_bad = json.loads(st_g.bot_state_get("spare:bad"))
         g_text = _BP2(st_g, transport=object(), accounts=[_AV2(name="main", max_per_day=1)]).dispatch("/spares").text
         g_bad_part = g_text.split("Не подошли")[1].split("Как добавить")[0] if "Не подошли" in g_text else ""
@@ -3090,6 +3097,17 @@ async def main() -> None:
                        "работающий запасной не скрывается; новый файл с прежним именем виден как свободный",
                        "deleted.session" not in g_text and "gone2.session" not in g_text and "скрыто 3" in g_text
                        and "alive_removed.session" in g_text and "same.session" in g_text.split("\n")[1], g_text[:300]))
+        pin_dead = SimpleNamespace(name="second", session="second_session", proxy=None)
+        adopt_pin = await monitor_module.adopt_spare_session(
+            st_g, spare_svc, pin_dead, accs, for_args, 1, "h", fetcher=gfetch, client_factory=SpareClient, folder=folder)
+        g_text2 = _BP2(st_g, transport=object(), accounts=[_AV2(name="main", max_per_day=1)]).dispatch("/spares").text
+        pin_part = g_text2.split("🔒")[1].split("(скрыто")[0] if "🔒" in g_text2 else ""
+        bad_part2 = g_text2.split("Не подошли")[1].split("🔒")[0] if "Не подошли" in g_text2 else ""
+        checks.append(("файл, названный по Telegram-id рабочего аккаунта (1115550_pyrogram.session = main): закреплён, "
+                       "не запасной — не скачивается и не пробуется, не в «Не подошли», не в свободных; в /spares отдельная строка «не трогать»",
+                       g_scan.get("pinned") == {"1115550_pyrogram.session": "main"} and "1115550_pyrogram.session" not in g_scan["free"]
+                       and not pin_downloads and "1115550_pyrogram.session" in pin_part and "→ «main»" in pin_part
+                       and "1115550_pyrogram.session" not in bad_part2 and "скрыто 3" in g_text2, g_text2[:300]))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска

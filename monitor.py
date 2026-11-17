@@ -2553,6 +2553,7 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
         return False
     mapping = {a.name: session_base(a.session) for a in accounts}
     claimed = ss.claimed_names(listing, mapping, ss.file_names_from_env(dict(os.environ)))
+    claimed |= set(pinned_session_files(store, accounts, listing))      # файл закреплён за аккаунтом — не запасной
     candidates = ss.spare_candidates(listing, claimed)
     bad, used = _state_json(store, "spare:bad"), _state_json(store, "spare:used")
     # отбраковка «по ошибке неизвестного типа» не вечная: через SPARE_RETRY_HOURS файл пробуют снова
@@ -2731,7 +2732,28 @@ async def mark_spare_dead(store, service, acc_name: str, kind: str, session_path
     return [str(i.get("name")) for _d, i, _da, _dk in marked]
 
 
-def _reconcile_spare_files(store, ss, listing: dict[str, str], fetch, max_downloads: int = 8) -> None:
+PINNED_NAME_RE = re.compile(r"^(\d{5,})[_.\-]")
+
+
+def pinned_session_files(store, accounts, listing: dict[str, str]) -> dict[str, str]:
+    """Файлы Диска, названные по Telegram-id рабочего аккаунта («8125160821_pyrogram.session»): закреплены за ним.
+
+    Это не запасные: их не пробуют, не отбраковывают и не предлагают удалить. Возвращает {имя файла: аккаунт}."""
+    ids: dict[str, str] = {}
+    for acc in accounts:
+        me_id = _state_json(store, f"account:{acc.name}:me").get("id")
+        if me_id:
+            ids[str(me_id)] = acc.name
+    out: dict[str, str] = {}
+    for name in listing:
+        match = PINNED_NAME_RE.match(name) if name.lower().endswith(".session") else None
+        if match and match.group(1) in ids:
+            out[name] = ids[match.group(1)]
+    return out
+
+
+def _reconcile_spare_files(store, ss, listing: dict[str, str], fetch, max_downloads: int = 8,
+                           skip: set[str] | None = None) -> None:
     """Записи о запасных (spare:used/bad) без id файла: найти файл по имени и сверить отпечаток.
 
     Тот же отпечаток — запоминаем id; другой — под этим именем уже лежит новый файл, старый удалён (gone).
@@ -2743,8 +2765,8 @@ def _reconcile_spare_files(store, ss, listing: dict[str, str], fetch, max_downlo
             if not isinstance(rec, dict) or rec.get("fid") or rec.get("gone"):
                 continue
             name = rec.get("name")
-            if name not in listing:
-                continue                          # файла нет вовсе — бот скроет по имени
+            if name not in listing or name in (skip or ()):
+                continue                          # файла нет вовсе — бот скроет по имени; закреплённые не трогаем
             if name not in cache:
                 if downloads >= max_downloads:
                     continue
@@ -2780,12 +2802,15 @@ async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, 
         listing = ss.list_folder(ss.folder_id(folder), os.environ.get("GOOGLE_API_KEY", ""), fetcher=fetcher or ss.fetch)
         mapping = {a.name: session_base(a.session) for a in accounts}
         claimed = ss.claimed_names(listing, mapping, ss.file_names_from_env(dict(os.environ)))
+        pinned = pinned_session_files(store, accounts, listing)
+        claimed |= set(pinned)
         result["free"] = [name for name, _id in ss.spare_candidates(listing, claimed)]
         result["claimed"] = sorted(claimed)
+        result["pinned"] = pinned
         if listing:         # пустой ответ — это и «папка пуста», и «доступ закрыт»: по нему ничего не скрываем
             result["names"] = sorted(listing)
             result["ids"] = sorted(listing.values())
-            _reconcile_spare_files(store, ss, listing, fetcher or ss.fetch)
+            _reconcile_spare_files(store, ss, listing, fetcher or ss.fetch, skip=set(pinned))
     except Exception as exc:  # noqa: BLE001
         result["error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
     _state_put(store, "spare:scan", result)
