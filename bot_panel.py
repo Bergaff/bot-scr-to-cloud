@@ -1239,6 +1239,9 @@ class BotPanel:
                   + len([v for v in bad.values() if isinstance(v, dict) and not on_drive(v) and v.get("name") not in pinned]))
         dead = [v for v in dead if on_drive(v)]
         bad = {k: v for k, v in bad.items() if not isinstance(v, dict) or on_drive(v)}
+        # «снят вручную»: в аккаунте теперь другой файл (твой); сам запасной мог остаться живым
+        taken_off = [v for v in dead if str(v.get("died_kind") or "").startswith("файл аккаунта заменён вручную")]
+        dead = [v for v in dead if v not in taken_off]
         need = len(dead) + len(bad)
         if need:
             lines.append(f"♻️ Надо убрать с Диска и заменить новыми: {need} (отработали {len(dead)}, не подошли {len(bad)})")
@@ -1254,6 +1257,11 @@ class BotPanel:
                 lines.append(f"  • {v.get('name')} · был на «{v.get('account')}» · {v.get('tg_name') or '?'} "
                              f"(id {v.get('tg_id')}) · проработал {lived_text} · снят {when} "
                              f"({'заменён следующим запасным' if v.get('died_kind') == 'replaced' else (v.get('died_kind') or '?')})")
+        if taken_off:
+            lines += ["", "↩️ Сняты с аккаунта: ты положил на его место свой файл. Сам запасной мог остаться живым — "
+                          "радар в ближайшие полчаса вернёт его в свободные и проверит; удалять пока не нужно:"]
+            lines += [f"  • {v.get('name')} · был на «{v.get('account')}» · {v.get('tg_name') or '?'} (id {v.get('tg_id')})"
+                      for v in taken_off]
         if alive:
             lines += ["", "✅ Работают сейчас (пока не трогать):"]
             lines += [f"  • {v.get('name')} → «{v.get('account')}» · {v.get('tg_name') or '?'} (id {v.get('tg_id')}) · "

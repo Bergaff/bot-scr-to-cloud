@@ -3125,6 +3125,28 @@ async def main() -> None:
         checks.append(("аккаунт без файла сессии (новый): берёт свободный запасной; в боте — «не было файла сессии», а не «вышел»",
                        got_new and (spare_dir / "third_session.session").exists()
                        and any("не было файла сессии" in t for t in msgN) and not any("вышел —" in t for t in msgN), str(msgN)[:160]))
+        # --- запасной, снятый с аккаунта вручную, возвращается в свободные; «Сняты с аккаунта» — отдельно от «Отработали» ---
+        accs_r = [SimpleNamespace(name="second", session="second_session", proxy=None),
+                  SimpleNamespace(name="third", session="third_session", proxy=None),
+                  SimpleNamespace(name="main", session="monitor_session", proxy=None)]
+        st_r = HitStore(":memory:")
+        st_r.bot_state_set("spare:used", json.dumps({
+            "r1": {"name": "NZ.session", "account": "second", "at": _stamp(1), "tg_id": 7793875460, "tg_name": "Olivia"},
+            "r2": {"name": "NZ30.session", "account": "third", "at": (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat(timespec="seconds"),
+                   "tg_id": 8778820788, "tg_name": "X"},
+            "r3": {"name": "alive.session", "account": "main", "at": _stamp(1), "tg_id": 42, "tg_name": "Y"}}))
+        st_r.bot_state_set("account:second:me", json.dumps({"id": 7182427256}))      # другой файл
+        st_r.bot_state_set("account:third:me", json.dumps({"id": 8881822380}))       # другой, но запасной поставлен 3 мин назад
+        st_r.bot_state_set("account:main:me", json.dumps({"id": 42}))                # тот же
+        panel_before = _BP2(st_r, transport=object(), accounts=[_AV2(name="main", max_per_day=1)]).dispatch("/spares").text
+        freed_r = monitor_module.release_replaced_spares(st_r, accs_r)
+        used_r = json.loads(st_r.bot_state_get("spare:used"))
+        checks.append(("запасной снят вручную (другой Telegram-id в аккаунте) — снова свободен; свежий и работающий не трогаются",
+                       freed_r == ["NZ.session"] and sorted(used_r) == ["r2", "r3"], str(freed_r)))
+        sec_taken = panel_before.split("Сняты с аккаунта")[1] if "Сняты с аккаунта" in panel_before else ""
+        checks.append(("/spares: снятые вручную — отдельный раздел, не «Отработали», и в «надо заменить» не считаются",
+                       "NZ.session" in sec_taken and "Отработали" not in panel_before.split("Сняты с аккаунта")[0]
+                       and "Надо убрать" not in panel_before, panel_before[:260]))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска

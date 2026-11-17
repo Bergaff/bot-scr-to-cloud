@@ -2755,6 +2755,38 @@ def pinned_session_files(store, accounts, listing: dict[str, str]) -> dict[str, 
     return out
 
 
+def release_replaced_spares(store, accounts, min_age_minutes: float = 15.0) -> list[str]:
+    """Запасной снят с аккаунта (в аккаунте другой Telegram-id: файл заменили вручную) — он не обязательно мёртв.
+
+    Такую запись убираем из «поставленных»: файл снова годится в запасные, и радар сам проверит, жив ли он
+    (если нет — он попадёт в «не подошли»). Только последний запасной аккаунта; свежие записи не трогаем
+    (id аккаунта мог ещё не обновиться после установки)."""
+    used = _state_json(store, "spare:used")
+    now_dt = datetime.now(timezone.utc)
+    freed: list[str] = []
+    for acc in accounts:
+        mine = sorted(((d, i) for d, i in used.items() if isinstance(i, dict) and i.get("account") == acc.name),
+                      key=lambda x: str(x[1].get("at") or ""))
+        if not mine:
+            continue
+        digest, item = mine[-1]
+        me_id = _state_json(store, f"account:{acc.name}:me").get("id")
+        if item.get("died_at") or not me_id or not item.get("tg_id") or int(me_id) == int(item["tg_id"]):
+            continue
+        try:
+            age = (now_dt - datetime.fromisoformat(item.get("at") or "")).total_seconds() / 60
+        except (TypeError, ValueError):
+            age = min_age_minutes + 1
+        if age < min_age_minutes:
+            continue
+        used.pop(digest)
+        freed.append(str(item.get("name")))
+    if freed:
+        _state_put(store, "spare:used", used)
+        print(f"[i] запасные сняты с аккаунтов вручную и снова свободны: {', '.join(freed)}", file=sys.stderr)
+    return freed
+
+
 def _reconcile_spare_files(store, ss, listing: dict[str, str], fetch, max_downloads: int = 8,
                            skip: set[str] | None = None) -> None:
     """Записи о запасных (spare:used/bad) без id файла: найти файл по имени и сверить отпечаток.
@@ -2801,6 +2833,7 @@ async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, 
         pass
     result = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "free": [], "error": ""}
     try:
+        release_replaced_spares(store, accounts)
         ss = _drive_session_sync()
         listing = ss.list_folder(ss.folder_id(folder), os.environ.get("GOOGLE_API_KEY", ""), fetcher=fetcher or ss.fetch)
         mapping = {a.name: session_base(a.session) for a in accounts}
