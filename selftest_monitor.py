@@ -3005,6 +3005,35 @@ async def main() -> None:
         checks.append(("запасной не виним, если файл аккаунта уже заменён, и если файла просто нет",
                        not_blamed == [] and no_file == [] and not sv1.sent
                        and not any(v.get("died_at") for v in json.loads(st1.bot_state_get("spare:used")).values()), ""))
+        # --- три запасных подряд на одном аккаунте (как у third): работает только последний, прежние заменены ---
+        from core_telegram import classify_spares as _classify
+        t0 = datetime.now(timezone.utc) - timedelta(hours=33)
+        def _stamp(h):
+            return (t0 + timedelta(hours=h)).isoformat(timespec="seconds")
+        chain = {"d1": {"name": "NZ.session", "account": "third", "at": _stamp(0), "tg_id": 1, "tg_name": "A"},
+                 "d2": {"name": "NZ2.session", "account": "third", "at": _stamp(21), "tg_id": 2, "tg_name": "B"},
+                 "d3": {"name": "NZ10.session", "account": "third", "at": _stamp(22), "tg_id": 3, "tg_name": "C"}}
+        login_dead = {"third": {"ok": False, "kind": "AuthKeyUnregisteredError", "since": _stamp(32)}}
+        dead_c, alive_c = _classify(chain, login_dead)
+        _d_ok, alive_ok = _classify(chain, {"third": {"ok": True, "since": _stamp(22)}})
+        checks.append(("классификация: аккаунт не входит -> все три запасных отработали, «работают сейчас» пусто; "
+                       "аккаунт входит -> работает только последний",
+                       len(dead_c) == 3 and not alive_c and [v["name"] for v in alive_ok] == ["NZ10.session"],
+                       str([(v["name"], v.get("died_kind")) for v in dead_c])))
+        st_chain, sv_chain = HitStore(":memory:"), _Svc()
+        st_chain.bot_state_set("spare:used", json.dumps(chain))
+        st_chain.bot_state_set("account:third:login", json.dumps(login_dead["third"]))
+        sp_chain = _BP2(st_chain, transport=object(), accounts=[_AV2(name="main", max_per_day=1)]).dispatch("/spares").text
+        checks.append(("/spares при умершем аккаунте не пишет «работают сейчас» про его запасных (нет противоречия)",
+                       "Работают сейчас" not in sp_chain and "Отработали" in sp_chain
+                       and sp_chain.count("NZ") == 3 and "заменён следующим запасным" in sp_chain, sp_chain[:220]))
+        worn3 = await monitor_module.mark_spare_dead(st_chain, sv_chain, "third", "AuthKeyUnregisteredError")
+        used_c = json.loads(st_chain.bot_state_get("spare:used"))
+        msgs_c = [t for _k, t in sv_chain.sent if "🪦" in t]
+        checks.append(("три запасных на одном аккаунте: помечены все, одно сообщение; срок прежнего — до замены, а не до сегодняшнего дня",
+                       sorted(worn3) == ["NZ.session", "NZ10.session", "NZ2.session"] and len(msgs_c) == 1
+                       and used_c["d1"]["died_at"] == chain["d2"]["at"] and "21 ч" in msgs_c[0] and "«NZ10.session» отработал" in msgs_c[0]
+                       and "проработал 11 ч" in msgs_c[0], msgs_c[0][:260] if msgs_c else "нет сообщений"))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска

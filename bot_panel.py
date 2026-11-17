@@ -37,7 +37,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core_telegram import BOT_TOKEN_HINT, format_auth, format_sessions_summary, reading_stalled, sessions_summary
+from core_telegram import (BOT_TOKEN_HINT, classify_spares, format_auth, format_sessions_summary,
+                           reading_stalled, sessions_summary)
 import metrics as metrics_module
 import release as release_module
 
@@ -1201,8 +1202,9 @@ class BotPanel:
                          + (f" — {', '.join(free[:10])}" if free else ""))
             if scan.get("error"):
                 lines.append(f"  ⚠️ папка не открылась: {scan['error']}")
-        dead = [v for v in used.values() if isinstance(v, dict) and v.get("died_at")]
-        alive = [v for v in used.values() if isinstance(v, dict) and not v.get("died_at")]
+        logins = {str(v.get("account")): self._state_json(f"account:{v.get('account')}:login")
+                  for v in used.values() if isinstance(v, dict)}
+        dead, alive = classify_spares(used, logins)
         need = len(dead) + len(bad)
         if need:
             lines.append(f"♻️ Надо убрать с Диска и заменить новыми: {need} (отработали {len(dead)}, не подошли {len(bad)})")
@@ -1216,7 +1218,7 @@ class BotPanel:
                     lived_text = "?"
                 lines.append(f"  • {v.get('name')} · был на «{v.get('account')}» · {v.get('tg_name') or '?'} "
                              f"(id {v.get('tg_id')}) · проработал {lived_text} · вышел {local_stamp(v.get('died_at'))} "
-                             f"({v.get('died_kind') or '?'})")
+                             f"({'заменён следующим запасным' if v.get('died_kind') == 'replaced' else (v.get('died_kind') or '?')})")
         if alive:
             lines += ["", "✅ Работают сейчас (пока не трогать):"]
             lines += [f"  • {v.get('name')} → «{v.get('account')}» · {v.get('tg_name') or '?'} (id {v.get('tg_id')}) · "

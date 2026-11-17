@@ -344,6 +344,40 @@ async def join_snapshot(client, info: dict, paced: Paced) -> dict:
     return snap
 
 
+def classify_spares(used: dict, logins: dict) -> tuple[list[dict], list[dict]]:
+    """Запасные, уже поставленные на аккаунты: (отработали, работают сейчас).
+
+    used — состояние spare:used, logins — {аккаунт: состояние account:<имя>:login}. На аккаунте в каждый
+    момент стоит только последний по времени запасной: прежние уже заменены новыми, значит, отработали.
+    Последний тоже отработал, если аккаунт после его установки не входит (метка died_at ставит проход,
+    а здесь то же видно сразу, по состоянию входа, — чтобы список не противоречил сообщениям бота)."""
+    by_account: dict[str, list[dict]] = {}
+    for item in (used or {}).values():
+        if isinstance(item, dict):
+            by_account.setdefault(str(item.get("account")), []).append(item)
+    dead, alive = [], []
+    for account, items in by_account.items():
+        items.sort(key=lambda x: str(x.get("at") or ""))
+        login = (logins or {}).get(account) or {}
+        for index, item in enumerate(items):
+            row = dict(item)
+            if item.get("died_at"):
+                dead.append(row)
+            elif index < len(items) - 1:
+                row["died_at"] = items[index + 1].get("at")
+                row["died_kind"] = "заменён следующим запасным"
+                dead.append(row)
+            elif login.get("ok") is False and str(login.get("since") or "") > str(item.get("at") or ""):
+                row["died_at"] = login.get("since")
+                row["died_kind"] = login.get("kind") or "не входит"
+                dead.append(row)
+            else:
+                alive.append(row)
+    dead.sort(key=lambda x: str(x.get("died_at") or ""))
+    alive.sort(key=lambda x: str(x.get("at") or ""))
+    return dead, alive
+
+
 def format_join_snapshot(account: str, label: str, info: dict, snap: dict) -> str:
     """Текст «снимка» для бота (HTML: parse_mode у служебных сообщений HTML)."""
     from html import escape

@@ -2665,40 +2665,56 @@ SPARE_NOT_WORN_OUT = {"SessionFileMissing", "SessionFileEmpty"}      # нет ф
 async def mark_spare_dead(store, service, acc_name: str, kind: str, session_path: str | None = None) -> list[str]:
     """Аккаунт снова вышел: запасной, который стоял на его месте, отработал — пометить и сказать в бот.
 
-    Возвращает имена файлов-запасных, помеченных отработанными. Метка ставится один раз; если файл сессии
-    уже заменён другим (ключ не тот, что поставил радар), запасной не обвиняем."""
+    Возвращает имена файлов-запасных, помеченных отработавшими. Метка ставится один раз; если файл сессии
+    уже заменён другим (ключ не тот, что поставил радар), запасной не винится. На аккаунте работает только
+    последний поставленный запасной: прежние помечаются как заменённые, срок их работы — до замены."""
     if kind in SPARE_NOT_WORN_OUT:
         return []
     used = _state_json(store, "spare:used")
     current_key = session_file_info(session_path).get("key_id") if session_path else None
     now_dt = datetime.now(timezone.utc)
-    done: list[tuple[str, dict]] = []
-    for digest, item in used.items():
-        if not isinstance(item, dict) or item.get("account") != acc_name or item.get("died_at"):
-            continue
-        if item.get("key") and current_key and item["key"] != current_key:
-            continue
-        item["died_at"] = now_dt.isoformat(timespec="seconds")
-        item["died_kind"] = kind
-        done.append((digest, item))
-    if not done:
+    mine = sorted(((d, i) for d, i in used.items() if isinstance(i, dict) and i.get("account") == acc_name),
+                  key=lambda x: str(x[1].get("at") or ""))
+    open_items = [(d, i) for d, i in mine if not i.get("died_at")]
+    if not open_items:
         return []
+    last_digest, last_item = mine[-1]
+    if last_item.get("died_at"):                    # последний уже помечен — старые хвосты не трогаем
+        return []
+    if last_item.get("key") and current_key and last_item["key"] != current_key:
+        return []
+    marked: list[tuple[str, dict, str, str]] = []   # (digest, item, died_at, kind)
+    for index, (digest, item) in enumerate(mine):
+        if item.get("died_at"):
+            continue
+        if digest == last_digest:
+            died_at, died_kind = now_dt.isoformat(timespec="seconds"), kind
+        else:
+            died_at, died_kind = mine[index + 1][1].get("at") or now_dt.isoformat(timespec="seconds"), "replaced"
+        item["died_at"], item["died_kind"] = died_at, died_kind
+        marked.append((digest, item, died_at, died_kind))
     _state_put(store, "spare:used", used)
     bad = _state_json(store, "spare:bad")
     scan = _state_json(store, "spare:scan")
-    taken = {v.get("name") for v in used.values() if isinstance(v, dict)} | {v.get("name") for v in bad.values() if isinstance(v, dict)}
+    taken = ({v.get("name") for v in used.values() if isinstance(v, dict)}
+             | {v.get("name") for v in bad.values() if isinstance(v, dict)})
     free = [n for n in scan.get("free", []) if n not in taken]
-    for digest, item in done:
+
+    def lived_text(item, died_at) -> str:
         try:
-            lived = (now_dt - datetime.fromisoformat(item.get("at") or "")).total_seconds() / 3600
-            lived_text = f"проработал {lived:.0f} ч" if lived >= 1 else "проработал меньше часа"
+            hours = (datetime.fromisoformat(died_at) - datetime.fromisoformat(item.get("at") or "")).total_seconds() / 3600
+            return f"{hours:.0f} ч" if hours >= 1 else "меньше часа"
         except (TypeError, ValueError):
-            lived_text = "срок работы неизвестен"
-        await service.send(
-            f"🪦 Запасной «{item.get('name')}» отработал: аккаунт «{acc_name}» снова вышел ({kind}), {lived_text}. "
-            f"Удали этот файл с Диска и положи новый запасной. Свободных запасных до замены: {len(free)}. "
-            f"Весь список — /spares.", key=f"spare_dead:{digest}", force=True)
-    return [str(item.get("name")) for _d, item in done]
+            return "срок неизвестен"
+    older = [f"«{i.get('name')}» ({lived_text(i, da)})" for d, i, da, dk in marked if d != last_digest]
+    text = (f"🪦 Запасной «{last_item.get('name')}» отработал: аккаунт «{acc_name}» снова вышел ({kind}), "
+            f"проработал {lived_text(last_item, marked[-1][2])}. ")
+    if older:
+        text += f"Раньше на «{acc_name}» уже отработали и были заменены: {', '.join(older)}. "
+    text += (f"Удали эти файлы с Диска и положи новые запасные. Свободных запасных до замены: {len(free)}. "
+             f"Весь список — /spares.")
+    await service.send(text, key=f"spare_dead:{last_digest}", force=True)
+    return [str(i.get("name")) for _d, i, _da, _dk in marked]
 
 
 async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, every_minutes: float = 30.0) -> None:
