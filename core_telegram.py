@@ -344,13 +344,15 @@ async def join_snapshot(client, info: dict, paced: Paced) -> dict:
     return snap
 
 
-def classify_spares(used: dict, logins: dict) -> tuple[list[dict], list[dict]]:
+def classify_spares(used: dict, logins: dict, mes: dict | None = None) -> tuple[list[dict], list[dict]]:
     """Запасные, уже поставленные на аккаунты: (отработали, работают сейчас).
 
-    used — состояние spare:used, logins — {аккаунт: состояние account:<имя>:login}. На аккаунте в каждый
-    момент стоит только последний по времени запасной: прежние уже заменены новыми, значит, отработали.
-    Последний тоже отработал, если аккаунт после его установки не входит (метка died_at ставит проход,
-    а здесь то же видно сразу, по состоянию входа, — чтобы список не противоречил сообщениям бота)."""
+    used — состояние spare:used, logins — {аккаунт: account:<имя>:login}, mes — {аккаунт: account:<имя>:me}.
+    На аккаунте в каждый момент стоит только последний по времени запасной: прежние заменены новыми, значит,
+    отработали, и срок их работы — до замены. Последний тоже не «работает», если:
+      • аккаунт после его установки не входит (метку died_at ставит проход, а здесь то же видно сразу);
+      • в аккаунте теперь другой Telegram-id: файл аккаунта заменён вручную, запасной с него снят.
+    Метка died_at, поставленная проходом позже настоящей смерти, исправляется здесь же."""
     by_account: dict[str, list[dict]] = {}
     for item in (used or {}).values():
         if isinstance(item, dict):
@@ -359,17 +361,26 @@ def classify_spares(used: dict, logins: dict) -> tuple[list[dict], list[dict]]:
     for account, items in by_account.items():
         items.sort(key=lambda x: str(x.get("at") or ""))
         login = (logins or {}).get(account) or {}
+        me_id = ((mes or {}).get(account) or {}).get("id")
         for index, item in enumerate(items):
             row = dict(item)
-            if item.get("died_at"):
-                dead.append(row)
-            elif index < len(items) - 1:
+            if index < len(items) - 1:                       # его уже заменил следующий запасной
                 row["died_at"] = items[index + 1].get("at")
                 row["died_kind"] = "заменён следующим запасным"
                 dead.append(row)
-            elif login.get("ok") is False and str(login.get("since") or "") > str(item.get("at") or ""):
-                row["died_at"] = login.get("since")
-                row["died_kind"] = login.get("kind") or "не входит"
+                continue
+            failing_since = str(login.get("since") or "") if login.get("ok") is False else ""
+            if failing_since and failing_since > str(item.get("at") or ""):
+                recorded = str(item.get("died_at") or "")
+                if not recorded or failing_since < recorded:
+                    row["died_at"] = failing_since           # настоящее время выхода, а не момент, когда заметили
+                row["died_kind"] = item.get("died_kind") or login.get("kind") or "не входит"
+                dead.append(row)
+            elif item.get("died_at"):
+                dead.append(row)
+            elif me_id and item.get("tg_id") and int(me_id) != int(item["tg_id"]):
+                row["died_at"] = ""
+                row["died_kind"] = f"файл аккаунта заменён вручную, сейчас там id {me_id}"
                 dead.append(row)
             else:
                 alive.append(row)

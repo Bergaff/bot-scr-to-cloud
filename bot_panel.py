@@ -115,6 +115,22 @@ def local_time(value: str | datetime | None) -> str:
     return stamp.astimezone().strftime("%H:%M")
 
 
+def local_when(value: str | datetime | None) -> str:
+    """Сегодня — «21:12», раньше — «16.11 21:12» (последняя ошибка может быть недельной давности)."""
+    stamp = value
+    if isinstance(stamp, str):
+        try:
+            stamp = datetime.fromisoformat(stamp)
+        except ValueError:
+            return ""
+    if not isinstance(stamp, datetime):
+        return ""
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    local = stamp.astimezone()
+    return local.strftime("%H:%M") if local.date() == datetime.now().astimezone().date() else local.strftime("%d.%m %H:%M")
+
+
 def local_stamp(value: str | datetime | None) -> str:
     """UTC ISO-строка -> «04.10 12:10» местного времени (когда важна дата, а не только время)."""
     stamp = value
@@ -1100,10 +1116,10 @@ class BotPanel:
         if last.get("ts"):
             kind = str(last.get("kind") or "?")
             if "FloodWait" in kind and flood_note:
-                pieces.append(f"последняя ошибка {local_time(last['ts'])} · {flood_note}")
+                pieces.append(f"последняя ошибка {local_when(last['ts'])} · {flood_note}")
                 flood_note = ""                 # уже показали — второй раз не повторяем
             else:
-                piece = f"последняя ошибка {local_time(last['ts'])} · {kind}"
+                piece = f"последняя ошибка {local_when(last['ts'])} · {kind}"
                 text = str(last.get("text") or "").strip()
                 if text:
                     piece += f": {text[:60]}"
@@ -1204,7 +1220,8 @@ class BotPanel:
                 lines.append(f"  ⚠️ папка не открылась: {scan['error']}")
         logins = {str(v.get("account")): self._state_json(f"account:{v.get('account')}:login")
                   for v in used.values() if isinstance(v, dict)}
-        dead, alive = classify_spares(used, logins)
+        mes = {a: self._state_json(f"account:{a}:me") for a in logins}
+        dead, alive = classify_spares(used, logins, mes)
         need = len(dead) + len(bad)
         if need:
             lines.append(f"♻️ Надо убрать с Диска и заменить новыми: {need} (отработали {len(dead)}, не подошли {len(bad)})")
@@ -1216,8 +1233,9 @@ class BotPanel:
                     lived_text = f"{lived:.0f} ч" if lived >= 1 else "< 1 ч"
                 except (KeyError, TypeError, ValueError):
                     lived_text = "?"
+                when = local_stamp(v.get("died_at")) or "время неизвестно"
                 lines.append(f"  • {v.get('name')} · был на «{v.get('account')}» · {v.get('tg_name') or '?'} "
-                             f"(id {v.get('tg_id')}) · проработал {lived_text} · вышел {local_stamp(v.get('died_at'))} "
+                             f"(id {v.get('tg_id')}) · проработал {lived_text} · снят {when} "
                              f"({'заменён следующим запасным' if v.get('died_kind') == 'replaced' else (v.get('died_kind') or '?')})")
         if alive:
             lines += ["", "✅ Работают сейчас (пока не трогать):"]

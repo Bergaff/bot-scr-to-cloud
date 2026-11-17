@@ -2688,7 +2688,11 @@ async def mark_spare_dead(store, service, acc_name: str, kind: str, session_path
         if item.get("died_at"):
             continue
         if digest == last_digest:
-            died_at, died_kind = now_dt.isoformat(timespec="seconds"), kind
+            login = _state_json(store, f"account:{acc_name}:login")
+            since = str(login.get("since") or "") if login.get("ok") is False else ""
+            # аккаунт уже не входил в прошлых проходах — запасной умер тогда, а не когда мы это заметили
+            died_at = since if since and since > str(item.get("at") or "") else now_dt.isoformat(timespec="seconds")
+            died_kind = kind
         else:
             died_at, died_kind = mine[index + 1][1].get("at") or now_dt.isoformat(timespec="seconds"), "replaced"
         item["died_at"], item["died_kind"] = died_at, died_kind

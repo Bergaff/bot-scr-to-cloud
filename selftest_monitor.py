@@ -3033,7 +3033,28 @@ async def main() -> None:
         checks.append(("три запасных на одном аккаунте: помечены все, одно сообщение; срок прежнего — до замены, а не до сегодняшнего дня",
                        sorted(worn3) == ["NZ.session", "NZ10.session", "NZ2.session"] and len(msgs_c) == 1
                        and used_c["d1"]["died_at"] == chain["d2"]["at"] and "21 ч" in msgs_c[0] and "«NZ10.session» отработал" in msgs_c[0]
-                       and "проработал 11 ч" in msgs_c[0], msgs_c[0][:260] if msgs_c else "нет сообщений"))
+                       and "проработал 10 ч" in msgs_c[0], msgs_c[0][:260] if msgs_c else "нет сообщений"))
+        # --- файл аккаунта заменён вручную: запасной с него снят, хотя вход успешен (другой Telegram-id) ---
+        manual = {"m1": {"name": "NZ.session", "account": "second", "at": _stamp(0), "tg_id": 7793875460, "tg_name": "Olivia"}}
+        d_m, a_m = _classify(manual, {"second": {"ok": True, "since": _stamp(1)}}, {"second": {"id": 7182427256}})
+        d_m2, a_m2 = _classify(manual, {"second": {"ok": True, "since": _stamp(1)}}, {"second": {"id": 7793875460}})
+        checks.append(("в аккаунте другой Telegram-id, чем у запасного -> запасной снят («заменён вручную»); тот же id -> работает",
+                       len(d_m) == 1 and not a_m and "заменён вручную" in d_m[0]["died_kind"] and len(a_m2) == 1 and not d_m2,
+                       str(d_m)[:120]))
+        # метка, поставленная проходом с опозданием (died_at = «когда заметили»), исправляется по настоящему времени
+        late = {k: dict(v) for k, v in chain.items()}
+        for v in late.values():
+            v["died_at"] = _stamp(33)
+        d_l, _a_l = _classify(late, login_dead)
+        by_name = {v["name"]: v for v in d_l}
+        checks.append(("опоздавшая метка исправляется: прежний запасной — до замены, последний — с момента, когда аккаунт перестал входить",
+                       by_name["NZ.session"]["died_at"] == chain["d2"]["at"] and by_name["NZ2.session"]["died_at"] == chain["d3"]["at"]
+                       and by_name["NZ10.session"]["died_at"] == login_dead["third"]["since"], str({k: v["died_at"] for k, v in by_name.items()})[:200]))
+        from bot_panel import local_when as _lw
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds")
+        new_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        checks.append(("время последней ошибки: сегодняшняя — «ЧЧ:ММ», старше — с датой (чтобы вчерашнюю не принять за будущее время)",
+                       len(_lw(new_ts)) == 5 and len(_lw(old_ts)) == 11, f"{_lw(new_ts)} | {_lw(old_ts)}"))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска
