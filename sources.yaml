@@ -56,6 +56,11 @@ accounts:
     forward:
       to: "@parcel_transfer_bot"
       max_per_day: 180            # как у main/second; три аккаунта по ~120 в сутки вместо двух по 180
+  fourth:
+    session: fourth_session       # fourth_session.session на Диске; пока файла нет, радар сам возьмёт свободный запасной с Диска
+    forward:
+      to: "@parcel_transfer_bot"
+      max_per_day: 180            # как у остальных; чаты поделены с third пополам (выбор потом по цифрам: /sources, сводка прохода)
 
 # Пересылка найденных сообщений (именно forward, не копия) твоим аккаунтом.
 # Получатель — твой бот @parcel_transfer_bot: открой с этого же аккаунта чат с ботом
@@ -609,175 +614,175 @@ sources:
 
   - target: "@poland_vchate"
     title: "Польша (в чате)"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@warshawa_vchate"
     title: "Варшава"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@bydgosz_torun"
     title: "Торунь / Быдгощ"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@lodz_vchate"
     title: "Лодзь"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@poznan_nashi"
     title: "Познань"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@katowice_chatik"
     title: "Катовице"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@ruda_slask"
     title: "Руда-Слёнска"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@opole_ua"
     title: "Ополе"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@zelena_gora_nashi"
     title: "Зелёна-Гура"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@gdansk_sopot"
     title: "Труймясто (Гданьск, Сопот)"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@krakow_nash"
     title: "Краков"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@lublin_nashi"
     title: "Люблин"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@wroclaw_vchate"
     title: "Вроцлав"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@rzeshuw_ua"
     title: "Жешув"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@olshtyn_nashi"
     title: "Ольштын"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@gorzow_welkopol"
     title: "Гожув-Велькопольски"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@szezcin"
     title: "Щецин"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@uainpoll"
     title: "Работа в Польше"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@auto_bazar_poland"
     title: "Авто-базар Польши"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@uslugi_reklama_polska"
     title: "Услуги / реклама, Польша"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@norway_oslo_chat"
     title: "Норвегия (Осло)"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@germany_berlin_vchate"
     title: "Германия (Берлин)"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@turkey_stambul_antalia"
     title: "Турция (Стамбул, Анталья)"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@praga_rabota_fushki"
     title: "Чехия (Прага)"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20
 
   - target: "@kanada_ottawa_chat"
     title: "Канада (Оттава)"
-    account: third
+    account: fourth
     profile: chat
     min_score: 5
     catchup: 20

@@ -3116,6 +3116,15 @@ async def main() -> None:
                        g_scan.get("pinned") == {"1115550_pyrogram.session": "main"} and "1115550_pyrogram.session" not in g_scan["free"]
                        and not pin_downloads and "1115550_pyrogram.session" in pin_part and "→ «main»" in pin_part
                        and "1115550_pyrogram.session" not in bad_part2 and "скрыто 3" in g_text2, g_text2[:300]))
+        # --- новый аккаунт без файла сессии (как fourth): ему достаётся свободный запасной ---
+        stN, accsN, fetchN, svN = _two_run({"spE.session": (_tele_bytes(b"e" * 256), 501)})
+        (spare_dir / "third_session.session").unlink()
+        got_new = await monitor_module.adopt_spare_session(
+            stN, svN, accsN[2], accsN, for_args, 1, "h", fetcher=fetchN, client_factory=SpareClient, folder=folder)
+        msgN = [t for _k, t in svN.sent if "spare_used" in _k or "запас" in t]
+        checks.append(("аккаунт без файла сессии (новый): берёт свободный запасной; в боте — «не было файла сессии», а не «вышел»",
+                       got_new and (spare_dir / "third_session.session").exists()
+                       and any("не было файла сессии" in t for t in msgN) and not any("вышел —" in t for t in msgN), str(msgN)[:160]))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска

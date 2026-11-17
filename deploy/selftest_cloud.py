@@ -676,9 +676,10 @@ async def main() -> None:
 
     # два аккаунта читают разные чаты: это видно прямо в конфиге
     config_raw = repo_text("sources.yaml")
-    checks.append(("в sources.yaml аккаунты: monitor_session, second_account (файл на Диске) и third_session",
+    checks.append(("в sources.yaml аккаунты: monitor_session, second_account (файл на Диске), third_session и fourth_session",
                    "session: monitor_session" in config_raw
-                   and "session: second_account" in config_raw and "session: third_session" in config_raw, ""))
+                   and "session: second_account" in config_raw and "session: third_session" in config_raw
+                   and "session: fourth_session" in config_raw, ""))
 
 
     # схема B читает сообщения ТОЛЬКО в catch-up: «--catchup 0» перекрывает catchup у каждого

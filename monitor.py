@@ -2569,6 +2569,7 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
     other_ids, other_keys = _spare_context(store, accounts, acc.name)
     dead_path = f"{acc.session}.session"
     dead_key = session_file_info(dead_path).get("key_id")
+    was_missing = not Path(dead_path).exists()          # новому аккаунту файла не было вовсе
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     tried, skipped = 0, 0
     fids: dict[str, str] = {}                 # отпечаток -> id файла на Диске (бот скрывает записи об удалённых файлах)
@@ -2650,8 +2651,10 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
         left = max(0, len(candidates) - len(used) - len(bad))
         username = getattr(me, "username", None)
         await service.send(
-            f"🔄 Аккаунт «{acc.name}» вышел — подобран запасной аккаунт с Диска: файл «{name}» → "
-            f"{display_name(me)}" + (f" @{username}" if username else "") + f" (id {me.id}). "
+            (f"🆕 Аккаунту «{acc.name}» не было файла сессии — поставлен свободный запасной аккаунт с Диска: файл «{name}» → "
+             if was_missing else
+             f"🔄 Аккаунт «{acc.name}» вышел — подобран запасной аккаунт с Диска: файл «{name}» → ")
+            + f"{display_name(me)}" + (f" @{username}" if username else "") + f" (id {me.id}). "
             f"Он не состоит в прежних чатах «{acc.name}»: публичные чаты радар читает сразу и вступает в них "
             f"сам (не больше 3 за проход), в приватные нужны заявки/приглашения. Запасных на Диске осталось: {left}.",
             key=f"spare_used:{acc.name}:{digest}", force=True)
@@ -3989,13 +3992,15 @@ async def async_main(args) -> None:
         client = make_client(acc.session, api_id, api_hash, delay=args.delay,
                              proxy=acc.proxy or args.proxy)
         try:
-            if args.once and not Path(f"{acc.session}.session").exists():
-                # В облаке ввести телефон и код негде: без файла сессии Telethon завис бы на вопросе.
-                CONNECT_FAILURES[acc.name] = ("SessionFileMissing",
-                                              f"нет файла сессии {acc.session}.session (ни в R2, ни на Диске)")
-                print(f"[!] Аккаунт «{acc.name}»: нет файла {acc.session}.session — пропускаю", file=sys.stderr)
-                sys.exit(1)
             try:
+                if args.once and not Path(f"{acc.session}.session").exists():
+                    # В облаке ввести телефон и код негде: без файла сессии Telethon завис бы на вопросе.
+                    # Нового аккаунта без файла это тоже касается: ниже ему подберут свободный запасной с Диска.
+                    CONNECT_FAILURES[acc.name] = ("SessionFileMissing",
+                                                  f"нет файла сессии {acc.session}.session (ни в R2, ни на Диске)")
+                    print(f"[!] Аккаунт «{acc.name}»: нет файла {acc.session}.session — ищу запасной, иначе пропускаю",
+                          file=sys.stderr)
+                    sys.exit(1)
                 await connect_client(client, acc, args)
             except SystemExit:
                 # Рабочий аккаунт умер: в облаке пробуем поставить на его место запасной с Диска и войти снова
