@@ -1201,12 +1201,28 @@ class BotPanel:
                          + (f" — {', '.join(free[:10])}" if free else ""))
             if scan.get("error"):
                 lines.append(f"  ⚠️ папка не открылась: {scan['error']}")
-        if used:
-            lines += ["", "Уже поставлены вместо умерших:"]
+        dead = [v for v in used.values() if isinstance(v, dict) and v.get("died_at")]
+        alive = [v for v in used.values() if isinstance(v, dict) and not v.get("died_at")]
+        need = len(dead) + len(bad)
+        if need:
+            lines.append(f"♻️ Надо убрать с Диска и заменить новыми: {need} (отработали {len(dead)}, не подошли {len(bad)})")
+        if dead:
+            lines += ["", "🪦 Отработали — после установки аккаунт снова вышел (файл удалить, положить новый):"]
+            for v in dead:
+                try:
+                    lived = (datetime.fromisoformat(v["died_at"]) - datetime.fromisoformat(v["at"])).total_seconds() / 3600
+                    lived_text = f"{lived:.0f} ч" if lived >= 1 else "< 1 ч"
+                except (KeyError, TypeError, ValueError):
+                    lived_text = "?"
+                lines.append(f"  • {v.get('name')} · был на «{v.get('account')}» · {v.get('tg_name') or '?'} "
+                             f"(id {v.get('tg_id')}) · проработал {lived_text} · вышел {local_stamp(v.get('died_at'))} "
+                             f"({v.get('died_kind') or '?'})")
+        if alive:
+            lines += ["", "✅ Работают сейчас (пока не трогать):"]
             lines += [f"  • {v.get('name')} → «{v.get('account')}» · {v.get('tg_name') or '?'} (id {v.get('tg_id')}) · "
-                      f"{local_stamp(v.get('at'))}" for v in used.values()]
+                      f"с {local_stamp(v.get('at'))}" for v in alive]
         if bad:
-            lines += ["", "Отбракованы (повторно не пробуются, пока файл не заменён):"]
+            lines += ["", "Не подошли — тоже можно удалить с Диска (повторно не пробуются, пока файл не заменён):"]
             lines += [f"  • {v.get('name')}: {v.get('why')}" for v in bad.values()]
         lines += ["", "Как добавить запасной: положи файл .session (Telethon или Pyrogram) в ту же папку Диска под любым "
                       "именем, не совпадающим с рабочими аккаунтами. Когда рабочий аккаунт выйдет, радар сам подберёт "

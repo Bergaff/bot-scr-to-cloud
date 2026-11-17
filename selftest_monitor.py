@@ -2895,7 +2895,7 @@ async def main() -> None:
         from bot_panel import AccountView as _AV, BotPanel as _BP
         spares_text = _BP(spare_store, transport=object(), accounts=[_AV(name="main", max_per_day=1)]).dispatch("/spares").text
         checks.append(("/spares: видно использованный запасной и отбракованные с причинами",
-                       "spareB_pyrogram.session" in spares_text and "Отбракованы" in spares_text, spares_text[:100]))
+                       "spareB_pyrogram.session" in spares_text and "Не подошли" in spares_text and "Работают сейчас" in spares_text, spares_text[:100]))
         # --- несколько запасных и два умерших аккаунта: один запасной не достаётся двум аккаунтам ---
         ss_mod = monitor_module._drive_session_sync()
         two_ids = {k: k * 20 for k in "EFGHTS"}
@@ -2977,6 +2977,34 @@ async def main() -> None:
         again3 = await _take_turns(st3, accs3, fetch3, sv3)
         checks.append(("запасной, уже поставленный на аккаунт, повторно никому не достаётся",
                        not any(again3.values()) and len(json.loads(st3.bot_state_get("spare:used"))) == 2, str(again3)))
+        # --- отработавшие запасные: аккаунт снова вышел -> файл помечен, в бот одно сообщение, /spares показывает ---
+        sv3.sent.clear()
+        sec_path = str(spare_dir / "second_session.session")
+        worn = await monitor_module.mark_spare_dead(st3, sv3, "second", "AuthKeyUnregisteredError", sec_path)
+        worn_again = await monitor_module.mark_spare_dead(st3, sv3, "second", "AuthKeyUnregisteredError", sec_path)
+        used_w = json.loads(st3.bot_state_get("spare:used"))
+        dead_names = sorted(v["name"] for v in used_w.values() if v.get("died_at"))
+        alive_names = sorted(v["name"] for v in used_w.values() if not v.get("died_at"))
+        msgs = [t for _k, t in sv3.sent if "🪦" in t]
+        checks.append(("запасной отработал: аккаунт вышел снова -> файл помечен, ровно одно сообщение с просьбой заменить",
+                       worn == ["spE.session"] and worn_again == [] and dead_names == ["spE.session"]
+                       and alive_names == ["spF.session"] and len(msgs) == 1 and "spE.session" in msgs[0]
+                       and "Удали" in msgs[0], str(msgs)[:140]))
+        from bot_panel import AccountView as _AV2, BotPanel as _BP2
+        sp_text = _BP2(st3, transport=object(), accounts=[_AV2(name="main", max_per_day=1)]).dispatch("/spares").text
+        checks.append(("/spares: «Отработали» с файлом и аккаунтом, «Работают сейчас» отдельно, итог «надо заменить»",
+                       "Отработали" in sp_text and "Работают сейчас" in sp_text and "Надо убрать с Диска" in sp_text
+                       and sp_text.index("spE.session") < sp_text.index("Работают сейчас") < sp_text.rindex("spF.session"),
+                       sp_text[:200]))
+        # файл сессии уже заменён пользователем (другой ключ) — запасной не винят; нет файла — тоже не «отработал»
+        (spare_dir / "second_session.session").write_bytes(_tele_bytes(b"z" * 256))
+        sv1.sent.clear()
+        not_blamed = await monitor_module.mark_spare_dead(st1, sv1, "second", "AuthKeyUnregisteredError",
+                                                          str(spare_dir / "second_session.session"))
+        no_file = await monitor_module.mark_spare_dead(st1, sv1, "second", "SessionFileMissing")
+        checks.append(("запасной не виним, если файл аккаунта уже заменён, и если файла просто нет",
+                       not_blamed == [] and no_file == [] and not sv1.sent
+                       and not any(v.get("died_at") for v in json.loads(st1.bot_state_get("spare:used")).values()), ""))
     finally:
         _os.chdir(cwd_before)
     # что бот знает про аккаунты: вход, Telegram-id, чаты, сессия с Диска

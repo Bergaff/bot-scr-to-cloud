@@ -2633,7 +2633,8 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
             continue
         ss._install(Path(dead_path), final)
         used[digest] = {"name": name, "account": acc.name, "at": now, "tg_id": getattr(me, "id", None),
-                        "tg_name": display_name(me), "format": info.get("format", "telethon")}
+                        "tg_name": display_name(me), "format": info.get("format", "telethon"),
+                        "key": session_file_info(dead_path).get("key_id")}
         _state_put(store, "spare:used", used)
         _state_put(store, "spare:bad", bad)
         left = max(0, len(candidates) - len(used) - len(bad))
@@ -2656,6 +2657,48 @@ async def adopt_spare_session(store, service, acc, accounts, args, api_id, api_h
         SPARE_NOTES[acc.name] = (f"запасные на Диске есть ({len(candidates)}), но годных нет: проверено в этот проход "
                                  f"{tried}, раньше отбракованы {skipped}; причины — в /spares")
     return False
+
+
+SPARE_NOT_WORN_OUT = {"SessionFileMissing", "SessionFileEmpty"}      # нет файла — это не «запасной отработал»
+
+
+async def mark_spare_dead(store, service, acc_name: str, kind: str, session_path: str | None = None) -> list[str]:
+    """Аккаунт снова вышел: запасной, который стоял на его месте, отработал — пометить и сказать в бот.
+
+    Возвращает имена файлов-запасных, помеченных отработанными. Метка ставится один раз; если файл сессии
+    уже заменён другим (ключ не тот, что поставил радар), запасной не обвиняем."""
+    if kind in SPARE_NOT_WORN_OUT:
+        return []
+    used = _state_json(store, "spare:used")
+    current_key = session_file_info(session_path).get("key_id") if session_path else None
+    now_dt = datetime.now(timezone.utc)
+    done: list[tuple[str, dict]] = []
+    for digest, item in used.items():
+        if not isinstance(item, dict) or item.get("account") != acc_name or item.get("died_at"):
+            continue
+        if item.get("key") and current_key and item["key"] != current_key:
+            continue
+        item["died_at"] = now_dt.isoformat(timespec="seconds")
+        item["died_kind"] = kind
+        done.append((digest, item))
+    if not done:
+        return []
+    _state_put(store, "spare:used", used)
+    bad = _state_json(store, "spare:bad")
+    scan = _state_json(store, "spare:scan")
+    taken = {v.get("name") for v in used.values() if isinstance(v, dict)} | {v.get("name") for v in bad.values() if isinstance(v, dict)}
+    free = [n for n in scan.get("free", []) if n not in taken]
+    for digest, item in done:
+        try:
+            lived = (now_dt - datetime.fromisoformat(item.get("at") or "")).total_seconds() / 3600
+            lived_text = f"проработал {lived:.0f} ч" if lived >= 1 else "проработал меньше часа"
+        except (TypeError, ValueError):
+            lived_text = "срок работы неизвестен"
+        await service.send(
+            f"🪦 Запасной «{item.get('name')}» отработал: аккаунт «{acc_name}» снова вышел ({kind}), {lived_text}. "
+            f"Удали этот файл с Диска и положи новый запасной. Свободных запасных до замены: {len(free)}. "
+            f"Весь список — /spares.", key=f"spare_dead:{digest}", force=True)
+    return [str(item.get("name")) for _d, item in done]
 
 
 async def scan_spares(store, accounts, fetcher=None, folder: str | None = None, every_minutes: float = 30.0) -> None:
@@ -3863,6 +3906,9 @@ async def async_main(args) -> None:
                 await connect_client(client, acc, args)
             except SystemExit:
                 # Рабочий аккаунт умер: в облаке пробуем поставить на его место запасной с Диска и войти снова
+                if args.once and not args.test_forward and CONNECT_FAILURES.get(acc.name, ("",))[0] in DEAD_SESSION_KINDS:
+                    await mark_spare_dead(store, service, acc.name, CONNECT_FAILURES[acc.name][0],
+                                          f"{acc.session}.session")
                 if not (args.once and not args.test_forward and not args.no_spare_sessions
                         and CONNECT_FAILURES.get(acc.name, ("",))[0] in DEAD_SESSION_KINDS
                         and await adopt_spare_session(store, service, acc, accounts, args, api_id, api_hash)):
