@@ -8,7 +8,7 @@
 | main | 20 | 1 |
 | second | 26 | 5 |
 | third | 27 | 0 |
-| fourth | 25 | 0 |
+| fourth | 28 | 0 |
 
 ## main — 20 чатов
 
@@ -98,34 +98,37 @@
 | 26 | Чехия | https://t.me/czech_granitsa | 5 |
 | 27 | Шри-Ланка (Унаватуна) | https://t.me/shri_lanka_Unavatuna | 5 |
 
-## fourth — 25 чатов
+## fourth — 28 чатов
 
 | # | чат | ссылка | порог |
 |---|---|---|---|
 | 1 | Авто-базар Польши | https://t.me/auto_bazar_poland | 5 |
-| 2 | Варшава | https://t.me/warshawa_vchate | 5 |
-| 3 | Вроцлав | https://t.me/wroclaw_vchate | 5 |
-| 4 | Германия (Берлин) | https://t.me/germany_berlin_vchate | 5 |
-| 5 | Гожув-Велькопольски | https://t.me/gorzow_welkopol | 5 |
-| 6 | Жешув | https://t.me/rzeshuw_ua | 5 |
-| 7 | Зелёна-Гура | https://t.me/zelena_gora_nashi | 5 |
-| 8 | Канада (Оттава) | https://t.me/kanada_ottawa_chat | 5 |
-| 9 | Катовице | https://t.me/katowice_chatik | 5 |
-| 10 | Краков | https://t.me/krakow_nash | 5 |
-| 11 | Лодзь | https://t.me/lodz_vchate | 5 |
-| 12 | Люблин | https://t.me/lublin_nashi | 5 |
-| 13 | Норвегия (Осло) | https://t.me/norway_oslo_chat | 5 |
-| 14 | Ольштын | https://t.me/olshtyn_nashi | 5 |
-| 15 | Ополе | https://t.me/opole_ua | 5 |
-| 16 | Познань | https://t.me/poznan_nashi | 5 |
-| 17 | Польша (в чате) | https://t.me/poland_vchate | 5 |
-| 18 | Работа в Польше | https://t.me/uainpoll | 5 |
-| 19 | Руда-Слёнска | https://t.me/ruda_slask | 5 |
-| 20 | Торунь / Быдгощ | https://t.me/bydgosz_torun | 5 |
-| 21 | Труймясто (Гданьск, Сопот) | https://t.me/gdansk_sopot | 5 |
-| 22 | Турция (Стамбул, Анталья) | https://t.me/turkey_stambul_antalia | 5 |
-| 23 | Услуги / реклама, Польша | https://t.me/uslugi_reklama_polska | 5 |
-| 24 | Чехия (Прага) | https://t.me/praga_rabota_fushki | 5 |
-| 25 | Щецин | https://t.me/szezcin | 5 |
+| 2 | Беларусь (форум, сеть 360) | https://t.me/forum_belarus | 5 |
+| 3 | Варшава | https://t.me/warshawa_vchate | 5 |
+| 4 | Вроцлав | https://t.me/wroclaw_vchate | 5 |
+| 5 | Германия (Берлин) | https://t.me/germany_berlin_vchate | 5 |
+| 6 | Гожув-Велькопольски | https://t.me/gorzow_welkopol | 5 |
+| 7 | Жешув | https://t.me/rzeshuw_ua | 5 |
+| 8 | Зелёна-Гура | https://t.me/zelena_gora_nashi | 5 |
+| 9 | Канада (Оттава) | https://t.me/kanada_ottawa_chat | 5 |
+| 10 | Катовице | https://t.me/katowice_chatik | 5 |
+| 11 | Краков | https://t.me/krakow_nash | 5 |
+| 12 | Литва (форум, сеть 360) | https://t.me/forum_lithuania | 5 |
+| 13 | Лодзь | https://t.me/lodz_vchate | 5 |
+| 14 | Люблин | https://t.me/lublin_nashi | 5 |
+| 15 | Норвегия (Осло) | https://t.me/norway_oslo_chat | 5 |
+| 16 | Ольштын | https://t.me/olshtyn_nashi | 5 |
+| 17 | Ополе | https://t.me/opole_ua | 5 |
+| 18 | Познань | https://t.me/poznan_nashi | 5 |
+| 19 | Польша (в чате) | https://t.me/poland_vchate | 5 |
+| 20 | Работа в Польше | https://t.me/uainpoll | 5 |
+| 21 | Руда-Слёнска | https://t.me/ruda_slask | 5 |
+| 22 | Торунь / Быдгощ | https://t.me/bydgosz_torun | 5 |
+| 23 | Труймясто (Гданьск, Сопот) | https://t.me/gdansk_sopot | 5 |
+| 24 | Турция (Стамбул, Анталья) | https://t.me/turkey_stambul_antalia | 5 |
+| 25 | Услуги / реклама, Польша | https://t.me/uslugi_reklama_polska | 5 |
+| 26 | Чехия (Прага) | https://t.me/praga_rabota_fushki | 5 |
+| 27 | Чехия (форум, сеть 360) | https://t.me/forum_czech_republic | 5 |
+| 28 | Щецин | https://t.me/szezcin | 5 |
 
 🔑 — приватная ссылка-приглашение: заходить только по ней, по имени чат не найдётся.

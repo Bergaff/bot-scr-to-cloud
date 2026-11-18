@@ -423,6 +423,27 @@ sources:
     min_score: 5
     catchup: 50
 
+  - target: "@forum_belarus"
+    title: "Беларусь (форум, сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@forum_lithuania"
+    title: "Литва (форум, сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@forum_czech_republic"
+    title: "Чехия (форум, сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
   - target: "@otvezut"
     title: "Отвезут (водители, попутчики, посылки)"
     account: third

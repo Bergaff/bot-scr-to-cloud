@@ -768,6 +768,18 @@ async def main() -> None:
                                             {"@batumi": ("error", "вступил недавно, но Telegram снова …")})
     checks.append(("цикл вступления: в бот уходит понятное предупреждение (без force: ключ гасит повторы)",
                    len(spoken) == 2 and "антибот" in spoken[0], str(spoken)[:80]))
+    # публичный чат, где аккаунт не участник: читается без вступления — тревоги нет; закрытый (без username) — как раньше
+    spoken.clear()
+    pub_chan = SimpleNamespace(username="vgruzii", title="Грузия", id=1, broadcast=True, megagroup=False)
+    priv_chan = SimpleNamespace(username=None, title="Закрытый", id=2, broadcast=False, megagroup=True)
+    await monitor_module.announce_join_failures(
+        SpyService(), PublicClient(), Paced(0), "third",
+        [Source(target="@vgruzii", title="Грузия"), Source(target="https://t.me/+AbC", title="Закрытый")],
+        {"@vgruzii": {"stage": "flap", "kind": "NotMemberAfterJoin", "detail": "не участник", "entity": pub_chan, "hash": ""},
+         "https://t.me/+AbC": {"stage": "flap", "kind": "NotMemberAfterJoin", "detail": "не участник", "entity": priv_chan, "hash": ""}})
+    joined_text = "\n".join(spoken)
+    checks.append(("публичный чат, где аккаунт не участник (читается без вступления): снимок и тревога не шлются; закрытый — шлётся",
+                   "vgruzii" not in joined_text and "Закрытый" in joined_text, joined_text[:120]))
     # «снимок» в бот, когда вступить не вышло: ответ Telegram, сведения о чате, последние сообщения с кнопками
     from core_telegram import take_join_failures
     take_join_failures("second")

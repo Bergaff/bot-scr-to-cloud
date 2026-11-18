@@ -2241,6 +2241,14 @@ async def announce_join_failures(service, client, paced, account_name: str, sour
     последние сообщения (там обычно видна капча). Раз в несколько часов на чат, не каждый проход.
     Если неудач сразу много (3 и больше) — одно сводное сообщение и подробный снимок первого чата:
     иначе пришлось бы читать полтора десятка одинаковых сообщений."""
+    # Публичный чат с username читается и без вступления: «не участник» тут не поломка чтения, а только
+    # невозможность писать от аккаунта. Тревогу не шлём (сбой чтения всё равно виден в /accounts: «не прочиталось»).
+    readable = {t for t, info in failures.items()
+                if info.get("kind") == "NotMemberAfterJoin" and getattr(info.get("entity"), "username", None)}
+    if readable:
+        print(f"[i] «{account_name}»: публичных чатов, где аккаунт не участник, но чтение идёт без вступления: "
+              f"{len(readable)} — без тревоги", file=sys.stderr)
+        failures = {t: info for t, info in failures.items() if t not in readable}
     titles = {src.target: (src.title or src.target) for src in sources}
     due_check = getattr(service, "_due", None)
     pending = {t: info for t, info in failures.items()
