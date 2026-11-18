@@ -2327,6 +2327,22 @@ async def main() -> None:
         tiny_note = "ждал, как и раньше"
     checks.append(("короткий FloodWait в бюджете ждём, как и раньше (обычный режим не сломан)",
                    tiny_note == "ждал, как и раньше", tiny_note))
+    checks.append(("сколько проспали по FloodWait и на каком вызове — запоминается (видно в /accounts)",
+                   5.9 < paced_slow.slept < 8 and paced_slow.flood_label == "tiny"
+                   and core_telegram.Paced(0.0).slept == 0.0, f"{paced_slow.slept:.1f} {paced_slow.flood_label}"))
+    checks.append(("«на связи, но не читает»: 1 сообщение при обычных 262 — тоже тревога; нормальное чтение и новый аккаунт без истории — нет",
+                   core_telegram.reading_stalled(1, 262, 12) and core_telegram.reading_stalled(0, 262, 12)
+                   and not core_telegram.reading_stalled(30, 262, 12) and not core_telegram.reading_stalled(0, 5, 12)
+                   and not core_telegram.reading_stalled(1, 262, 5), ""))
+    from bot_panel import BotPanel as _BPt
+    line_t = _BPt._read_line(object.__new__(_BPt), {"read_today": 1, "read_avg": 262, "stalled": True,
+                                                    "read_health": {"resolved": 27, "chats": 27, "left": 21, "failed": 6,
+                                                                    "kinds": {"ChannelPrivateError": 6},
+                                                                    "timing": {"setup_s": 250, "read_s": 40, "slept_s": 180,
+                                                                               "flood_label": "join(@x)"}}})
+    checks.append(("/accounts: куда ушёл проход — подготовка, чтение и сколько ждали FloodWait",
+                   "подготовка чатов 250 с, чтение 40 с" in line_t and "ждать 180 с (join(@x))" in line_t and "почти ничего" in line_t,
+                   line_t[:240]))
 
     text_left = monitor_module.ServiceNotify.pass_summary(
         now=datetime(2026, 9, 28, 12, 40, tzinfo=timezone.utc), seconds=540.0,

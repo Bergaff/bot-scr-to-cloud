@@ -70,6 +70,8 @@ class Paced:
         self.base, self.jitter, self._last = base_delay, jitter, 0.0
         self.calls = 0          # сколько раз сходили в Telegram: метрика расхода (ТЗ §15.1)
         self._parent = parent   # у «дочернего» тормоза вызовы считаются и в общем счётчике
+        self.slept = 0.0        # сколько секунд проспали по FloodWait в этом проходе (видно в /accounts)
+        self.flood_label = ""   # на каком вызове Telegram просил ждать в последний раз
 
     def clone(self) -> "Paced":
         """Свой тормоз для аккаунта: пауза нужна между вызовами ОДНОГО аккаунта (лимиты Telegram
@@ -133,6 +135,8 @@ async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
                     f"осталось {limit:.0f} с — чат пропущен, дойдёт в следующий проход")
             print(f"[flood] {label}: ждём {wait:.0f} с (Telegram просит {exc.seconds} с)", file=sys.stderr)
             notify_flood(label, exc.seconds, wait)     # бот-панель увидит ограничение (ТЗ §7.3)
+            paced.slept = getattr(paced, "slept", 0.0) + wait
+            paced.flood_label = label
             await asyncio.sleep(wait)
             paced.base = min(paced.base * 1.5, 30)
         except RPCError as exc:
@@ -1075,8 +1079,9 @@ def reading_stalled(today: int, average: float, hour: int, min_average: float = 
 
     Пульс говорит только «аккаунт на связи» — он идёт и у аккаунта, который не может прочитать ни одного
     чата (новый аккаунт без членства, заморозка, отозванные права). Поэтому смотрим на прочитанное:
-    ноль к утру (после from_hour по местному времени) при среднем от min_average в день."""
-    return int(today or 0) == 0 and float(average or 0) >= min_average and int(hour) >= from_hour
+    ноль или несколько штук (до 2% обычного) к утру (после from_hour по местному времени) при среднем от
+    min_average в день: аккаунт, у которого читается один чат из тридцати, тоже «на связи, но не читает»."""
+    return float(today or 0) <= float(average or 0) * 0.02 and float(average or 0) >= min_average and int(hour) >= from_hour
 
 
 def mask_login_code(text: str) -> str:

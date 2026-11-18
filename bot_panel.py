@@ -1078,8 +1078,13 @@ class BotPanel:
                 line += f" · ⚠️ не прочиталось {health['failed']} ({kinds})"
             if health.get("left"):
                 line += f" · не дошли до {health['left']} (время вышло)"
+        timing = health.get("timing") or {}
+        if timing and (health.get("left") or int(timing.get("slept_s") or 0) >= 30):
+            line += (f"\n   ⏱ последний проход: подготовка чатов {timing.get('setup_s', 0)} с, чтение {timing.get('read_s', 0)} с"
+                     + (f"; Telegram заставил ждать {timing['slept_s']} с ({timing.get('flood_label') or '?'})"
+                        if int(timing.get("slept_s") or 0) else ""))
         if state.get("stalled"):
-            line += "\n   ⚠️ аккаунт на связи, но читает 0: новый аккаунт без членства в чатах, заморозка или недоступные чаты — смотри /chats"
+            line += "\n   ⚠️ аккаунт на связи, но читает ноль или почти ничего: новый аккаунт без членства в чатах, ожидание FloodWait, заморозка или недоступные чаты — смотри /chats"
         return line
 
     def _account_pulse_line(self, state: dict) -> str:

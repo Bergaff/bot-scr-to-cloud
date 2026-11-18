@@ -2934,7 +2934,11 @@ def _profile_setting_key(acc) -> str:
                                      sort_keys=True, default=str).encode()).hexdigest()[:8]
 
 
-def record_read_health(store, account_name: str, monitor) -> dict:
+SETUP_FLOOD_CAP = 45.0            # сколько секунд максимум спим по FloodWait при разборе чатов и вступлениях
+HOUSEKEEPING_MIN_LEFT = 25.0      # служебные запросы после чтения — только если до конца прохода осталось больше
+
+
+def record_read_health(store, account_name: str, monitor, timing: dict | None = None) -> dict:
     """Как прошло чтение чатов аккаунта в этот проход: сколько чатов в работе, сколько не прочиталось и почему.
 
     Раньше такие сбои шли только в лог, а «ошибок за сутки 0» и пульс говорили, что всё хорошо."""
@@ -2948,6 +2952,8 @@ def record_read_health(store, account_name: str, monitor) -> dict:
     data = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "chats": total, "resolved": resolved,
             "unresolved": max(0, total - resolved), "failed": failed, "left": left, "kinds": kinds,
             "example": (getattr(monitor, "read_failures", None) or [("", "")])[0][0]}
+    if timing:
+        data["timing"] = timing
     _state_put(store, f"account:{account_name}:reads", data)
     return data
 
@@ -4164,25 +4170,47 @@ async def async_main(args) -> None:
             async def read_account(acc, client, monitor):
                 prefix = f"[{acc.name}] " if multi else ""
                 chat_report: dict = {}
-                resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], monitor.paced,
-                                                 auto_join=args.auto_join, report=chat_report,
-                                                 memory=store, account=acc.name)
+                started = time.monotonic()
+                monitor.paced.slept = 0.0
+                # Подготовка (разбор чатов, вступления) не должна съедать весь проход: длинный FloodWait там
+                # превращается в «отложим», а не в сон на весь бюджет (у third так уходили все 5 минут, и чтение не начиналось).
+                normal_wait = monitor.paced.max_wait
+
+                def _setup_wait():
+                    base = normal_wait() if callable(normal_wait) else normal_wait
+                    return SETUP_FLOOD_CAP if base is None else min(base, SETUP_FLOOD_CAP)
+                monitor.paced.max_wait = _setup_wait
+                try:
+                    resolved = await resolve_targets(client, [s_.target for s_ in monitor.sources], monitor.paced,
+                                                     auto_join=args.auto_join, report=chat_report,
+                                                     memory=store, account=acc.name)
+                finally:
+                    monitor.paced.max_wait = normal_wait
                 newly_protected = record_account_chats(store, acc.name, monitor.sources, resolved, chat_report)
                 join_failures = take_join_failures(acc.name)
                 await announce_joins(service, acc.name, monitor.sources, resolved, chat_report, join_failures)
-                await announce_join_failures(service, client, monitor.paced, acc.name, monitor.sources, join_failures)
-                await announce_protected(service, acc.name, newly_protected)
-                await scan_protected_dialogs(client, store, acc.name, monitor.paced)
                 monitor.entities = resolved
                 monitor.meta = {s_.target: s_ for s_ in monitor.sources if s_.target in resolved}
                 if multi:
                     print(f"[i] {prefix}чатов разрешено: {len(resolved)} из {len(monitor.sources)}",
                           file=sys.stderr)
+                setup_s = time.monotonic() - started
                 await monitor.flush_deferred()        # сначала отдаём то, что не влезло в лимит раньше
+                read_started = time.monotonic()
                 await monitor.catch_up(list(monitor.meta.values()))
                 monitor.flush_stats()
-                record_read_health(store, acc.name, monitor)
+                timing = {"setup_s": round(setup_s), "read_s": round(time.monotonic() - read_started),
+                          "slept_s": round(getattr(monitor.paced, "slept", 0.0)),
+                          "flood_label": str(getattr(monitor.paced, "flood_label", "") or "")[:60]}
+                record_read_health(store, acc.name, monitor, timing)
                 await check_reading_stalled(service, store, acc.name)
+                # Служебное — только после чтения и пока есть время: снимки неудачных вступлений и список подписок
+                # раньше шли до чтения и могли съесть проход; сделанное не теряется, недоделанное — в следующий раз.
+                if monitor.time_left() > HOUSEKEEPING_MIN_LEFT:
+                    await announce_join_failures(service, client, monitor.paced, acc.name, monitor.sources, join_failures)
+                    await announce_protected(service, acc.name, newly_protected)
+                if monitor.time_left() > HOUSEKEEPING_MIN_LEFT:
+                    await scan_protected_dialogs(client, store, acc.name, monitor.paced)
 
             # аккаунты читают СВОИ чаты одновременно: у каждого свой тормоз и свои лимиты, а общий
             # бюджет прохода один — последовательно второй аккаунт не успевал дочитать (14 чатов)
