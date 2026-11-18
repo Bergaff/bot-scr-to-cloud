@@ -444,6 +444,356 @@ sources:
     min_score: 5
     catchup: 20
 
+  - target: "@armeniya_chatik"
+    title: "Армения (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@azerbaidjanchat"
+    title: "Азербайджан (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@tbilisi_360"
+    title: "Грузия, Тбилиси (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@batumi_360"
+    title: "Грузия, Батуми (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@kazahstan_ru"
+    title: "Казахстан (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@bishcek_chat"
+    title: "Киргизия, Бишкек (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@kirgiziya_chatik"
+    title: "Киргизия (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@tadjikistan_chatik"
+    title: "Таджикистан (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@uzbekistan_avito"
+    title: "Узбекистан (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@turcmenistan_chat"
+    title: "Туркменистан (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@moldova_forum"
+    title: "Молдова (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@kishinev_chatik"
+    title: "Молдова, Кишинёв (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@tyrciya_chatik"
+    title: "Турция (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@ankara_tyrciya"
+    title: "Турция, Анкара (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@dybai_chatik"
+    title: "ОАЭ (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@izrail_avito"
+    title: "Израиль (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@egipet_chatik"
+    title: "Египет (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@cyprus_market"
+    title: "Кипр (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@kipr_chat"
+    title: "Кипр (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@tallin_estoniya"
+    title: "Эстония, Таллин (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@latviya_chatik"
+    title: "Латвия (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@litva_chatik"
+    title: "Литва (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@bolgariia_chat"
+    title: "Болгария (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@belgrad_serbia"
+    title: "Сербия, Белград (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@montenegro_market"
+    title: "Черногория (сеть 360)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@avstriya_chat"
+    title: "Австрия (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@avstriya_forum"
+    title: "Австрия (форум) (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@vengriya_chat"
+    title: "Венгрия (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@wengria_forum"
+    title: "Венгрия (форум) (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@slovakiya_chatik"
+    title: "Словакия (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@slovakiya_chat"
+    title: "Словакия (форум) (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@pragachat"
+    title: "Чехия, Прага (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@germaniia_chat"
+    title: "Германия (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@gambyrg_chat"
+    title: "Германия, Гамбург (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@berlin_chat1"
+    title: "Германия, Берлин (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@mynhen_chat"
+    title: "Германия, Мюнхен (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@italiya_chatik"
+    title: "Италия (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@ispaniya_chatik"
+    title: "Испания (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@portygaliya"
+    title: "Португалия (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@franciya_chat"
+    title: "Франция (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@belgiya_chatik"
+    title: "Бельгия (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@niderland_chat"
+    title: "Нидерланды (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@daniyachatik"
+    title: "Дания (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@shveciya"
+    title: "Швеция (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@shveicariya_chat"
+    title: "Швейцария (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@london_360"
+    title: "Англия, Лондон (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@forum_england"
+    title: "Англия (форум) (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@rymuniya"
+    title: "Румыния (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@byharest_chat"
+    title: "Румыния, Бухарест (форум) (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
+  - target: "@warshawa_chat"
+    title: "Польша, Варшава (сеть 360)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 20
+
   - target: "@otvezut"
     title: "Отвезут (водители, попутчики, посылки)"
     account: third
