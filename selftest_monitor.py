@@ -2727,6 +2727,15 @@ async def main() -> None:
     rd_monitor = SimpleNamespace(read_failures=[("@a", "FrozenMethodInvalidError"), ("@b", "FrozenMethodInvalidError")],
                                  meta={"@a": 1, "@b": 2}, sources=[1, 2, 3], catchup_left=[])
     health = monitor_module.record_read_health(rd_store, "second", rd_monitor)
+    monitor_module._state_put(rd_store, "account:second:chats", {"items": [
+        {"target": "@a", "status": "deferred"}, {"target": "@b", "status": "ok"}, {"target": "@c", "status": "ok"}]})
+    health = monitor_module.record_read_health(rd_store, "second", rd_monitor)
+    checks.append(("чтение: для недоступных чатов записан статус вступления (ждёт очереди / «участник», но закрыт)",
+                   health.get("failed_by_status") == {"deferred": 1, "ok": 1} and health.get("failed_examples") == ["@a", "@b"],
+                   str(health)))
+    health_txt = monitor_module.read_health_text(health, 0, 100)
+    checks.append(("тревога «не читает» объясняет закрытые чаты: сколько ждёт вступления и сколько в чате, но закрыто",
+                   "ждёт очереди" in health_txt and "бан в чате" in health_txt and "@a" in health_txt, health_txt))
     sent_night = await monitor_module.check_reading_stalled(rd_service, rd_store, "second", hour=5)
     sent_day = await monitor_module.check_reading_stalled(rd_service, rd_store, "second", hour=12)
     checks.append(("чтение: здоровье прохода записано (доступно 2 из 3, 2 сбоя FrozenMethodInvalidError)",

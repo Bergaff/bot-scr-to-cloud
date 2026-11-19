@@ -2962,8 +2962,28 @@ def record_read_health(store, account_name: str, monitor, timing: dict | None = 
             "example": (getattr(monitor, "read_failures", None) or [("", "")])[0][0]}
     if timing:
         data["timing"] = timing
+    # Что с вступлением в чатах, которые не прочитались: без этого «закрытый чат» ничего не говорит о причине.
+    status_of = {item.get("target"): item.get("status") for item in
+                 _state_json(store, f"account:{account_name}:chats").get("items", []) if isinstance(item, dict)}
+    by_status: dict[str, int] = {}
+    for target, _kind in getattr(monitor, "read_failures", []) or []:
+        code = status_of.get(target) or "?"
+        by_status[code] = by_status.get(code, 0) + 1
+    if by_status:
+        data["failed_by_status"] = by_status
+        data["failed_examples"] = [t for t, _k in (getattr(monitor, "read_failures", []) or [])[:6]]
     _state_put(store, f"account:{account_name}:reads", data)
     return data
+
+
+JOIN_STATUS_TEXT = {
+    "ok": "аккаунт числится участником, но чат читать не даёт (бан в чате, чат закрыт или удалён)",
+    "deferred": "вступление ждёт очереди (не больше 3 вступлений за проход)",
+    "requested": "заявка подана, ждёт админа",
+    "pending": "заявка подана, ждёт админа",
+    "not_member": "аккаунт не состоит в чате",
+    "error": "вступить не вышло (причина — в /chats)",
+}
 
 
 def read_health_text(health: dict, today: int, average: float) -> str:
@@ -2974,7 +2994,16 @@ def read_health_text(health: dict, today: int, average: float) -> str:
         if health.get("failed"):
             kinds = ", ".join(f"{kind} ×{count}" for kind, count in (health.get("kinds") or {}).items())
             parts.append(f"не прочиталось {health['failed']}: {kinds}")
-    return "; ".join(parts)
+    text = "; ".join(parts)
+    by_status = health.get("failed_by_status") if health else None
+    if by_status:
+        why = "; ".join(f"{count} — {JOIN_STATUS_TEXT.get(code, 'статус ' + code)}"
+                        for code, count in sorted(by_status.items(), key=lambda kv: -kv[1]))
+        text += f".\nПо закрытым чатам: {why}"
+        examples = health.get("failed_examples") or []
+        if examples:
+            text += f".\nНапример: {', '.join(examples[:5])}"
+    return text
 
 
 async def check_reading_stalled(service, store, account_name: str, hour: int | None = None) -> bool:
