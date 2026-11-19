@@ -2310,6 +2310,36 @@ async def main() -> None:
     checks.append(("просроченный бюджет: чаты не читаются, а откладываются на следующий проход",
                    passed.catchup_left == ["@a", "@b"], str(passed.catchup_left)))
 
+    # закрытый чат (ChannelPrivateError) не повторяется: раньше 4 попытки с паузами 5+10+15 с съедали ~40 с на чат
+    from telethon.errors import ChannelPrivateError as _CPE, ServerError as _SE
+    perm_calls = {"n": 0}
+    async def private_factory():
+        perm_calls["n"] += 1
+        raise _CPE(request=None)
+    t_perm = time.monotonic()
+    try:
+        await core_telegram.call(private_factory, core_telegram.Paced(0.0), label="catchup(@closed)")
+        perm_note = "прошло"
+    except _CPE:
+        perm_note = "ошибка"
+    checks.append(("закрытый чат: ответ «нет» не повторяется (одна попытка и без пауз)",
+                   perm_note == "ошибка" and perm_calls["n"] == 1 and time.monotonic() - t_perm < 3, str(perm_calls)))
+    srv_calls = {"n": 0}
+    async def server_factory():
+        srv_calls["n"] += 1
+        if srv_calls["n"] < 2:
+            raise _SE(request=None, message="x")
+        return "ok"
+    _orig_sleep = asyncio.sleep
+    async def _fast_sleep(_s, *a, **k):
+        await _orig_sleep(0)
+    asyncio.sleep = _fast_sleep
+    try:
+        srv_res = await core_telegram.call(server_factory, core_telegram.Paced(0.0), label="x")
+    finally:
+        asyncio.sleep = _orig_sleep
+    checks.append(("сбой сервера Telegram (5xx) по-прежнему повторяется", srv_res == "ok" and srv_calls["n"] == 2, str(srv_calls)))
+
     # FloodWait дольше бюджета — не спим, а пропускаем чат
     async def flood_factory():
         from telethon.errors import FloodWaitError

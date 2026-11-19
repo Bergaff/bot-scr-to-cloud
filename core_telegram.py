@@ -110,6 +110,12 @@ def notify_flood(label: str, seconds: float, wait: float) -> None:
             pass
 
 
+def PERMANENT_RPC_ERRORS() -> tuple:
+    """Классы ошибок Telegram, которые повторять бессмысленно (ленивый импорт telethon)."""
+    from telethon.errors import AuthKeyError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError
+    return (BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError, AuthKeyError)
+
+
 async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
     """Вызов API: при FloodWait спим ровно столько, сколько просит Telegram, плюс буфер.
 
@@ -140,7 +146,10 @@ async def call(factory, paced: Paced, retries: int = 4, label: str = ""):
             await asyncio.sleep(wait)
             paced.base = min(paced.base * 1.5, 30)
         except RPCError as exc:
-            if attempt == retries - 1:
+            # Ответ «нет» (400/401/403/404: чат закрыт, аккаунт забанен в нём, ник не существует) от повтора
+            # не изменится. Раньше такие ответы повторялись 4 раза с паузами 5+10+15 с: каждый ChannelPrivateError
+            # съедал ~40 с прохода, и 7 закрытых чатов у аккаунта занимали всё время чтения.
+            if attempt == retries - 1 or isinstance(exc, PERMANENT_RPC_ERRORS()):
                 raise
             print(f"[err] {label}: {type(exc).__name__} {exc}", file=sys.stderr)
             await asyncio.sleep(5 * (attempt + 1))
