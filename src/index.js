@@ -102,6 +102,36 @@ async function ready(env) {
 	return container;
 }
 
+/** Остановить контейнер сразу после прохода: он платный, пока включён (память и диск считаются за всё время,
+ *  а не за работу), и между проходами ему делать нечего — состояние лежит в R2. false — вернуть прежнее
+ *  поведение (контейнер спит только по sleepAfter, при cron раз в 10 минут это почти круглосуточно). */
+const STOP_AFTER_PASS = true;
+
+/** Нельзя останавливать, если в контейнере идёт другой проход (запасной cron пришёл посреди основного):
+ *  ответ 409 / busy. Законченный и пропущенный («свежий проход уже был») проходы — останавливаем. */
+function passIsBusy(status, body) {
+	if (status === 409) return true;
+	try {
+		return JSON.parse(body)?.busy === true;
+	} catch {
+		return false;
+	}
+}
+
+async function sleepAfterPass(container, status, body) {
+	if (!STOP_AFTER_PASS) return;
+	if (passIsBusy(status, body)) {
+		console.log('[radar] в контейнере идёт другой проход — не останавливаем');
+		return;
+	}
+	try {
+		await container.stop();
+		console.log('[radar] контейнер остановлен после прохода (платим только за работу)');
+	} catch (error) {
+		console.error('[radar] остановить контейнер после прохода не вышло:', error?.message ?? error);
+	}
+}
+
 /** Один проход радара: ответ контейнера отдаём как есть (JSON с итогом). */
 async function runPass(env, minGapMin = 0) {
 	const started = Date.now();
@@ -116,6 +146,7 @@ async function runPass(env, minGapMin = 0) {
 	const seconds = ((Date.now() - started) / 1000).toFixed(1);
 	console.log(`[radar] проход за ${seconds} с, HTTP ${response.status}`);
 	console.log(text.slice(0, 3000));
+	await sleepAfterPass(container, response.status, text);
 	return new Response(text, {
 		status: response.status,
 		headers: { 'content-type': 'application/json; charset=utf-8' },

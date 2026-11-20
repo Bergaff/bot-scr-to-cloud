@@ -230,6 +230,32 @@ class RadarRunner:
     def command(self) -> list[str]:
         return [self.python, "monitor.py", *shlex.split(self.args)]
 
+    LAST_PASS_KEY = "state/last_pass.json"
+
+    def remember_pass(self, result: dict) -> None:
+        """Время последнего прохода — в R2: контейнер засыпает после прохода, память `last` пропадает, а запасной
+        cron без этой метки запускал бы второй полный проход на каждом тике."""
+        if self.client is None or not result.get("finished_at"):
+            return
+        try:
+            self.client.put_object(self.LAST_PASS_KEY, json.dumps({"finished_at": result["finished_at"]}).encode(),
+                                   "application/json")
+        except Exception as exc:                        # noqa: BLE001 - метка не должна ронять проход
+            self._log(f"[!] метку последнего прохода в R2 записать не вышло: {type(exc).__name__}: {exc}")
+
+    def last_pass_info(self) -> dict:
+        """Итог последнего прохода: из памяти, а после сна контейнера — по метке из R2."""
+        if (self.last or {}).get("finished_at") or self.client is None:
+            return self.last
+        try:
+            raw = self.client.get_object(self.LAST_PASS_KEY)
+            data = json.loads(raw.decode("utf-8")) if raw else {}
+            if isinstance(data, dict) and data.get("finished_at"):
+                return {"finished_at": data["finished_at"]}
+        except Exception:                               # noqa: BLE001 - нет метки: считаем, что проходов не было
+            pass
+        return self.last
+
     def run_pass(self) -> dict:
         """Полный цикл прохода. Повторный вызов во время прохода — отказ (409 снаружи)."""
         if not self.lock.acquire(blocking=False):
@@ -248,6 +274,7 @@ class RadarRunner:
             self.lock.release()      # без этого второй проход в том же контейнере не запустился бы
         result["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.last = result
+        self.remember_pass(result)
         return result
 
     def _run_pass_locked(self, started: float) -> dict:
@@ -689,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
         extra = self._query().get("args", [""])[0].strip()
         runner = self.runner
         # Запасной cron: не запускать проход, если свежий уже был (min_gap — минуты).
-        gap = skip_if_recent(self.runner.last, self._query().get("min_gap", [""])[0])
+        gap = skip_if_recent(self.runner.last_pass_info(), self._query().get("min_gap", [""])[0])
         if gap is not None:
             self._send(200, json.dumps({"ok": True, "skipped": True, "last_finished_at": self.runner.last.get("finished_at"),
                                         "note": f"последний проход был {gap:.0f} мин назад — запасной запуск не нужен"},

@@ -482,6 +482,27 @@ async def main() -> None:
         status, body = http_call(f"{base}/run", method="POST", token=served_token)
         checks.append(("POST /run запускает проход и возвращает итог",
                        status == 200 and json.loads(body).get("ok") is True, str(status)))
+        # контейнер спит между проходами: после пробуждения память `last` пуста, но запасной cron обязан увидеть
+        # свежий проход по метке в R2 и не запускать второй
+        marker = json.loads((OBJECTS.get("state/last_pass.json") or b"{}").decode("utf-8") or "{}")
+        checks.append(("после прохода в R2 лежит метка времени последнего прохода (state/last_pass.json)",
+                       bool(marker.get("finished_at")), str(marker)))
+        woke = cloud_entry.RadarRunner(workdir=bare, client=client, runner=fake_run,
+                                       sessions=("monitor_session",), log=quiet)
+        woke_server = cloud_entry.serve(woke, token=served_token, port=0, bootstrap=False)
+        try:
+            status, body = http_call(f"http://127.0.0.1:{woke_server.server_address[1]}/run?min_gap=8",
+                                     method="POST", token=served_token)
+            woke_payload = json.loads(body) if body.startswith("{") else {}
+            status_main, body_main = http_call(f"http://127.0.0.1:{woke_server.server_address[1]}/run",
+                                               method="POST", token=served_token)
+        finally:
+            woke_server.shutdown()
+        checks.append(("только что проснувшийся контейнер (память пуста): запасной запуск видит свежий проход по метке из R2 и пропускает",
+                       status == 200 and woke_payload.get("skipped") is True, body[:120]))
+        checks.append(("основной запуск (без min_gap) после сна проход делает всегда",
+                       status_main == 200 and json.loads(body_main).get("skipped") is not True
+                       and json.loads(body_main).get("ok") is True, str(status_main)))
         status, body = http_call(f"{base}/usage", token=served_token)
         checks.append(("/usage отдаёт текст расхода (тот же, что бот показывает в Telegram)",
                        status == 200 and ("Расход" in body or "базы hits.sqlite3" in body),
@@ -801,6 +822,10 @@ async def main() -> None:
                    int(re.search(r"sleepAfter = '(\d+)m'", worker).group(1)) * 60
                    > cloud_entry.DEFAULT_TIMEOUT,
                    re.search(r"sleepAfter = '(\d+)m'", worker).group(0)))
+    checks.append(("Worker останавливает контейнер после прохода, но не трогает его, если идёт другой проход (409/busy)",
+                   "const STOP_AFTER_PASS = true" in worker and "container.stop()" in worker
+                   and "status === 409" in worker and "busy === true" in worker
+                   and "await sleepAfterPass(container, response.status, text)" in worker, ""))
     checks.append(("эндпоинт входа в Worker совпадает с точкой входа контейнера",
                    "deploy/cloud_entry.py" in worker, "ok"))
     checks.append(("/restart есть: после смены секретов контейнер надо пересоздать",
