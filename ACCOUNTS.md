@@ -5,14 +5,14 @@
 
 | аккаунт | чатов | из них приватные ссылки |
 |---|---|---|
-| main | 20 | 1 |
+| main | 18 | 1 |
 | second | 26 | 5 |
-| third | 27 | 0 |
-| fourth | 28 | 0 |
+| third | 25 | 0 |
+| fourth | 11 | 0 |
 | fifth | 25 | 0 |
 | sixth | 25 | 0 |
 
-## main — 20 чатов
+## main — 18 чатов
 
 | # | чат | ссылка | порог |
 |---|---|---|---|
@@ -28,14 +28,12 @@
 | 10 | Граница LT-BY | https://t.me/granicaLtBY | 5 |
 | 11 | Граница онлайн | https://t.me/granica_online | 5 |
 | 12 | Граница Польша | https://t.me/granica_polska | 5 |
-| 13 | Граница Польша (канал) | https://t.me/granica_polsha | 6 |
-| 14 | Грузия (rus_ge) | https://t.me/rus_ge | 5 |
-| 15 | Дубай (передачи) | https://t.me/dubaisend | 5 |
-| 16 | Кто едет в Беларусь | https://t.me/WhoGoBelarus | 5 |
-| 17 | Посылки Таиланд | https://t.me/posylkathai | 5 |
-| 18 | Посылки 📦 Доставки 🧳 Попутчики 🙋 Водители 🚘 | https://t.me/travelersminsk | 4 |
-| 19 | Почта Бразилия | https://t.me/pochta_brazil | 5 |
-| 20 | Россия-Беларусь (граница) | https://t.me/rossia_belarus | 5 |
+| 13 | Грузия (rus_ge) | https://t.me/rus_ge | 5 |
+| 14 | Дубай (передачи) | https://t.me/dubaisend | 5 |
+| 15 | Посылки Таиланд | https://t.me/posylkathai | 5 |
+| 16 | Посылки 📦 Доставки 🧳 Попутчики 🙋 Водители 🚘 | https://t.me/travelersminsk | 4 |
+| 17 | Почта Бразилия | https://t.me/pochta_brazil | 5 |
+| 18 | Россия-Беларусь (граница) | https://t.me/rossia_belarus | 5 |
 
 ## second — 26 чатов
 
@@ -68,7 +66,7 @@
 | 25 | Чехия (инфо-чат) | https://t.me/czech_info_chat2 | 5 |
 | 26 | Япония (чат) | https://t.me/wrenjapanchat | 5 |
 
-## third — 27 чатов
+## third — 25 чатов
 
 | # | чат | ссылка | порог |
 |---|---|---|---|
@@ -84,54 +82,35 @@
 | 10 | Грузия и Армения (поездки, попутчики; канал) | https://t.me/vgruzii | 5 |
 | 11 | Дубай (OFFMAP) | https://t.me/dubai_OFFMAP | 5 |
 | 12 | Египет (Хургада) | https://t.me/egypt_hurgada | 5 |
-| 13 | Занзибар | https://t.me/zanzibar4 | 5 |
-| 14 | Испания | https://t.me/spain_granitsa | 5 |
-| 15 | К Москве (поездки, водители, попутчики; канал) | https://t.me/kmoskve | 5 |
-| 16 | Кейптаун (OFFMAP) | https://t.me/Capetown_OFFMAP | 5 |
-| 17 | Кипр (Пафос, Ларнака) | https://t.me/Kipr_Pafos_Larnaka | 5 |
-| 18 | Китай (OFFMAP) | https://t.me/China_OFFMAP | 5 |
-| 19 | Литва | https://t.me/lithuania_granitsa | 5 |
-| 20 | Отвезут (водители, попутчики, посылки) | https://t.me/otvezut | 5 |
-| 21 | Польша (чат 1) | https://t.me/polsha_chat1 | 5 |
-| 22 | Португалия | https://t.me/portugal_granitsa | 5 |
-| 23 | Сербия | https://t.me/serbia_granitsa | 5 |
-| 24 | Турция (OFFMAP) | https://t.me/turtsia_OFFMAP | 5 |
-| 25 | Черногория (Бар) | https://t.me/montenegro_bar1 | 5 |
-| 26 | Чехия | https://t.me/czech_granitsa | 5 |
-| 27 | Шри-Ланка (Унаватуна) | https://t.me/shri_lanka_Unavatuna | 5 |
+| 13 | Испания | https://t.me/spain_granitsa | 5 |
+| 14 | К Москве (поездки, водители, попутчики; канал) | https://t.me/kmoskve | 5 |
+| 15 | Кейптаун (OFFMAP) | https://t.me/Capetown_OFFMAP | 5 |
+| 16 | Кипр (Пафос, Ларнака) | https://t.me/Kipr_Pafos_Larnaka | 5 |
+| 17 | Китай (OFFMAP) | https://t.me/China_OFFMAP | 5 |
+| 18 | Литва | https://t.me/lithuania_granitsa | 5 |
+| 19 | Отвезут (водители, попутчики, посылки) | https://t.me/otvezut | 5 |
+| 20 | Португалия | https://t.me/portugal_granitsa | 5 |
+| 21 | Сербия | https://t.me/serbia_granitsa | 5 |
+| 22 | Турция (OFFMAP) | https://t.me/turtsia_OFFMAP | 5 |
+| 23 | Черногория (Бар) | https://t.me/montenegro_bar1 | 5 |
+| 24 | Чехия | https://t.me/czech_granitsa | 5 |
+| 25 | Шри-Ланка (Унаватуна) | https://t.me/shri_lanka_Unavatuna | 5 |
 
-## fourth — 28 чатов
+## fourth — 11 чатов
 
 | # | чат | ссылка | порог |
 |---|---|---|---|
-| 1 | Авто-базар Польши | https://t.me/auto_bazar_poland | 5 |
-| 2 | Беларусь (форум, сеть 360) | https://t.me/forum_belarus | 5 |
-| 3 | Варшава | https://t.me/warshawa_vchate | 5 |
-| 4 | Вроцлав | https://t.me/wroclaw_vchate | 5 |
-| 5 | Германия (Берлин) | https://t.me/germany_berlin_vchate | 5 |
-| 6 | Гожув-Велькопольски | https://t.me/gorzow_welkopol | 5 |
-| 7 | Жешув | https://t.me/rzeshuw_ua | 5 |
-| 8 | Зелёна-Гура | https://t.me/zelena_gora_nashi | 5 |
-| 9 | Канада (Оттава) | https://t.me/kanada_ottawa_chat | 5 |
-| 10 | Катовице | https://t.me/katowice_chatik | 5 |
-| 11 | Краков | https://t.me/krakow_nash | 5 |
-| 12 | Литва (форум, сеть 360) | https://t.me/forum_lithuania | 5 |
-| 13 | Лодзь | https://t.me/lodz_vchate | 5 |
-| 14 | Люблин | https://t.me/lublin_nashi | 5 |
-| 15 | Норвегия (Осло) | https://t.me/norway_oslo_chat | 5 |
-| 16 | Ольштын | https://t.me/olshtyn_nashi | 5 |
-| 17 | Ополе | https://t.me/opole_ua | 5 |
-| 18 | Познань | https://t.me/poznan_nashi | 5 |
-| 19 | Польша (в чате) | https://t.me/poland_vchate | 5 |
-| 20 | Работа в Польше | https://t.me/uainpoll | 5 |
-| 21 | Руда-Слёнска | https://t.me/ruda_slask | 5 |
-| 22 | Торунь / Быдгощ | https://t.me/bydgosz_torun | 5 |
-| 23 | Труймясто (Гданьск, Сопот) | https://t.me/gdansk_sopot | 5 |
-| 24 | Турция (Стамбул, Анталья) | https://t.me/turkey_stambul_antalia | 5 |
-| 25 | Услуги / реклама, Польша | https://t.me/uslugi_reklama_polska | 5 |
-| 26 | Чехия (Прага) | https://t.me/praga_rabota_fushki | 5 |
-| 27 | Чехия (форум, сеть 360) | https://t.me/forum_czech_republic | 5 |
-| 28 | Щецин | https://t.me/szezcin | 5 |
+| 1 | Беларусь (форум, сеть 360) | https://t.me/forum_belarus | 5 |
+| 2 | Вроцлав | https://t.me/wroclaw_vchate | 5 |
+| 3 | Германия (Берлин) | https://t.me/germany_berlin_vchate | 5 |
+| 4 | Гожув-Велькопольски | https://t.me/gorzow_welkopol | 5 |
+| 5 | Канада (Оттава) | https://t.me/kanada_ottawa_chat | 5 |
+| 6 | Литва (форум, сеть 360) | https://t.me/forum_lithuania | 5 |
+| 7 | Познань | https://t.me/poznan_nashi | 5 |
+| 8 | Работа в Польше | https://t.me/uainpoll | 5 |
+| 9 | Турция (Стамбул, Анталья) | https://t.me/turkey_stambul_antalia | 5 |
+| 10 | Чехия (Прага) | https://t.me/praga_rabota_fushki | 5 |
+| 11 | Чехия (форум, сеть 360) | https://t.me/forum_czech_republic | 5 |
 
 ## fifth — 25 чатов
 

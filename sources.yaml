@@ -406,11 +406,6 @@ sources:
     min_score: 5
     catchup: 50
 
-  - target: "@granica_polsha"         # канал-новости (раньше был в выключенных примерах)
-    title: "Граница Польша (канал)"
-    account: main
-    profile: news
-    min_score: 6
 
   - target: "@granicaLtBY"
     title: "Граница LT-BY"
@@ -426,12 +421,6 @@ sources:
     min_score: 5
     catchup: 50
 
-  - target: "@WhoGoBelarus"
-    title: "Кто едет в Беларусь"
-    account: main
-    profile: chat
-    min_score: 5
-    catchup: 50
 
   - target: "@forum_belarus"
     title: "Беларусь (форум, сеть 360)"
@@ -874,12 +863,6 @@ sources:
     min_score: 5
     catchup: 20
 
-  - target: "@polsha_chat1"
-    title: "Польша (чат 1)"
-    account: third
-    profile: chat
-    min_score: 5
-    catchup: 20
 
   - target: "@portugal_granitsa"
     title: "Португалия"
@@ -972,12 +955,6 @@ sources:
     min_score: 5
     catchup: 20
 
-  - target: "@zanzibar4"
-    title: "Занзибар"
-    account: third
-    profile: chat
-    min_score: 5
-    catchup: 20
 
   - target: "@Capetown_OFFMAP"
     title: "Кейптаун (OFFMAP)"
@@ -993,33 +970,9 @@ sources:
     min_score: 5
     catchup: 20
 
-  - target: "@poland_vchate"
-    title: "Польша (в чате)"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@warshawa_vchate"
-    title: "Варшава"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@bydgosz_torun"
-    title: "Торунь / Быдгощ"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@lodz_vchate"
-    title: "Лодзь"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
   - target: "@poznan_nashi"
     title: "Познань"
@@ -1028,54 +981,12 @@ sources:
     min_score: 5
     catchup: 20
 
-  - target: "@katowice_chatik"
-    title: "Катовице"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@ruda_slask"
-    title: "Руда-Слёнска"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@opole_ua"
-    title: "Ополе"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@zelena_gora_nashi"
-    title: "Зелёна-Гура"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@gdansk_sopot"
-    title: "Труймясто (Гданьск, Сопот)"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@krakow_nash"
-    title: "Краков"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@lublin_nashi"
-    title: "Люблин"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
   - target: "@wroclaw_vchate"
     title: "Вроцлав"
@@ -1084,19 +995,7 @@ sources:
     min_score: 5
     catchup: 20
 
-  - target: "@rzeshuw_ua"
-    title: "Жешув"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@olshtyn_nashi"
-    title: "Ольштын"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
   - target: "@gorzow_welkopol"
     title: "Гожув-Велькопольски"
@@ -1105,12 +1004,6 @@ sources:
     min_score: 5
     catchup: 20
 
-  - target: "@szezcin"
-    title: "Щецин"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
   - target: "@uainpoll"
     title: "Работа в Польше"
@@ -1119,26 +1012,8 @@ sources:
     min_score: 5
     catchup: 20
 
-  - target: "@auto_bazar_poland"
-    title: "Авто-базар Польши"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@uslugi_reklama_polska"
-    title: "Услуги / реклама, Польша"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
-  - target: "@norway_oslo_chat"
-    title: "Норвегия (Осло)"
-    account: fourth
-    profile: chat
-    min_score: 5
-    catchup: 20
 
   - target: "@germany_berlin_vchate"
     title: "Германия (Берлин)"

@@ -371,13 +371,6 @@
       "catchup": 50
     },
     {
-      "target": "@granica_polsha",
-      "title": "Граница Польша (канал)",
-      "account": "main",
-      "profile": "news",
-      "min_score": 6
-    },
-    {
       "target": "@granicaLtBY",
       "title": "Граница LT-BY",
       "account": "main",
@@ -388,14 +381,6 @@
     {
       "target": "@ub_taxi",
       "title": "ub_taxi (такси)",
-      "account": "main",
-      "profile": "chat",
-      "min_score": 5,
-      "catchup": 50
-    },
-    {
-      "target": "@WhoGoBelarus",
-      "title": "Кто едет в Беларусь",
       "account": "main",
       "profile": "chat",
       "min_score": 5,
