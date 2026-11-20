@@ -53,9 +53,40 @@ def build(config: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+ARCHIVE = ROOT / "ARCHIVED_CHATS.md"
+
+
+def archived_targets() -> set[str]:
+    """Чаты из раздела «В архиве» файла ARCHIVED_CHATS.md (первая колонка таблицы, @имя), в нижнем регистре."""
+    if not ARCHIVE.exists():
+        return set()
+    found: set[str] = set()
+    inside = False
+    for line in ARCHIVE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            inside = line.strip().lower() == "## в архиве"
+            continue
+        if inside and line.startswith("|"):
+            cell = line.split("|")[1].strip().strip("`")
+            if cell.startswith("@") or cell.startswith("http"):
+                found.add(cell.lower())
+    return found
+
+
+def archived_in_sources(config: dict | None = None) -> list[str]:
+    """Архивные чаты, которые снова стоят в sources.yaml (так быть не должно)."""
+    config = config if config is not None else yaml.safe_load((ROOT / "sources.yaml").read_text(encoding="utf-8"))
+    active = {str(s.get("target") or "").strip().lower() for s in (config.get("sources") or [])}
+    return sorted(archived_targets() & active)
+
+
 def main(argv: list[str]) -> int:
     text = build()
     if "--check" in argv:
+        back = archived_in_sources()
+        if back:
+            print("в sources.yaml снова стоят чаты из архива (ARCHIVED_CHATS.md): " + ", ".join(back), file=sys.stderr)
+            return 1
         return 0 if OUT.exists() and OUT.read_text(encoding="utf-8") == text else 1
     OUT.write_text(text, encoding="utf-8")
     print(f"записано {OUT.name}: {text.count(chr(10))} строк")
