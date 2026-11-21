@@ -768,6 +768,69 @@ async def main() -> None:
                                             {"@batumi": ("error", "вступил недавно, но Telegram снова …")})
     checks.append(("цикл вступления: в бот уходит понятное предупреждение (без force: ключ гасит повторы)",
                    len(spoken) == 2 and "антибот" in spoken[0], str(spoken)[:80]))
+    # приватные ссылки-приглашения: не проверять каждую ссылку каждый проход (Telegram ставит FloodWait на 4 минуты)
+    from core_telegram import FloodWaitTooLong as _FWTL, take_join_failures as _tjf
+    class InvClient:
+        def __init__(self, mode="notpart", ids_ok=True):
+            self.mode, self.calls, self.id_calls, self.imports, self.ids_ok = mode, [], [], [], ids_ok
+        async def get_entity(self, target):
+            if isinstance(target, (list, tuple, int)):
+                self.id_calls.append(target)
+                if not self.ids_ok:
+                    raise ValueError("нет в кэше")
+                return [Channel(-100000 - i, f"Чат {i}", None, left=False) for i, _t in enumerate(target)] \
+                    if isinstance(target, (list, tuple)) else Channel(-100000, "Чат", None, left=False)
+            self.calls.append(target)
+            if self.mode == "flood":
+                raise _FWTL("get_entity: Telegram просит ждать 238 с, а в бюджете осталось 45 с")
+            if self.mode == "expired":
+                raise type("InviteHashExpiredError", (Exception,), {})("expired")
+            raise ValueError("Cannot get entity from a channel (or group) that you are not part of. Join the group and retry")
+        async def __call__(self, request):
+            self.imports.append(request)
+            return SimpleNamespace(chats=[Channel(-100777, "Вступили", None, left=False)])
+    _tjf("third")
+    flood_client = InvClient("flood")
+    flood_rep: dict = {}
+    await resolve_targets(flood_client, ["https://t.me/+AAAA1111", "https://t.me/+BBBB2222", "https://t.me/+CCCC3333"],
+                          Paced(0), auto_join=True, report=flood_rep, memory=HitStore(":memory:"), account="third")
+    checks.append(("FloodWait на проверке приглашения: пропускаем остальные приглашения без запросов, это не поломка чата и снимка нет",
+                   len(flood_client.calls) == 1 and all(v[0] == "deferred" for v in flood_rep.values())
+                   and _tjf("third") == {}, str(flood_rep)[:120]))
+    exp_store = HitStore(":memory:")
+    exp_client = InvClient("expired")
+    exp_rep: dict = {}
+    await resolve_targets(exp_client, ["https://t.me/+DEAD0001"], Paced(0), auto_join=True, report=exp_rep,
+                          memory=exp_store, account="sixth")
+    exp_fail = _tjf("sixth")
+    await resolve_targets(exp_client, ["https://t.me/+DEAD0001"], Paced(0), auto_join=True, report={}, memory=exp_store, account="sixth")
+    checks.append(("устаревшая ссылка-приглашение: сразу понятная ошибка «нужна новая» и не проверяется заново каждый проход",
+                   exp_rep["https://t.me/+DEAD0001"][0] == "error" and "нужна новая" in exp_rep["https://t.me/+DEAD0001"][1]
+                   and len(exp_client.calls) == 1 and list(exp_fail) == ["https://t.me/+DEAD0001"], str(exp_rep)[:120]))
+    many_client = InvClient("notpart")
+    many_rep: dict = {}
+    many_targets = [f"https://t.me/+LINK{i:04d}" for i in range(6)]
+    await resolve_targets(many_client, many_targets, Paced(0), auto_join=True, report=many_rep,
+                          memory=HitStore(":memory:"), account="fourth", max_joins=2)
+    checks.append(("много приглашений: за проход проверяются и вступаются только в пределах лимита, остальные отложены без запросов",
+                   len(many_client.imports) == 2 and len(many_client.calls) == 2
+                   and sum(1 for v in many_rep.values() if v[0] == "deferred") == 4, str(many_rep)[:140]))
+    # чаты, где аккаунт уже был: одним запросом по id из прошлого прохода, без проверки ссылок
+    ids_store = HitStore(":memory:")
+    monitor_module._state_put(ids_store, "account:fifth:chats", {"items": [
+        {"target": "https://t.me/+KNOWN001", "status": "ok", "id": -1001111111111},
+        {"target": "https://t.me/+KNOWN002", "status": "ok", "id": -1002222222222}]})
+    ids_client = InvClient("notpart")
+    ids_res = await resolve_targets(ids_client, ["https://t.me/+KNOWN001", "https://t.me/+KNOWN002"], Paced(0),
+                                    auto_join=True, report={}, memory=ids_store, account="fifth")
+    checks.append(("приватные чаты, где аккаунт уже есть: находятся одним запросом по id, ссылки не проверяются",
+                   len(ids_client.id_calls) == 1 and not ids_client.calls and len(ids_res) == 2, str(ids_client.id_calls)))
+    ids_client2 = InvClient("notpart", ids_ok=False)
+    ids_rep2: dict = {}
+    await resolve_targets(ids_client2, ["https://t.me/+KNOWN001"], Paced(0), auto_join=True, report=ids_rep2,
+                          memory=ids_store, account="fifth")
+    checks.append(("по id не нашлось (кэш сессии пуст) — обычный путь по ссылке, ничего не ломается",
+                   len(ids_client2.calls) == 1, str(ids_rep2)[:100]))
     # публичный чат, где аккаунт не участник: читается без вступления — тревоги нет; закрытый (без username) — как раньше
     spoken.clear()
     pub_chan = SimpleNamespace(username="vgruzii", title="Грузия", id=1, broadcast=True, megagroup=False)

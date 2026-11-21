@@ -235,6 +235,22 @@ def _memo_put(memory, account: str, target: str, code: str = "", text: str = "")
         pass
 
 
+def _known_chat_id(memory, account: str, target: str) -> int | None:
+    """id чата из прошлого прохода (запись «чаты аккаунта»): по нему приватный чат находится без запроса
+    CheckChatInvite, на который Telegram быстро ставит FloodWait, если проверять десятки ссылок каждый проход."""
+    if memory is None or not account:
+        return None
+    try:
+        data = json.loads(memory.bot_state_get(f"account:{account}:chats") or "{}")
+        for item in data.get("items", []):
+            if isinstance(item, dict) and item.get("target") == target and item.get("status") == "ok" \
+                    and item.get("id") is not None:
+                return int(item["id"])
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def _needs_join(entity) -> bool:
     """Аккаунт не состоит в этом канале/группе (Telegram отдаёт флаг left у чужих чатов)."""
     return type(entity).__name__ == "Channel" and getattr(entity, "left", False) is True
@@ -454,15 +470,72 @@ async def resolve_targets(client, targets: list[str], paced: Paced,
     if report is None:
         report = {}
     joins_done = 0
+    invite_flood = False          # Telegram посадил проверку приглашений на FloodWait: до конца прохода их не трогаем
+    # Приватные чаты, где аккаунт уже был: достаём по id из прошлого прохода ОДНИМ запросом, а не проверкой
+    # ссылки на каждый чат (CheckChatInvite на десятки ссылок подряд упирается в FloodWait на 4 минуты).
+    prefetched: dict[str, object] = {}
+    known_ids: dict[str, int] = {}
+    if auto_join and memory is not None:
+        for raw in targets:
+            t = raw.strip()
+            if t and invite_hash(t):
+                recent_pre = _memo_recent(memory, account, t)
+                cid = _known_chat_id(memory, account, t)
+                if cid is not None and not (recent_pre and recent_pre[0] != "joined"):
+                    known_ids[t] = cid
+        if known_ids:
+            try:
+                batch = await call(lambda: client.get_entity(list(known_ids.values())), paced,
+                                   label=f"get_entity({len(known_ids)} приватных чатов по id)", retries=1)
+                if isinstance(batch, (list, tuple)) and len(batch) == len(known_ids):
+                    prefetched = dict(zip(known_ids, batch))
+            except Exception as exc:  # noqa: BLE001 - не вышло пачкой: ниже по одному
+                print(f"[i] приватные чаты пачкой не нашлись ({type(exc).__name__}), ищем по одному", file=sys.stderr)
     for raw in targets:
         target = raw.strip()
         if not target:
             continue
         status: tuple[str, str] = ("ok", "")
-        try:
-            entity = await call(lambda t=target: client.get_entity(t), paced, label=f"get_entity({target})")
-        except Exception as exc:  # noqa: BLE001
+        entity = prefetched.get(target)
+        hash_pre = invite_hash(target) if auto_join else None
+        if hash_pre and entity is None:
+            recent_pre = _memo_recent(memory, account, target)
+            if recent_pre and recent_pre[0] != "joined":
+                report[target] = (recent_pre[0], recent_pre[1])      # исход уже известен: Telegram не дёргаем
+                continue
+            if target in known_ids:                                   # был в чате: пробуем по id, без проверки ссылки
+                try:
+                    entity = await call(lambda cid=known_ids[target]: client.get_entity(cid), paced,
+                                        label=f"get_entity({target} по id)", retries=1)
+                except Exception:  # noqa: BLE001
+                    entity = None
+            if entity is None and (invite_flood or (max_joins and joins_done >= max_joins)):
+                report[target] = ("deferred", "проверка приглашения отложена (ограничения Telegram и лимит "
+                                              "вступлений за проход), дойдёт в следующий проход")
+                continue
+        caught = None
+        if entity is None:
+            try:
+                entity = await call(lambda t=target: client.get_entity(t), paced, label=f"get_entity({target})")
+            except Exception as exc:  # noqa: BLE001
+                caught = exc
+        if caught is not None:
+            exc = caught
             hash_ = invite_hash(target)
+            if isinstance(exc, FloodWaitTooLong):
+                # не поломка чата: Telegram просит подождать. Снимок не шлём, остальные приглашения не дёргаем
+                if hash_:
+                    invite_flood = True
+                report[target] = ("deferred", "Telegram просит подождать — проверим в следующий проход")
+                print(f"[i] {target}: {exc}", file=sys.stderr)
+                continue
+            if hash_ and type(exc).__name__ in ("InviteHashExpiredError", "InviteHashInvalidError"):
+                text = "ссылка-приглашение устарела или неверна: нужна новая"
+                _memo_put(memory, account, target, "error", text)
+                report[target] = ("error", text)
+                _note_failure(account, target, "resolve", type(exc).__name__, _error_detail(exc), hash_=hash_)
+                print(f"[!] {target}: {type(exc).__name__}", file=sys.stderr)
+                continue
             not_member = "not part of" in str(exc) or "Cannot get entity" in str(exc)
             if hash_ and not_member and auto_join:
                 recent = _memo_recent(memory, account, target)
