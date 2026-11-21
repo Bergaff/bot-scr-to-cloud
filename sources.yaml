@@ -793,6 +793,731 @@ sources:
     min_score: 5
     catchup: 20
 
+  # ─── Добавлено 21.11.2026: приватные чаты по ссылкам-приглашениям (страны, попутчики) ────────────
+  # Вступление — радар сам (--auto-join), не больше 3 за проход на аккаунт. Названия заданы по списку владельца.
+  # Аккаунты выбраны по наименьшей загрузке (main упирается в лимит 180 каждый день и не берёт новые).
+
+  - target: "https://t.me/+O2zo5smHyIQ4MzUy"
+    title: "Грузия, попутчики (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+rn8c7nU5eaozZjIy"
+    title: "Абхазия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+xLLzFFMiv4k5NDBi"
+    title: "Австралия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+en0aCyYG_shhODhi"
+    title: "Австрия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+HgNcIIMhVgdiMzJi"
+    title: "Азербайджан (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+L1bhXGlTG4c0MTli"
+    title: "Албания (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+fp_Hcg7tYitlNGJi"
+    title: "Алжир (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+m2OgbrAJrqRmNzZi"
+    title: "Аргентина (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+5sua2tM2Olg2ZTA6"
+    title: "Армения (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+SHMYofvjcPc2NzRi"
+    title: "Бахрейн (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+VwY-bU3m4qc0YTYy"
+    title: "Белиз (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+lvzfz1xqBOo5YjFi"
+    title: "Бельгия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+POWfRMOUrZY1MGYy"
+    title: "Болгария (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+eiMhge42Ie00NDUy"
+    title: "Бразилия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+lLgHzovMA3IzNjcy"
+    title: "Великобритания (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+uFV05jSe7X9iNWEy"
+    title: "Венгрия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+AvBl6p0mwUhmNDIy"
+    title: "Венесуэла (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+kIbiwFlHRNwxMjE6"
+    title: "Вьетнам (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+CGhLaUh_7qk3Mjky"
+    title: "Германия (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+GQejmnynkhmOGRi"
+    title: "Гренада (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+u17-jWHFeu0xNDYy"
+    title: "Греция (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+pmJ2nWdX6X80ODAy"
+    title: "Грузия (приватный чат 2)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+4_KTx993HsMxODUy"
+    title: "Дания (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+ms1zOW7vFBc2NmUy"
+    title: "Доминиканская Республика (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+yp8uNtEPEuoyNGNi"
+    title: "Египет (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+yavZIvvnfkczYTMy"
+    title: "Израиль (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+Qscr2de-dBNlNjcy"
+    title: "Индия (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+GCvDyII5sr9iZjMy"
+    title: "Индонезия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+wHQJ33hyOtA1Y2Zi"
+    title: "Иордания (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+nz2aN7qECUZlM2Qy"
+    title: "Иран (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+5hNu9GU8Oac3N2Yy"
+    title: "Ирландия (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+uHajDMG4pqc0YzVi"
+    title: "Исландия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+IxL-eGmATb05NTdi"
+    title: "Испания (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+QszMH36O688wY2Qy"
+    title: "Италия (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+0CF3_0Rr15I3Y2Uy"
+    title: "Камбоджа (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+4Q3SqYkszH1iMzUy"
+    title: "Канада (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+9j1zha-unAxkMWZi"
+    title: "Катар (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+J0Tl0E9YArA0ZmQy"
+    title: "Кения (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+lu6a_O7eITEwMmEy"
+    title: "Кипр (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+ucdYjnh2saw2NzE6"
+    title: "Китай (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+Ztrt_OzFlH5hMjgy"
+    title: "Колумбия (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+c-rwFBJFubNhYzgy"
+    title: "Куба (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+myQu5wq43mBmNDFi"
+    title: "Кыргызстан (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+S7HezcBHAj4xNjEy"
+    title: "Лаос (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+lIRkFdcyinU3MWNi"
+    title: "Латвия (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+qBT9LMl7PddkMmIy"
+    title: "Литва (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+iVaiJserqqNkNTc6"
+    title: "Маврикий (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+HzUtjtUTmT41YjJi"
+    title: "Мадагаскар (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+K_piKjcZ3wM4YWJi"
+    title: "Малайзия (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+U7zSNxKW4MFjZDhi"
+    title: "Мальдивы (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+ELM0-u97bLI4ZGNi"
+    title: "Мальта (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+qmwRoJp251Y5MTZi"
+    title: "Марокко (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+BU7rBKzQFLg4ZGFi"
+    title: "Мексика (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+NUjVXbPPwyw5ZDcy"
+    title: "Молдова (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+UXePOY9RML9iZjVi"
+    title: "Монако (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+8nGbBN9ul5llNThi"
+    title: "Монголия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+PbpI0zdllrllY2Ey"
+    title: "Мьянма (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+K3G1kdmoxUFhNjYy"
+    title: "Намибия (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+TwXD2yUCz11lZmEy"
+    title: "Непал (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+JaW3Qsq-4mU4NWQy"
+    title: "Нидерланды (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+a-VI9uqNVz84NzVi"
+    title: "Новая Зеландия (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+B_TAA-51Mw43YTQ6"
+    title: "Норвегия (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+8AsA4TZt-nk5YTBi"
+    title: "ОАЭ (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+pKS1wmzismgxNGUy"
+    title: "Оман (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+JHU3e88db9AwNjhi"
+    title: "Пакистан (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+3yYvvmvmpEFmNGQy"
+    title: "Панама (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+oHYsO7qUAaowMTU6"
+    title: "Парагвай (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+1v5oaMVJ31k0OTAy"
+    title: "Перу (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+X_lRBOdDzUoxMDUy"
+    title: "Польша (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+vgtKkB3NTpAyZGIy"
+    title: "Португалия (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+4yg-mI92Zww0MmM6"
+    title: "Россия (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+m0kXiUSLxZ04YjIy"
+    title: "Румыния (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+pH-aGSjoinQ5NWU6"
+    title: "США (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+2Ycjlxn75L8xNDky"
+    title: "Сан-Марино (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+OcInIwpa-zA5MWRi"
+    title: "Саудовская Аравия (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+NV6igjIXsMg1YTAy"
+    title: "Северный Кипр (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+C_NsJFtbuvoyYWNi"
+    title: "Сейшельские острова (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+VCvXlcGJEwk4Mjhi"
+    title: "Сербия (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+Vb2KDqEfTE03YTIy"
+    title: "Сингапур (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+nBhX_QaOSwdkNWIy"
+    title: "Словакия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+ylAA0Bborug3NzZi"
+    title: "Словения (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+KOFaRBW15zA5ZTky"
+    title: "Таджикистан (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+scx2d3pCn25mYTQy"
+    title: "Таиланд (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+aT5FG2jPsm1mN2I6"
+    title: "Тайвань (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+m_UnpRxy5zdmYjIy"
+    title: "Танзания (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+KpOd0GoXXnE1ZThi"
+    title: "Тунис (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+MosBraZXbORhYWY6"
+    title: "Турция (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+Ob9fMYssSWliOGIy"
+    title: "Узбекистан (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+I_U-UYl4sIFkNmU6"
+    title: "Филиппины (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+YrKy-kR7J9FjNzYy"
+    title: "Финляндия (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+zekEJsZLwgQ0OGIy"
+    title: "Франция (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+-nnkFK-y4r03NDQ6"
+    title: "Хорватия (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+WWAfqEfE3ZhmZDcy"
+    title: "Черногория (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+TV3sbpNhrpFmOTAy"
+    title: "Чехия (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+3uMty42UpO85YjM6"
+    title: "Чили (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+zjeJnlFYhWFhZGIy"
+    title: "Швейцария (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+GTxZ8Cvq6nNmNDky"
+    title: "Швеция (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+tUeC8lTcpTliNGFi"
+    title: "Шри-Ланка (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+fU2meNtOknExMmEy"
+    title: "Эквадор (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+_lXKDkNyEc3YjQy"
+    title: "Эстония (приватный чат)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+UN0f7Yp5zVdhNWJi"
+    title: "ЮАР (приватный чат)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+DRpohP4-57UxOTRi"
+    title: "Южная Корея (приватный чат)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "https://t.me/+P2IuFCZWCTY5ZDIy"
+    title: "Ямайка (приватный чат)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
   - target: "@otvezut"
     title: "Отвезут (водители, попутчики, посылки)"
     account: third
