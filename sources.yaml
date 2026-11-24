@@ -1518,6 +1518,1389 @@ sources:
     min_score: 5
     catchup: 30
 
+  # ─── Добавлено 24.11.2026: чаты со словами «попутчики», «попутка», «передача посылок», граница, межстрановые трансферы ──
+  # 197 публичных чатов из списка владельца (остальные — по темам в HYPOTHETICAL_CHATS.md, не добавлены).
+  # Публичные читаются без вступления; title — по хэндлу, настоящее название берётся из Telegram при чтении.
+
+  - target: "@Transfer_SPB_Estonia1"
+    title: "Transfer_SPB_Estonia1 (трансфер)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputkatbi"
+    title: "poputkatbi (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@terespol"
+    title: "terespol (граница)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_prim25"
+    title: "poputchiki_prim25 (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytkak"
+    title: "popytkak (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@rus_fin_border"
+    title: "rus_fin_border (граница)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@blablacararm"
+    title: "blablacararm (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Granica"
+    title: "Granica (граница)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputn"
+    title: "poputn (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@vietnam_poputchiki"
+    title: "vietnam_poputchiki (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchikiturcia"
+    title: "Poputchikiturcia (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@berlinkaliningrad"
+    title: "berlinkaliningrad (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@kaliningradberlin"
+    title: "kaliningradberlin (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@BlaBlaChebMos"
+    title: "BlaBlaChebMos (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@krum_popytchiki"
+    title: "krum_popytchiki (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Avtopaputchik_tashkent"
+    title: "Avtopaputchik_tashkent (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_irkutsk"
+    title: "telecar_irkutsk (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@perevoz_PL"
+    title: "perevoz_PL (посылки)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchiki_irkutsk"
+    title: "Poputchiki_irkutsk (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@gokaliningrad_chat"
+    title: "gokaliningrad_chat (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytka_belarus"
+    title: "popytka_belarus (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@yedemvyalchiki"
+    title: "yedemvyalchiki (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@transfer_vladikavkaz_georgia1"
+    title: "transfer_vladikavkaz_georgia1 (трансфер)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_askino"
+    title: "poputchiki_askino (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputkaufakazan"
+    title: "poputkaufakazan (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@russia_estonia_transfer"
+    title: "russia_estonia_transfer (трансфер)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@transfermoscowriga"
+    title: "transfermoscowriga (трансфер)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@blablacar_samara"
+    title: "blablacar_samara (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputka_Baltasi"
+    title: "Poputka_Baltasi (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_baranovichi_geo"
+    title: "telecar_baranovichi_geo (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikichita"
+    title: "poputchikichita (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@mitfahrgelegenheit_russland"
+    title: "mitfahrgelegenheit_russland (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@cheap_transfer_parcels_travelers"
+    title: "cheap_transfer_parcels_travelers (посылки)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_krum"
+    title: "poputchiki_krum (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@kipr_popytchiki"
+    title: "kipr_popytchiki (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@PoputchikIrlandiya"
+    title: "PoputchikIrlandiya (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@minsk_grodno_car"
+    title: "minsk_grodno_car (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytka_tambov_moskva"
+    title: "popytka_tambov_moskva (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikiordjo"
+    title: "poputchikiordjo (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@alanya_poputka"
+    title: "alanya_poputka (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@PopytkaBaltasi"
+    title: "PopytkaBaltasi (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikisochiabhazia"
+    title: "poputchikisochiabhazia (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_thailand"
+    title: "poputchiki_thailand (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputi_tailand"
+    title: "poputi_tailand (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@kpp_ilek_aksay"
+    title: "kpp_ilek_aksay (граница)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@AdlerKrdpoputka"
+    title: "AdlerKrdpoputka (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@PoputMinsk"
+    title: "PoputMinsk (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@indiya_poputchiki"
+    title: "indiya_poputchiki (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popythikIrk"
+    title: "popythikIrk (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@blablacar18"
+    title: "blablacar18 (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@cyprus_drivetogether"
+    title: "cyprus_drivetogether (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@BlablakaR46"
+    title: "BlablakaR46 (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@ChinvalPoputchik"
+    title: "ChinvalPoputchik (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@dzhubga_poputchiki"
+    title: "dzhubga_poputchiki (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@fintransfer"
+    title: "fintransfer (трансфер)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikikazanarsk"
+    title: "poputchikikazanarsk (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_36"
+    title: "poputka_36 (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikiturciya"
+    title: "poputchikiturciya (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_kyzyl"
+    title: "poputchiki_kyzyl (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@riga_autotrip"
+    title: "riga_autotrip (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputka_BLR_LT_BLR"
+    title: "Poputka_BLR_LT_BLR (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@granica_polsha_belarus"
+    title: "granica_polsha_belarus (граница)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@transfer_tln_spb"
+    title: "transfer_tln_spb (трансфер)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka64"
+    title: "poputka64 (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputka_BLR_PL_BLR"
+    title: "Poputka_BLR_PL_BLR (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchik_grodno"
+    title: "poputchik_grodno (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_polevskoy"
+    title: "poputka_polevskoy (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@PhuketPoputka"
+    title: "PhuketPoputka (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@kalininbergde"
+    title: "kalininbergde (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchik_Estonia_Russia_Finland"
+    title: "Poputchik_Estonia_Russia_Finland (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_od"
+    title: "poputka_od (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Granicaa"
+    title: "Granicaa (граница)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_bobr"
+    title: "poputchiki_bobr (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@moskow_mogilev"
+    title: "moskow_mogilev (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@MINSK_ZHLOBIN"
+    title: "MINSK_ZHLOBIN (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_HN"
+    title: "poputka_HN (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchiki72"
+    title: "Poputchiki72 (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytka152"
+    title: "popytka152 (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytka59"
+    title: "popytka59 (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@spbfinland"
+    title: "spbfinland (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytchiki19"
+    title: "popytchiki19 (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchiki_Zlatoust_Miass_Ekb"
+    title: "Poputchiki_Zlatoust_Miass_Ekb (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@ptzfinland"
+    title: "ptzfinland (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputci"
+    title: "poputci (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@POPYTCHIKI_northcyprus"
+    title: "POPYTCHIKI_northcyprus (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputkaruss"
+    title: "poputkaruss (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_16"
+    title: "poputka_16 (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputkavyrnari"
+    title: "poputkavyrnari (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@kyyti_finrus"
+    title: "kyyti_finrus (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputkaio"
+    title: "poputkaio (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_pskov"
+    title: "telecar_pskov (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_tver"
+    title: "telecar_tver (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_kaluga"
+    title: "telecar_kaluga (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@ishimbaypoputka"
+    title: "ishimbaypoputka (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@novosibirskpopyti"
+    title: "novosibirskpopyti (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@carlift_chat"
+    title: "carlift_chat (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poexalivmesteStM"
+    title: "poexalivmesteStM (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_ivanovo"
+    title: "telecar_ivanovo (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@BY_poputchik"
+    title: "BY_poputchik (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@kiev_minsk"
+    title: "kiev_minsk (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@BobruiskMozilevMoskva"
+    title: "BobruiskMozilevMoskva (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputkaPL"
+    title: "poputkaPL (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchyki"
+    title: "Poputchyki (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_lysva"
+    title: "poputka_lysva (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputka_BLR_LV_BLR"
+    title: "Poputka_BLR_LV_BLR (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_vsk"
+    title: "poputka_vsk (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_novokuznetsk"
+    title: "telecar_novokuznetsk (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@blablasych"
+    title: "blablasych (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_tambov"
+    title: "telecar_tambov (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikidubai"
+    title: "poputchikidubai (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@PoputchikPh"
+    title: "PoputchikPh (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchik_turkey"
+    title: "poputchik_turkey (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytchikidivnomorskoe"
+    title: "popytchikidivnomorskoe (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchik_rb"
+    title: "poputchik_rb (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikifinrus"
+    title: "poputchikifinrus (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_italia"
+    title: "poputchiki_italia (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikiidom39"
+    title: "poputchikiidom39 (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@peredatvcanada"
+    title: "peredatvcanada (посылки)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiks"
+    title: "poputchiks (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikiIlekOren"
+    title: "poputchikiIlekOren (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_abkhazia"
+    title: "poputchiki_abkhazia (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@spb_psk"
+    title: "spb_psk (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_podolsk"
+    title: "telecar_podolsk (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@minskbialystok"
+    title: "minskbialystok (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikibalashikha"
+    title: "poputchikibalashikha (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_43"
+    title: "poputka_43 (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@tatplus_poputchiki"
+    title: "tatplus_poputchiki (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_spain"
+    title: "poputchiki_spain (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchik_kostroma"
+    title: "poputchik_kostroma (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_komsomolsknaamure"
+    title: "telecar_komsomolsknaamure (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchik04Tj"
+    title: "Poputchik04Tj (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@astra_poputka"
+    title: "astra_poputka (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_vladimir"
+    title: "telecar_vladimir (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@uzrus_popytckic"
+    title: "uzrus_popytckic (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikussk"
+    title: "poputchikussk (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@dovezu_antalya"
+    title: "dovezu_antalya (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_62"
+    title: "poputka_62 (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Perev_Turkey_Serbia"
+    title: "Perev_Turkey_Serbia (посылки)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_kostroma"
+    title: "telecar_kostroma (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputivgech"
+    title: "poputivgech (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@kiev_poputchik"
+    title: "kiev_poputchik (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputnosprudy"
+    title: "poputnosprudy (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Popuchik_Buxoro_Jtl"
+    title: "Popuchik_Buxoro_Jtl (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@piter_popytchiki"
+    title: "piter_popytchiki (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popyto4ka"
+    title: "popyto4ka (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_argentina"
+    title: "poputchiki_argentina (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputkabelarus"
+    title: "poputkabelarus (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@gruzoperevozkikiz05"
+    title: "gruzoperevozkikiz05 (посылки)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_vologda"
+    title: "telecar_vologda (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@stav_poputchiki"
+    title: "stav_poputchiki (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@iranpoputchiki"
+    title: "iranpoputchiki (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popytkam"
+    title: "popytkam (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_kirov"
+    title: "telecar_kirov (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_sever_kipr"
+    title: "poputka_sever_kipr (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@mozyr_litva_mozyr"
+    title: "mozyr_litva_mozyr (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_tj_rus"
+    title: "poputchiki_tj_rus (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputka_Topkem"
+    title: "poputka_Topkem (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikinhatrang"
+    title: "poputchikinhatrang (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@vmestego05"
+    title: "vmestego05 (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@blabla_blk"
+    title: "blabla_blk (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchiki_ukraine_chat"
+    title: "Poputchiki_ukraine_chat (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikialmaty"
+    title: "poputchikialmaty (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchic_na"
+    title: "poputchic_na (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_rf_ukr"
+    title: "poputchiki_rf_ukr (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchik_perm_ekb_perm"
+    title: "poputchik_perm_ekb_perm (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikikyzyl"
+    title: "poputchikikyzyl (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikiaz"
+    title: "poputchikiaz (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_ch_od"
+    title: "poputchiki_ch_od (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@paputchiki_8567"
+    title: "paputchiki_8567 (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@orenburg_aktobe_poputchiki"
+    title: "orenburg_aktobe_poputchiki (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputchiki_Cheboksary_Kazan"
+    title: "Poputchiki_Cheboksary_Kazan (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@podvezu36vrn"
+    title: "podvezu36vrn (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_staryjoskol"
+    title: "telecar_staryjoskol (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@autostopBeslanVL"
+    title: "autostopBeslanVL (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_gruzia2"
+    title: "poputchiki_gruzia2 (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@dubaipoputi"
+    title: "dubaipoputi (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@PoputcikiKunashak"
+    title: "PoputcikiKunashak (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@PoputchikiStav"
+    title: "PoputchikiStav (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_lutsk"
+    title: "telecar_lutsk (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Poputka45"
+    title: "Poputka45 (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@popythcikTadjikistan"
+    title: "popythcikTadjikistan (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_dag"
+    title: "poputchiki_dag (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@obninsk_popytka"
+    title: "obninsk_popytka (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@transfer_finlandia"
+    title: "transfer_finlandia (трансфер)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikiserbiya"
+    title: "poputchikiserbiya (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@telecar_engels"
+    title: "telecar_engels (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchik_ros_dag"
+    title: "poputchik_ros_dag (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@visaranpoputchikiHanoiNaMeo"
+    title: "visaranpoputchikiHanoiNaMeo (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikigreciya"
+    title: "poputchikigreciya (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@Indiaposilka"
+    title: "Indiaposilka (посылки)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchik19"
+    title: "poputchik19 (попутчики)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@vologda_like_car"
+    title: "vologda_like_car (попутчики)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchiki_azerbaijan"
+    title: "poputchiki_azerbaijan (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikibolgariya"
+    title: "poputchikibolgariya (попутчики)"
+    account: fifth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@ee_transfer"
+    title: "ee_transfer (трансфер)"
+    account: sixth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@transfergdanskkaliningrad_ru"
+    title: "transfergdanskkaliningrad_ru (трансфер)"
+    account: third
+    profile: chat
+    min_score: 5
+    catchup: 30
+
+  - target: "@poputchikimaldivy"
+    title: "poputchikimaldivy (попутчики)"
+    account: fourth
+    profile: chat
+    min_score: 5
+    catchup: 30
+
   - target: "@otvezut"
     title: "Отвезут (водители, попутчики, посылки)"
     account: third
