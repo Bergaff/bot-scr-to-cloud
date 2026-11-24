@@ -3512,6 +3512,15 @@ async def main() -> None:
     checks.append(("дубли видны в отчёте: число и сколько из них пришло из других чатов",
                    "дубли: 4 (из них тот же текст уже пришёл из другого чата: 3)" in dup_report, ""))
 
+    # короткий FloodWait (3–9 с при вступлении) не забивает /errors; долгий — попадает
+    fl_store = HitStore(":memory:")
+    monitor_module.record_flood(fl_store, "join(@chat)", 7, 13.4)
+    short_errs = fl_store.errors_recent(limit=10, since_hours=0)
+    monitor_module.record_flood(fl_store, "get_entity(x)", 238, 290)
+    long_errs = fl_store.errors_recent(limit=10, since_hours=0)
+    checks.append(("короткий FloodWait (7 с) в журнал ошибок не пишется, долгий (238 с) — пишется",
+                   not short_errs and len(long_errs) == 1 and "238" in long_errs[0]["text"], str(long_errs)[:100]))
+
     # ---------------------------------------------------------- итог
     section("Итог")
     for name, ok, detail in checks:

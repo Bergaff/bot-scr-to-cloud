@@ -3037,6 +3037,21 @@ def is_protected(entity) -> bool:
     return getattr(entity, "noforwards", False) is True
 
 
+SHORT_FLOOD_SECONDS = 60     # такие паузы Telegram — обычное дело (вступление, поиск ника): радар сам подождал и пошёл дальше
+
+
+def record_flood(store, label: str, seconds: float, wait: float) -> None:
+    """FloodWait в базу. Пульс «flood» пишем всегда (панель покажет «ограничение до …»); в журнал ошибок
+    (/errors) — только долгие паузы: короткие (3–9 с при вступлении) радар отрабатывает сам и они лишь забивают список."""
+    until = (datetime.now(timezone.utc) + timedelta(seconds=wait)).astimezone().strftime("%H:%M")
+    try:
+        store.log_heartbeat("flood", detail=f"{label}: до {until}")
+        if seconds > SHORT_FLOOD_SECONDS:
+            store.log_error("FloodWaitError", f"{label}: Telegram просит {int(seconds)} с, ждём до {until}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[!] не записал FloodWait в базу: {type(exc).__name__}", file=sys.stderr)
+
+
 def record_account_chats(store, account_name: str, sources, resolved: dict | None = None,
                          report: dict | None = None, no_login: bool = False) -> list[tuple[str, str]]:
     """Чаты аккаунта: цель из конфига, название, Telegram-id чата, статус (/chats в боте).
@@ -3818,12 +3833,7 @@ async def async_main(args) -> None:
 
     # FloodWait из core_telegram.call падает в базу: панель покажет «ограничение до 22:10» (ТЗ §7.3)
     def flood_to_db(label: str, seconds: float, wait: float) -> None:
-        until = (datetime.now(timezone.utc) + timedelta(seconds=wait)).astimezone().strftime("%H:%M")
-        try:
-            store.log_heartbeat("flood", detail=f"{label}: до {until}")
-            store.log_error("FloodWaitError", f"{label}: Telegram просит {int(seconds)} с, ждём до {until}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[!] не записал FloodWait в базу: {type(exc).__name__}", file=sys.stderr)
+        record_flood(store, label, seconds, wait)
 
     add_flood_hook(flood_to_db)
 
